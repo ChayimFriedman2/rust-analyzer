@@ -22,9 +22,11 @@ use hir_expand::{
     builtin::{BuiltinFnLikeExpander, EagerExpander},
     db::ExpandDatabase,
     files::InRealFile,
+    inert_attr_macro::find_builtin_attr_idx,
     name::AsName,
     FileRange, InMacroFile, MacroCallId, MacroFileId, MacroFileIdExt,
 };
+use intern::Symbol;
 use itertools::Itertools;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{smallvec, SmallVec};
@@ -666,8 +668,29 @@ impl<'db> SemanticsImpl<'db> {
         res
     }
 
+    fn is_inside_macro_call(token: &SyntaxToken) -> bool {
+        token.parent_ancestors().any(|ancestor| {
+            if ast::MacroCall::can_cast(ancestor.kind()) {
+                return true;
+            }
+            // Check if it is an item (only items can have macro attributes) that has a non-builtin attribute.
+            let Some(item) = ast::Item::cast(ancestor) else { return false };
+            item.attrs().any(|attr| {
+                let Some(meta) = attr.meta() else { return false };
+                let Some(path) = meta.path() else { return false };
+                let Some(attr_name) = path.as_single_name_ref() else { return true };
+                let attr_name = attr_name.text();
+                let attr_name = attr_name.as_str();
+                attr_name == "derive" || find_builtin_attr_idx(&Symbol::intern(attr_name)).is_none()
+            })
+        })
+    }
+
     /// Descend the token into its macro call if it is part of one, returning the tokens in the
     /// expansion that it is associated with.
+    ///
+    /// Don't call this with a `SyntaxNode` from macro expansion, only one that the user wrote, because
+    /// this implements a shortcut by checking if the token is syntactically within a macro call.
     pub fn descend_into_macros(
         &self,
         mode: DescendPreference,
@@ -678,6 +701,11 @@ impl<'db> SemanticsImpl<'db> {
             SameKind(SyntaxKind),
             None,
         }
+
+        if !Self::is_inside_macro_call(&token) {
+            return smallvec![token];
+        }
+
         let fetch_kind = |token: &SyntaxToken| match token.parent() {
             Some(node) => match node.kind() {
                 kind @ (SyntaxKind::NAME | SyntaxKind::NAME_REF) => kind,
@@ -713,6 +741,8 @@ impl<'db> SemanticsImpl<'db> {
         res
     }
 
+    /// Don't call this with a `SyntaxNode` from macro expansion, only one that the user wrote, because
+    /// this implements a shortcut by checking if the token is syntactically within a macro call.
     pub fn descend_into_macros_single(
         &self,
         mode: DescendPreference,
@@ -723,6 +753,11 @@ impl<'db> SemanticsImpl<'db> {
             SameKind(SyntaxKind),
             None,
         }
+
+        if !Self::is_inside_macro_call(&token) {
+            return token;
+        }
+
         let fetch_kind = |token: &SyntaxToken| match token.parent() {
             Some(node) => match node.kind() {
                 kind @ (SyntaxKind::NAME | SyntaxKind::NAME_REF) => kind,
