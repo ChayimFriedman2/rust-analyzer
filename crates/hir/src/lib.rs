@@ -4912,6 +4912,15 @@ impl Type {
         Some(adt.into())
     }
 
+    /// Check if this is non-opaque type alias, that could not be resolved without substs.
+    pub fn is_non_opaque_type_alias(&self) -> bool {
+        matches!(
+            self.ty.kind(Interner),
+            // We lower unknown substs into error.
+            TyKind::Alias(AliasTy::Projection(..)) | TyKind::AssociatedType(..) | TyKind::Error
+        )
+    }
+
     pub fn as_builtin(&self) -> Option<BuiltinType> {
         self.ty.as_builtin().map(|inner| BuiltinType { inner })
     }
