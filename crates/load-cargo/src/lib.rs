@@ -505,7 +505,17 @@ impl ProcMacroExpander for Expander {
             current_dir,
         ) {
             Ok(Ok(subtree)) => Ok(subtree),
-            Ok(Err(err)) => Err(ProcMacroExpansionError::Panic(err.0)),
+            Ok(Err(err)) => {
+                if let Some(backtrace) = &err.backtrace {
+                    tracing::info!(
+                        "proc macro `{}` panicked: {}\nBacktrace:\n{}",
+                        self.0.name(),
+                        err.message,
+                        backtrace
+                    );
+                }
+                Err(ProcMacroExpansionError::Panic(err.message))
+            }
             Err(err) => Err(ProcMacroExpansionError::System(err.to_string())),
         }
     }

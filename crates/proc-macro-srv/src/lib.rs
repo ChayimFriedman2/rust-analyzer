@@ -32,8 +32,9 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     env,
     ffi::OsString,
-    fs,
+    fs, panic,
     path::{Path, PathBuf},
+    sync::Mutex,
     thread,
     time::SystemTime,
 };
@@ -58,8 +59,21 @@ pub struct ProcMacroSrv<'env> {
     env: &'env EnvSnapshot,
 }
 
+static PANIC_BACKTRACE: Mutex<Option<String>> = Mutex::new(None);
+
 impl<'env> ProcMacroSrv<'env> {
     pub fn new(env: &'env EnvSnapshot) -> Self {
+        let prev_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            PANIC_BACKTRACE
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| std::backtrace::Backtrace::force_capture().to_string());
+            if cfg!(debug_assertions) {
+                prev_hook(info);
+            }
+        }));
+
         Self { expanders: Default::default(), span_mode: Default::default(), env }
     }
 }
@@ -83,7 +97,7 @@ impl<'env> ProcMacroSrv<'env> {
         let snapped_env = self.env;
         let expander = self.expander(lib.as_ref()).map_err(|err| {
             debug_assert!(false, "should list macros before asking to expand");
-            msg::PanicMessage(format!("failed to load macro: {err}"))
+            msg::PanicMessage { message: format!("failed to load macro: {err}"), backtrace: None }
         })?;
 
         let prev_env = EnvChange::apply(snapped_env, env, current_dir.as_ref().map(<_>::as_ref));
@@ -95,7 +109,10 @@ impl<'env> ProcMacroSrv<'env> {
 
         prev_env.rollback();
 
-        result.map_err(msg::PanicMessage)
+        result.map_err(|panic_msg| msg::PanicMessage {
+            message: panic_msg.message.unwrap_or_default(),
+            backtrace: panic_msg.backtrace,
+        })
     }
 
     pub fn list_macros(
@@ -155,7 +172,7 @@ fn expand_id(
         span_data_table: _,
     }: msg::ExpandMacroData,
     expander: &dylib::Expander,
-) -> Result<msg::FlatTree, String> {
+) -> Result<msg::FlatTree, PanicMessage> {
     let def_site = TokenId(def_site as u32);
     let call_site = TokenId(call_site as u32);
     let mixed_site = TokenId(mixed_site as u32);
@@ -193,7 +210,7 @@ fn expand_ra_span(
         span_data_table,
     }: msg::ExpandMacroData,
     expander: &dylib::Expander,
-) -> Result<(msg::FlatTree, Vec<u32>), String> {
+) -> Result<(msg::FlatTree, Vec<u32>), PanicMessage> {
     let mut span_data_table = deserialize_span_data_index_map(&span_data_table);
 
     let def_site = span_data_table[def_site];
@@ -232,14 +249,10 @@ fn expand_ra_span(
     result
 }
 
+#[derive(Debug)]
 pub struct PanicMessage {
     message: Option<String>,
-}
-
-impl PanicMessage {
-    pub fn into_string(self) -> Option<String> {
-        self.message
-    }
+    backtrace: Option<String>,
 }
 
 pub struct EnvSnapshot {

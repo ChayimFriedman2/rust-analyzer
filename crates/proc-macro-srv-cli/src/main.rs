@@ -42,9 +42,10 @@ fn run() -> io::Result<()> {
     while let Some(req) = read_request(&mut buf)? {
         let res = match req {
             msg::Request::ListMacros { .. } => msg::Response::ListMacros(Err(err.to_owned())),
-            msg::Request::ExpandMacro(_) => {
-                msg::Response::ExpandMacro(Err(msg::PanicMessage(err.to_owned())))
-            }
+            msg::Request::ExpandMacro(_) => msg::Response::ExpandMacro(Err(msg::PanicMessage {
+                message: err.to_owned(),
+                backtrace: None,
+            })),
             msg::Request::ApiVersionCheck {} => {
                 msg::Response::ApiVersionCheck(proc_macro_api::msg::CURRENT_API_VERSION)
             }

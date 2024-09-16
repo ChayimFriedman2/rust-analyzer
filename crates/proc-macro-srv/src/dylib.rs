@@ -11,7 +11,7 @@ use object::Object;
 use paths::{AbsPath, Utf8Path, Utf8PathBuf};
 use proc_macro_api::ProcMacroKind;
 
-use crate::ProcMacroSrvSpan;
+use crate::{PanicMessage, ProcMacroSrvSpan};
 
 const NEW_REGISTRAR_SYMBOL: &str = "_rustc_proc_macro_decls_";
 
@@ -167,7 +167,7 @@ impl Expander {
         def_site: S,
         call_site: S,
         mixed_site: S,
-    ) -> Result<tt::Subtree<S>, String>
+    ) -> Result<tt::Subtree<S>, PanicMessage>
     where
         <S::Server as bridge::server::Types>::TokenStream: Default,
     {
@@ -175,7 +175,7 @@ impl Expander {
             .inner
             .proc_macros
             .expand(macro_name, macro_body, attributes, def_site, call_site, mixed_site);
-        result.map_err(|e| e.into_string().unwrap_or_default())
+        result
     }
 
     pub(crate) fn list_macros(&self) -> Vec<(String, ProcMacroKind)> {

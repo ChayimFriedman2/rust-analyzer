@@ -70,7 +70,10 @@ pub struct ExpandMacroExtended {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PanicMessage(pub String);
+pub struct PanicMessage {
+    pub message: String,
+    pub backtrace: Option<String>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExpandMacro {

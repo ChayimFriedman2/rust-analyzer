@@ -5,7 +5,7 @@ use proc_macro_api::ProcMacroKind;
 
 use libloading::Library;
 
-use crate::{dylib::LoadProcMacroDylibError, ProcMacroSrvSpan};
+use crate::{dylib::LoadProcMacroDylibError, ProcMacroSrvSpan, PANIC_BACKTRACE};
 
 pub(crate) struct ProcMacros {
     exported_macros: Vec<bridge::client::ProcMacro>,
@@ -13,7 +13,10 @@ pub(crate) struct ProcMacros {
 
 impl From<bridge::PanicMessage> for crate::PanicMessage {
     fn from(p: bridge::PanicMessage) -> Self {
-        Self { message: p.as_str().map(|s| s.to_string()) }
+        Self {
+            message: p.as_str().map(|s| s.to_string()),
+            backtrace: PANIC_BACKTRACE.lock().unwrap().take(),
+        }
     }
 }
 
@@ -62,11 +65,13 @@ impl ProcMacros {
                 bridge::client::ProcMacro::CustomDerive { trait_name, client, .. }
                     if *trait_name == macro_name =>
                 {
+                    // Set `force_show_panics` to true so that our custom panic handler (that sets the backtrace)
+                    // will always be called.
                     let res = client.run(
                         &bridge::server::SameThread,
                         S::make_server(call_site, def_site, mixed_site),
                         parsed_body,
-                        cfg!(debug_assertions),
+                        true,
                     );
                     return res
                         .map(|it| it.into_subtree(call_site))
@@ -77,7 +82,7 @@ impl ProcMacros {
                         &bridge::server::SameThread,
                         S::make_server(call_site, def_site, mixed_site),
                         parsed_body,
-                        cfg!(debug_assertions),
+                        true,
                     );
                     return res
                         .map(|it| it.into_subtree(call_site))
@@ -89,7 +94,7 @@ impl ProcMacros {
                         S::make_server(call_site, def_site, mixed_site),
                         parsed_attributes,
                         parsed_body,
-                        cfg!(debug_assertions),
+                        true,
                     );
                     return res
                         .map(|it| it.into_subtree(call_site))

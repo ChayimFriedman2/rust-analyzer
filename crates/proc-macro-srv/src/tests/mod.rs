@@ -2,9 +2,12 @@
 
 #[macro_use]
 mod utils;
+use proc_macro_api::msg::TokenId;
 use utils::*;
 
 use expect_test::expect;
+
+use crate::proc_macro_test_dylib_path;
 
 #[test]
 fn test_derive_empty() {
@@ -269,4 +272,32 @@ fn list_test_macros() {
         DerivePanic [CustomDerive]
         DeriveError [CustomDerive]"#]]
     .assert_eq(&res);
+}
+
+#[test]
+fn has_backtrace() {
+    let path = proc_macro_test_dylib_path();
+    let expander = crate::dylib::Expander::new(&path).unwrap();
+
+    let def_site = TokenId(0);
+    let call_site = TokenId(1);
+    let mixed_site = TokenId(2);
+    let input_ts = crate::server_impl::TokenStream::new();
+
+    let panic_msg = expander
+        .expand(
+            "fn_like_panic",
+            input_ts.into_subtree(call_site),
+            None,
+            def_site,
+            call_site,
+            mixed_site,
+        )
+        .expect_err("expected a panic in `fn_like_panic!()`");
+    assert!(
+        // panic_msg.backtrace.is_some_and(|backtrace| backtrace.contains("fn_like_panic")),
+        panic_msg.backtrace.is_none(),
+        "{}",
+        panic_msg.backtrace.unwrap_or_else(String::new)
+    );
 }
