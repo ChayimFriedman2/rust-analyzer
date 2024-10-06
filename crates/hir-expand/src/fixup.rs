@@ -148,7 +148,6 @@ pub(crate) fn fixup_syntax(
                     }
                     if it.then_branch().is_none() {
                         append.insert(node.clone().into(), vec![
-                            // FIXME: THis should be a subtree no?
                             Leaf::Punct(Punct {
                                 char: '{',
                                 spacing: Spacing::Alone,
@@ -179,7 +178,6 @@ pub(crate) fn fixup_syntax(
                     }
                     if it.loop_body().is_none() {
                         append.insert(node.clone().into(), vec![
-                            // FIXME: THis should be a subtree no?
                             Leaf::Punct(Punct {
                                 char: '{',
                                 spacing: Spacing::Alone,
@@ -196,7 +194,6 @@ pub(crate) fn fixup_syntax(
                 ast::LoopExpr(it) => {
                     if it.loop_body().is_none() {
                         append.insert(node.clone().into(), vec![
-                            // FIXME: THis should be a subtree no?
                             Leaf::Punct(Punct {
                                 char: '{',
                                 spacing: Spacing::Alone,
@@ -228,7 +225,6 @@ pub(crate) fn fixup_syntax(
                     if it.match_arm_list().is_none() {
                         // No match arms
                         append.insert(node.clone().into(), vec![
-                            // FIXME: THis should be a subtree no?
                             Leaf::Punct(Punct {
                                 char: '{',
                                 spacing: Spacing::Alone,
@@ -269,7 +265,6 @@ pub(crate) fn fixup_syntax(
 
                     if it.loop_body().is_none() {
                         append.insert(node.clone().into(), vec![
-                            // FIXME: THis should be a subtree no?
                             Leaf::Punct(Punct {
                                 char: '{',
                                 spacing: Spacing::Alone,
@@ -403,16 +398,51 @@ fn reverse_fixups_(tt: &mut Subtree, undo_info: &[Subtree]) {
         })
         .flat_map(|tt| match tt {
             tt::TokenTree::Subtree(mut tt) => {
-                if tt.delimiter.close.anchor.ast_id == FIXUP_DUMMY_AST_ID
-                    || tt.delimiter.open.anchor.ast_id == FIXUP_DUMMY_AST_ID
-                {
-                    // Even though fixup never creates subtrees with fixup spans, the old proc-macro server
-                    // might copy them if the proc-macro asks for it, so we need to filter those out
-                    // here as well.
-                    return SmallVec::new_const();
+                match (tt.delimiter.open.anchor.ast_id, tt.delimiter.close.anchor.ast_id) {
+                    (FIXUP_DUMMY_AST_ID, FIXUP_DUMMY_AST_ID) => SmallVec::new_const(),
+                    (FIXUP_DUMMY_AST_ID, _) => {
+                        let mut result = SmallVec::new();
+                        let close_char = match tt.delimiter.kind {
+                            tt::DelimiterKind::Parenthesis => Some(')'),
+                            tt::DelimiterKind::Brace => Some('}'),
+                            tt::DelimiterKind::Bracket => Some(']'),
+                            tt::DelimiterKind::Invisible => None,
+                        };
+                        reverse_fixups_(&mut tt, undo_info);
+                        result.extend(tt.token_trees);
+                        if let Some(close_char) = close_char {
+                            result.push(tt::TokenTree::Leaf(tt::Leaf::Punct(tt::Punct {
+                                char: close_char,
+                                span: tt.delimiter.close,
+                                spacing: tt::Spacing::Alone,
+                            })));
+                        }
+                        result
+                    }
+                    (_, FIXUP_DUMMY_AST_ID) => {
+                        let mut result = SmallVec::new();
+                        let open_char = match tt.delimiter.kind {
+                            tt::DelimiterKind::Parenthesis => Some('('),
+                            tt::DelimiterKind::Brace => Some('{'),
+                            tt::DelimiterKind::Bracket => Some('['),
+                            tt::DelimiterKind::Invisible => None,
+                        };
+                        if let Some(open_char) = open_char {
+                            result.push(tt::TokenTree::Leaf(tt::Leaf::Punct(tt::Punct {
+                                char: open_char,
+                                span: tt.delimiter.open,
+                                spacing: tt::Spacing::Alone,
+                            })));
+                        }
+                        reverse_fixups_(&mut tt, undo_info);
+                        result.extend(tt.token_trees);
+                        result
+                    }
+                    (_, _) => {
+                        reverse_fixups_(&mut tt, undo_info);
+                        SmallVec::from_const([tt.into()])
+                    }
                 }
-                reverse_fixups_(&mut tt, undo_info);
-                SmallVec::from_const([tt.into()])
             }
             tt::TokenTree::Leaf(leaf) => {
                 if leaf.span().anchor.ast_id == FIXUP_DUMMY_AST_ID {
@@ -457,17 +487,58 @@ mod tests {
         }
     }
 
-    fn check_subtree_eq(a: &tt::Subtree, b: &tt::Subtree) -> bool {
-        a.delimiter.kind == b.delimiter.kind
-            && a.token_trees.len() == b.token_trees.len()
-            && a.token_trees.iter().zip(b.token_trees.iter()).all(|(a, b)| check_tt_eq(a, b))
+    fn flatten_subtrees(tt: &tt::Subtree, output: &mut Vec<tt::Leaf>) {
+        let open_char = match tt.delimiter.kind {
+            tt::DelimiterKind::Brace => '{',
+            tt::DelimiterKind::Bracket => '[',
+            tt::DelimiterKind::Parenthesis => '(',
+            tt::DelimiterKind::Invisible => '\0',
+        };
+        output.push(tt::Leaf::Punct(tt::Punct {
+            char: open_char,
+            spacing: tt::Spacing::Alone,
+            span: tt.delimiter.open,
+        }));
+        for tt in &tt.token_trees {
+            match tt {
+                tt::TokenTree::Subtree(tt) => flatten_subtrees(tt, output),
+                tt::TokenTree::Leaf(leaf) => output.push(leaf.clone()),
+            }
+        }
+        let close_char = match tt.delimiter.kind {
+            tt::DelimiterKind::Brace => '}',
+            tt::DelimiterKind::Bracket => ']',
+            tt::DelimiterKind::Parenthesis => ')',
+            tt::DelimiterKind::Invisible => '\0',
+        };
+        output.push(tt::Leaf::Punct(tt::Punct {
+            char: close_char,
+            spacing: tt::Spacing::Alone,
+            span: tt.delimiter.close,
+        }));
     }
 
-    fn check_tt_eq(a: &tt::TokenTree, b: &tt::TokenTree) -> bool {
-        match (a, b) {
-            (tt::TokenTree::Leaf(a), tt::TokenTree::Leaf(b)) => check_leaf_eq(a, b),
-            (tt::TokenTree::Subtree(a), tt::TokenTree::Subtree(b)) => check_subtree_eq(a, b),
-            _ => false,
+    fn check_subtree_eq(a: &tt::Subtree, b: &tt::Subtree) -> bool {
+        let (mut a_flattened, mut b_flattened) = (Vec::new(), Vec::new());
+        flatten_subtrees(a, &mut a_flattened);
+        flatten_subtrees(b, &mut b_flattened);
+        a_flattened.len() == b_flattened.len()
+            && std::iter::zip(&a_flattened, &b_flattened).all(|(a, b)| check_leaf_eq(a, b))
+    }
+
+    #[track_caller]
+    fn check_no_delimiter_punct(tt: &tt::Subtree) {
+        for tt in &tt.token_trees {
+            match tt {
+                tt::TokenTree::Leaf(tt::Leaf::Punct(punct)) => {
+                    assert!(
+                        !matches!(punct.char, '{' | '}' | '(' | ')' | '[' | ']'),
+                        "punctuation `{punct:?}` should be a subtree",
+                    );
+                }
+                tt::TokenTree::Subtree(tt) => check_no_delimiter_punct(tt),
+                _ => {}
+            }
         }
     }
 
@@ -493,6 +564,8 @@ mod tests {
             DocCommentDesugarMode::Mbe,
         );
 
+        check_no_delimiter_punct(&tt);
+
         let actual = format!("{tt}\n");
 
         expect.indent(false);
@@ -513,8 +586,8 @@ mod tests {
         reverse_fixups(&mut tt, &fixups.undo_info);
 
         // the fixed-up + reversed version should be equivalent to the original input
-        // modulo token IDs and `Punct`s' spacing.
-        let original_as_tt = syntax_bridge::syntax_node_to_token_tree(
+        // modulo token IDs and `Punct`s' spacing, and subtree vs. punct delimiters.
+        let original_as_tt = syntax_bridge::syntax_node_to_token_tree_no_fixup_test_only(
             &parsed.syntax_node(),
             span_map.as_ref(),
             span_map.span_for_range(TextRange::empty(0.into())),
@@ -535,7 +608,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {for _ in __ra_fixup { }}
+fn foo () {for _ in __ra_fixup {}}
 "#]],
         )
     }
@@ -563,7 +636,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {for bar in qux { }}
+fn foo () {for bar in qux {}}
 "#]],
         )
     }
@@ -594,7 +667,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {match __ra_fixup { }}
+fn foo () {match __ra_fixup {}}
 "#]],
         )
     }
@@ -626,7 +699,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {match __ra_fixup { }}
+fn foo () {match __ra_fixup {}}
 "#]],
         )
     }
@@ -741,7 +814,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {if a { }}
+fn foo () {if a {}}
 "#]],
         )
     }
@@ -755,7 +828,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {if __ra_fixup { }}
+fn foo () {if __ra_fixup {}}
 "#]],
         )
     }
@@ -769,7 +842,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {if __ra_fixup {} { }}
+fn foo () {if __ra_fixup {} {}}
 "#]],
         )
     }
@@ -783,7 +856,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {while __ra_fixup { }}
+fn foo () {while __ra_fixup {}}
 "#]],
         )
     }
@@ -797,7 +870,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {while foo { }}
+fn foo () {while foo {}}
 "#]],
         )
     }
@@ -824,7 +897,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () {loop { }}
+fn foo () {loop {}}
 "#]],
         )
     }
@@ -880,7 +953,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () { foo ( a ) }
+fn foo () {foo (a)}
 "#]],
         );
         check(
@@ -890,7 +963,7 @@ fn foo() {
 }
 "#,
             expect![[r#"
-fn foo () { bar . foo ( a ) }
+fn foo () {bar . foo (a)}
 "#]],
         );
     }

@@ -108,6 +108,22 @@ where
     convert_tokens(&mut c)
 }
 
+#[cfg(debug_assertions)]
+pub fn syntax_node_to_token_tree_no_fixup_test_only<Ctx, SpanMap>(
+    node: &SyntaxNode,
+    map: SpanMap,
+    span: SpanData<Ctx>,
+    mode: DocCommentDesugarMode,
+) -> tt::Subtree<SpanData<Ctx>>
+where
+    SpanData<Ctx>: Copy + fmt::Debug,
+    SpanMap: SpanMapper<SpanData<Ctx>>,
+{
+    let mut c = Converter::new(node, map, Default::default(), Default::default(), span, mode);
+    c.assume_fixup_done = false;
+    convert_tokens(&mut c)
+}
+
 /// Converts a syntax tree to a [`tt::Subtree`] using the provided span map to populate the
 /// subtree's spans. Additionally using the append and remove parameters, the additional tokens can
 /// be injected or hidden from the output.
@@ -228,56 +244,90 @@ where
     let mut stack = NonEmptyVec::new(entry);
 
     while let Some((token, abs_range)) = conv.bump() {
-        let tt::SubtreeBuilder { delimiter, token_trees } = stack.last_mut();
+        let handle_subtrees = |conv: &mut C,
+                               stack: &mut NonEmptyVec<tt::SubtreeBuilder<S>>,
+                               close_delim,
+                               open_delim,
+                               span| {
+            if let Some(close_delim) = close_delim {
+                let found_match = close_delim == stack.last_mut().delimiter.kind;
+                if found_match {
+                    // Current token is a closing delimiter that we expect, fix up the closing span
+                    // and end the subtree here
+                    if let Some(mut subtree) = stack.pop() {
+                        subtree.delimiter.close = span;
+                        stack.last_mut().token_trees.push(subtree.build().into());
+                    }
+                }
+                // Skip this token *anyway, even if no matching delimiter was found*.
+                // We do this because some proc macros do not expect to be given a delimiter as punctuation
+                // (#18244), and we assume that if this delimiter has some subtree it logically belongs to,
+                // our fixup infra (which has input from the parser) will insert closing delimiters to make
+                // it match.
+                return found_match || conv.assume_fixup_done();
+            }
+
+            // Start a new subtree
+            if let Some(kind) = open_delim {
+                stack.push(tt::SubtreeBuilder {
+                    delimiter: tt::Delimiter {
+                        open: span,
+                        // will be overwritten on subtree close above
+                        close: span,
+                        kind,
+                    },
+                    token_trees: vec![],
+                });
+                return true;
+            }
+
+            false
+        };
 
         let tt = match token.as_leaf() {
+            Some(tt::Leaf::Punct(leaf)) => {
+                let close_delim = match leaf.char {
+                    ')' => Some(tt::DelimiterKind::Parenthesis),
+                    '}' => Some(tt::DelimiterKind::Brace),
+                    ']' => Some(tt::DelimiterKind::Bracket),
+                    _ => None,
+                };
+                let open_delim = match leaf.char {
+                    '(' => Some(tt::DelimiterKind::Parenthesis),
+                    '{' => Some(tt::DelimiterKind::Brace),
+                    '[' => Some(tt::DelimiterKind::Bracket),
+                    _ => None,
+                };
+                if handle_subtrees(conv, &mut stack, close_delim, open_delim, leaf.span) {
+                    continue;
+                }
+                tt::TokenTree::Leaf(tt::Leaf::Punct(leaf.clone()))
+            }
             Some(leaf) => tt::TokenTree::Leaf(leaf.clone()),
             None => match token.kind(conv) {
                 // Desugar doc comments into doc attributes
                 COMMENT => {
                     let span = conv.span_for(abs_range);
                     if let Some(tokens) = conv.convert_doc_comment(&token, span) {
-                        token_trees.extend(tokens);
+                        stack.last_mut().token_trees.extend(tokens);
                     }
                     continue;
                 }
                 kind if kind.is_punct() && kind != UNDERSCORE => {
-                    let expected = match delimiter.kind {
-                        tt::DelimiterKind::Parenthesis => Some(T![')']),
-                        tt::DelimiterKind::Brace => Some(T!['}']),
-                        tt::DelimiterKind::Bracket => Some(T![']']),
-                        tt::DelimiterKind::Invisible => None,
+                    let span = conv.span_for(abs_range);
+                    let close_delim = match kind {
+                        T![')'] => Some(tt::DelimiterKind::Parenthesis),
+                        T!['}'] => Some(tt::DelimiterKind::Brace),
+                        T![']'] => Some(tt::DelimiterKind::Bracket),
+                        _ => None,
                     };
-
-                    // Current token is a closing delimiter that we expect, fix up the closing span
-                    // and end the subtree here
-                    if matches!(expected, Some(expected) if expected == kind) {
-                        if let Some(mut subtree) = stack.pop() {
-                            subtree.delimiter.close = conv.span_for(abs_range);
-                            stack.last_mut().token_trees.push(subtree.build().into());
-                        }
-                        continue;
-                    }
-
-                    let delim = match kind {
+                    let open_delim = match kind {
                         T!['('] => Some(tt::DelimiterKind::Parenthesis),
                         T!['{'] => Some(tt::DelimiterKind::Brace),
                         T!['['] => Some(tt::DelimiterKind::Bracket),
                         _ => None,
                     };
-
-                    // Start a new subtree
-                    if let Some(kind) = delim {
-                        let open = conv.span_for(abs_range);
-                        stack.push(tt::SubtreeBuilder {
-                            delimiter: tt::Delimiter {
-                                open,
-                                // will be overwritten on subtree close above
-                                close: open,
-                                kind,
-                            },
-                            token_trees: vec![],
-                        });
+                    if handle_subtrees(conv, &mut stack, close_delim, open_delim, span) {
                         continue;
                     }
 
@@ -288,8 +338,7 @@ where
                     let Some(char) = token.to_char(conv) else {
                         panic!("Token from lexer must be single char: token = {token:#?}")
                     };
-                    tt::Leaf::from(tt::Punct { char, spacing, span: conv.span_for(abs_range) })
-                        .into()
+                    tt::Leaf::from(tt::Punct { char, spacing, span }).into()
                 }
                 kind => {
                     macro_rules! make_ident {
@@ -314,6 +363,7 @@ where
                             token_to_literal(&text, span).into()
                         }
                         LIFETIME_IDENT => {
+                            let token_trees = &mut stack.last_mut().token_trees;
                             let apostrophe = tt::Leaf::from(tt::Punct {
                                 char: '\'',
                                 spacing: tt::Spacing::Joint,
@@ -341,7 +391,7 @@ where
             },
         };
 
-        token_trees.push(tt);
+        stack.last_mut().token_trees.push(tt);
     }
 
     // If we get here, we've consumed all input tokens.
@@ -527,6 +577,12 @@ trait TokenConverter<S>: Sized {
     fn span_for(&self, range: TextRange) -> S;
 
     fn call_site(&self) -> S;
+
+    /// For tests we need a way to losslessly represent the input, while in regular mode we may ignore
+    /// some tokens (delimiters).
+    fn assume_fixup_done(&self) -> bool {
+        true
+    }
 }
 
 impl<S, Ctx> SrcToken<RawConverter<'_, Ctx>, S> for usize {
@@ -651,6 +707,8 @@ struct Converter<SpanMap, S> {
     remove: FxHashSet<SyntaxElement>,
     call_site: S,
     mode: DocCommentDesugarMode,
+    #[cfg(debug_assertions)]
+    assume_fixup_done: bool,
 }
 
 impl<SpanMap, S> Converter<SpanMap, S> {
@@ -673,6 +731,8 @@ impl<SpanMap, S> Converter<SpanMap, S> {
             call_site,
             current_leaves: vec![],
             mode,
+            #[cfg(debug_assertions)]
+            assume_fixup_done: true,
         };
         let first = this.next_token();
         this.current = first;
@@ -844,6 +904,12 @@ where
     }
     fn call_site(&self) -> S {
         self.call_site
+    }
+
+    // We use `debug_assertions` as an approximation for `test`, because `test` is not active when testing a dependent crate.
+    #[cfg(debug_assertions)]
+    fn assume_fixup_done(&self) -> bool {
+        self.assume_fixup_done
     }
 }
 
