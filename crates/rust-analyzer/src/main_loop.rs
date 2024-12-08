@@ -10,7 +10,7 @@ use std::{
 
 use always_assert::always;
 use crossbeam_channel::{select, Receiver};
-use ide_db::base_db::{SourceDatabase, SourceRootDatabase, VfsPath};
+use ide_db::base_db::{SourceRootDatabase, VfsPath};
 use lsp_server::{Connection, Notification, Request};
 use lsp_types::{notification::Notification as _, TextDocumentIdentifier};
 use stdx::thread::ThreadIntent;
@@ -874,16 +874,15 @@ impl GlobalState {
                 });
             }
             QueuedTask::CheckProcMacroSources(modified_rust_files) => {
-                let crate_graph = self.analysis_host.raw_database().crate_graph();
                 let snap = self.snapshot();
                 self.task_pool.handle.spawn_with_sender(stdx::thread::ThreadIntent::Worker, {
                     move |sender| {
                         if modified_rust_files.into_iter().any(|file_id| {
                             // FIXME: Check whether these files could be build script related
                             match snap.analysis.crates_for(file_id) {
-                                Ok(crates) => {
-                                    crates.iter().any(|&krate| crate_graph[krate].is_proc_macro)
-                                }
+                                Ok(crates) => crates.iter().any(|&krate| {
+                                    snap.analysis.is_proc_macro_crate(krate).is_ok_and(|it| it)
+                                }),
                                 _ => false,
                             }
                         }) {

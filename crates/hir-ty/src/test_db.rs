@@ -32,6 +32,8 @@ impl Default for TestDB {
         let mut this = Self { storage: Default::default(), events: Default::default() };
         this.setup_syntax_context_root();
         this.set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
+        // This needs to be here otherwise `CrateGraphBuilder` panics.
+        this.set_all_crates(Arc::new(Box::new([])));
         this
     }
 }
@@ -105,8 +107,7 @@ impl TestDB {
         &self,
     ) -> FxHashMap<EditionedFileId, Vec<(TextRange, String)>> {
         let mut files = Vec::new();
-        let crate_graph = self.crate_graph();
-        for krate in crate_graph.iter() {
+        for &krate in self.all_crates().iter() {
             let crate_def_map = self.crate_def_map(krate);
             for (module_id, _) in crate_def_map.modules() {
                 let file_id = crate_def_map[module_id].origin.file_id();

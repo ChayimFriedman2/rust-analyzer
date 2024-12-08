@@ -65,7 +65,7 @@ use hir::{sym, ChangeWithProcMacros};
 use ide_db::{
     base_db::{
         ra_salsa::{self, ParallelDatabase},
-        CrateOrigin, CrateWorkspaceData, Env, FileLoader, FileSet, SourceDatabase,
+        CrateOrigin, CrateWorkspaceData, CratesIdMap, Env, FileLoader, FileSet, SourceDatabase,
         SourceRootDatabase, VfsPath,
     },
     prime_caches, symbol_index, FxHashMap, FxIndexSet, LineIndexDatabase,
@@ -124,7 +124,7 @@ pub use ide_completion::{
 };
 pub use ide_db::text_edit::{Indel, TextEdit};
 pub use ide_db::{
-    base_db::{Cancelled, CrateGraph, CrateId, FileChange, SourceRoot, SourceRootId},
+    base_db::{Cancelled, CrateGraphBuilder, CrateId, FileChange, SourceRoot, SourceRootId},
     documentation::Documentation,
     label::Label,
     line_index::{LineCol, LineIndex},
@@ -187,8 +187,8 @@ impl AnalysisHost {
 
     /// Applies changes to the current state of the world. If there are
     /// outstanding snapshots, they will be canceled.
-    pub fn apply_change(&mut self, change: ChangeWithProcMacros) {
-        self.db.apply_change(change);
+    pub fn apply_change(&mut self, change: ChangeWithProcMacros) -> Option<CratesIdMap> {
+        self.db.apply_change(change)
     }
 
     /// NB: this clears the database
@@ -240,7 +240,7 @@ impl Analysis {
 
         let mut change = ChangeWithProcMacros::new();
         change.set_roots(vec![source_root]);
-        let mut crate_graph = CrateGraph::default();
+        let mut crate_graph = CrateGraphBuilder::default();
         // FIXME: cfg options
         // Default to enable test for single file.
         let mut cfg_options = CfgOptions::default();
@@ -597,7 +597,7 @@ impl Analysis {
 
     /// Returns crates this file belongs too.
     pub fn transitive_rev_deps(&self, crate_id: CrateId) -> Cancellable<Vec<CrateId>> {
-        self.with_db(|db| db.crate_graph().transitive_rev_deps(crate_id).collect())
+        self.with_db(|db| Vec::from_iter(db.transitive_rev_deps(crate_id)))
     }
 
     /// Returns crates this file *might* belong too.
@@ -607,7 +607,12 @@ impl Analysis {
 
     /// Returns the edition of the given crate.
     pub fn crate_edition(&self, crate_id: CrateId) -> Cancellable<Edition> {
-        self.with_db(|db| db.crate_graph()[crate_id].edition)
+        self.with_db(|db| db.crate_data(crate_id).edition)
+    }
+
+    /// Returns whether the given crate is a proc macro.
+    pub fn is_proc_macro_crate(&self, crate_id: CrateId) -> Cancellable<bool> {
+        self.with_db(|db| db.crate_data(crate_id).is_proc_macro)
     }
 
     /// Returns true if this crate has `no_std` or `no_core` specified.
@@ -617,7 +622,7 @@ impl Analysis {
 
     /// Returns the root file of the given crate.
     pub fn crate_root(&self, crate_id: CrateId) -> Cancellable<FileId> {
-        self.with_db(|db| db.crate_graph()[crate_id].root_file_id)
+        self.with_db(|db| db.crate_data(crate_id).root_file_id)
     }
 
     /// Returns the set of possible targets to run for the current file.

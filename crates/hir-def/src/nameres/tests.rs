@@ -13,13 +13,13 @@ use crate::{db::DefDatabase, nameres::DefMap, test_db::TestDB};
 
 fn compute_crate_def_map(ra_fixture: &str) -> Arc<DefMap> {
     let db = TestDB::with_files(ra_fixture);
-    let krate = db.crate_graph().iter().next().unwrap();
+    let krate = *db.all_crates().last().unwrap();
     db.crate_def_map(krate)
 }
 
 fn render_crate_def_map(ra_fixture: &str) -> String {
     let db = TestDB::with_files(ra_fixture);
-    let krate = db.crate_graph().iter().next().unwrap();
+    let krate = *db.all_crates().last().unwrap();
     db.crate_def_map(krate).dump(&db)
 }
 

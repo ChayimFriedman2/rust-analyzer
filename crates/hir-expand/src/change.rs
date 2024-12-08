@@ -1,19 +1,22 @@
 //! Defines a unit of change that can applied to the database to get the next
 //! state. Changes are transactional.
 use base_db::{
-    ra_salsa::Durability, CrateGraph, CrateId, CrateWorkspaceData, FileChange, SourceRoot,
+    ra_salsa::Durability, CrateGraphBuilder, CrateWorkspaceData, FileChange, SourceRoot,
     SourceRootDatabase,
 };
+use base_db::{CrateBuilderId, CratesIdMap};
+use either::Either;
 use rustc_hash::FxHashMap;
 use span::FileId;
 use triomphe::Arc;
 
-use crate::{db::ExpandDatabase, proc_macro::ProcMacros};
+use crate::proc_macro::ProcMacros;
+use crate::{db::ExpandDatabase, proc_macro::ProcMacrosBuilder};
 
 #[derive(Debug, Default)]
 pub struct ChangeWithProcMacros {
     pub source_change: FileChange,
-    pub proc_macros: Option<ProcMacros>,
+    pub proc_macros: Option<Either<ProcMacrosBuilder, ProcMacros>>,
 }
 
 impl ChangeWithProcMacros {
@@ -21,11 +24,19 @@ impl ChangeWithProcMacros {
         Self::default()
     }
 
-    pub fn apply(self, db: &mut (impl ExpandDatabase + SourceRootDatabase)) {
-        self.source_change.apply(db);
+    pub fn apply(self, db: &mut (impl ExpandDatabase + SourceRootDatabase)) -> Option<CratesIdMap> {
+        let crates_id_map = self.source_change.apply(db);
         if let Some(proc_macros) = self.proc_macros {
+            let proc_macros = proc_macros.right_or_else(|proc_macros| {
+                proc_macros.build(
+                    crates_id_map
+                        .as_ref()
+                        .expect("cannot set prebuilt proc macros without changing the crate graph"),
+                )
+            });
             db.set_proc_macros_with_durability(Arc::new(proc_macros), Durability::HIGH);
         }
+        crates_id_map
     }
 
     pub fn change_file(&mut self, file_id: FileId, new_text: Option<String>) {
@@ -34,15 +45,18 @@ impl ChangeWithProcMacros {
 
     pub fn set_crate_graph(
         &mut self,
-        graph: CrateGraph,
-        ws_data: FxHashMap<CrateId, Arc<CrateWorkspaceData>>,
+        graph: CrateGraphBuilder,
+        ws_data: FxHashMap<CrateBuilderId, Arc<CrateWorkspaceData>>,
     ) {
-        self.source_change.set_crate_graph(graph);
-        self.source_change.set_ws_data(ws_data);
+        self.source_change.set_crate_graph_and_ws_data(graph, ws_data);
     }
 
-    pub fn set_proc_macros(&mut self, proc_macros: ProcMacros) {
-        self.proc_macros = Some(proc_macros);
+    pub fn set_proc_macros(&mut self, proc_macros: ProcMacrosBuilder) {
+        self.proc_macros = Some(Either::Left(proc_macros));
+    }
+
+    pub fn set_built_proc_macros(&mut self, proc_macros: ProcMacros) {
+        self.proc_macros = Some(Either::Right(proc_macros));
     }
 
     pub fn set_roots(&mut self, roots: Vec<SourceRoot>) {

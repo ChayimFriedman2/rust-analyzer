@@ -313,8 +313,7 @@ impl GenericParams {
         let _p = tracing::info_span!("generic_params_query").entered();
 
         let krate = def.krate(db);
-        let cfg_options = db.crate_graph();
-        let cfg_options = &cfg_options[krate].cfg_options;
+        let cfg_options = &db.crate_cfg(krate);
 
         // Returns the generic parameters that are enabled under the current `#[cfg]` options
         let enabled_params =

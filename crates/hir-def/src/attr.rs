@@ -75,7 +75,6 @@ impl Attrs {
         // FIXME: There should be some proper form of mapping between item tree field ids and hir field ids
         let mut res = ArenaMap::default();
 
-        let crate_graph = db.crate_graph();
         let item_tree;
         let (parent, fields, krate) = match v {
             VariantId::EnumVariantId(it) => {
@@ -101,12 +100,12 @@ impl Attrs {
             }
         };
 
-        let cfg_options = &crate_graph[krate].cfg_options;
+        let cfg_options = db.crate_cfg(krate);
 
         let mut idx = 0;
         for (id, _field) in fields.iter().enumerate() {
             let attrs = item_tree.attrs(db, krate, AttrOwner::make_field_indexed(parent, id));
-            if attrs.is_cfg_enabled(cfg_options) {
+            if attrs.is_cfg_enabled(&cfg_options) {
                 res.insert(Idx::from_raw(RawIdx::from(idx)), attrs);
                 idx += 1;
             }

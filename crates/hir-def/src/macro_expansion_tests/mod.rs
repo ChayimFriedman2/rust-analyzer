@@ -63,7 +63,7 @@ pub fn identity_when_valid(_attr: TokenStream, item: TokenStream) -> TokenStream
         },
     )];
     let db = TestDB::with_files_extra_proc_macros(ra_fixture, extra_proc_macros);
-    let krate = db.crate_graph().iter().next().unwrap();
+    let krate = *db.all_crates().last().unwrap();
     let def_map = db.crate_def_map(krate);
     let local_id = DefMap::ROOT;
     let module = def_map.module_id(local_id);

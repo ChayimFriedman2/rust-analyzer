@@ -59,9 +59,8 @@ static GLOB_RECURSION_LIMIT: Limit = Limit::new(100);
 static FIXED_POINT_LIMIT: Limit = Limit::new(8192);
 
 pub(super) fn collect_defs(db: &dyn DefDatabase, def_map: DefMap, tree_id: TreeId) -> DefMap {
-    let crate_graph = db.crate_graph();
-
-    let krate = &crate_graph[def_map.krate];
+    let krate = &db.crate_data(def_map.krate);
+    let cfg_options = db.crate_cfg(def_map.krate);
 
     // populate external prelude and dependency list
     let mut deps =
@@ -89,7 +88,7 @@ pub(super) fn collect_defs(db: &dyn DefDatabase, def_map: DefMap, tree_id: TreeI
         indeterminate_imports: Vec::new(),
         unresolved_macros: Vec::new(),
         mod_dirs: FxHashMap::default(),
-        cfg_options: &krate.cfg_options,
+        cfg_options: &cfg_options,
         proc_macros,
         from_glob_import: Default::default(),
         skip_attrs: Default::default(),
@@ -239,8 +238,7 @@ impl DefCollector<'_> {
     fn seed_with_top_level(&mut self) {
         let _p = tracing::info_span!("seed_with_top_level").entered();
 
-        let crate_graph = self.db.crate_graph();
-        let file_id = crate_graph[self.def_map.krate].root_file_id();
+        let file_id = self.db.crate_data(self.def_map.krate).root_file_id();
         let item_tree = self.db.file_item_tree(file_id.into());
         let attrs = item_tree.top_level_attrs(self.db, self.def_map.krate);
         let crate_data = Arc::get_mut(&mut self.def_map.data).unwrap();
@@ -311,15 +309,19 @@ impl DefCollector<'_> {
                 // don't do pre-configured attribute resolution yet.
                 // So here check if we are no_core / no_std and we are trying to add the
                 // corresponding dep from the sysroot
-                let skip = match crate_graph[dep.crate_id].origin {
-                    CrateOrigin::Lang(LangCrateOrigin::Core) => {
-                        crate_data.no_core && dep.is_sysroot()
-                    }
-                    CrateOrigin::Lang(LangCrateOrigin::Std) => {
-                        crate_data.no_std && dep.is_sysroot()
-                    }
-                    _ => false,
-                };
+
+                // Depending on the crate data of a dependency seems bad for incrementality, but
+                // we only do that for sysroot crates (this is why the order of the `&&` is important)
+                // - which are normally standard library crate, which realistically aren't going
+                // to have their crate ID invalidated, because they stay on the same root file and
+                // they're dependencies of everything else, so if some collision miraculously occurs
+                // we will resolve it by disambiguating the other crate.
+                let skip = dep.is_sysroot()
+                    && match self.db.crate_data(dep.crate_id).origin {
+                        CrateOrigin::Lang(LangCrateOrigin::Core) => crate_data.no_core,
+                        CrateOrigin::Lang(LangCrateOrigin::Std) => crate_data.no_std,
+                        _ => false,
+                    };
                 if skip {
                     continue;
                 }
@@ -2538,7 +2540,7 @@ mod tests {
         let (db, file_id) = TestDB::with_single_file(not_ra_fixture);
         let krate = db.test_crate();
 
-        let edition = db.crate_graph()[krate].edition;
+        let edition = db.crate_data(krate).edition;
         let module_origin = ModuleOrigin::CrateRoot { definition: file_id };
         let def_map = DefMap::empty(
             krate,

@@ -69,7 +69,7 @@ use la_arena::Arena;
 use rustc_hash::{FxHashMap, FxHashSet};
 use span::{Edition, EditionedFileId, FileAstId, FileId, ROOT_ERASED_FILE_AST_ID};
 use stdx::format_to;
-use syntax::{ast, AstNode, SmolStr, SyntaxNode};
+use syntax::{ast, AstNode, SmolStr, SyntaxNode, ToSmolStr};
 use triomphe::Arc;
 use tt::TextRange;
 
@@ -333,9 +333,17 @@ impl DefMap {
     }
 
     pub(crate) fn crate_def_map_query(db: &dyn DefDatabase, crate_id: CrateId) -> Arc<DefMap> {
-        let crate_graph = db.crate_graph();
-        let krate = &crate_graph[crate_id];
-        let name = krate.display_name.as_deref().unwrap_or_default();
+        let krate = db.crate_data(crate_id);
+        // Do not create a dependency between def map and extra_crate_data if logging is disabled.
+        let name = if tracing::enabled!(target: "crate_def_map_query", tracing::Level::INFO) {
+            db.extra_crate_data(crate_id)
+                .display_name
+                .as_ref()
+                .map(|it| it.crate_name().to_smolstr())
+                .unwrap_or_default()
+        } else {
+            SmolStr::new_inline("")
+        };
         let _p = tracing::info_span!("crate_def_map_query", ?name).entered();
 
         let module_data = ModuleData::new(

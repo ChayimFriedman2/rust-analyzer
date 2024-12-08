@@ -8,7 +8,7 @@ use std::{ops::Not as _, time::Instant};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use hir::ChangeWithProcMacros;
 use ide::{Analysis, AnalysisHost, Cancellable, FileId, SourceRootId};
-use ide_db::base_db::{CrateId, ProcMacroPaths, SourceDatabase, SourceRootDatabase};
+use ide_db::base_db::{BuiltProcMacroPaths, CrateId, SourceDatabase, SourceRootDatabase};
 use itertools::Itertools;
 use load_cargo::SourceRootConfig;
 use lsp_types::{SemanticTokens, Url};
@@ -158,7 +158,7 @@ pub(crate) struct GlobalState {
     // op queues
     pub(crate) fetch_workspaces_queue: OpQueue<FetchWorkspaceRequest, FetchWorkspaceResponse>,
     pub(crate) fetch_build_data_queue: OpQueue<(), FetchBuildDataResponse>,
-    pub(crate) fetch_proc_macros_queue: OpQueue<Vec<ProcMacroPaths>, bool>,
+    pub(crate) fetch_proc_macros_queue: OpQueue<Vec<BuiltProcMacroPaths>, bool>,
     pub(crate) prime_caches_queue: OpQueue,
     pub(crate) discover_workspace_queue: OpQueue,
 

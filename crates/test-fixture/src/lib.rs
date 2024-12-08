@@ -2,8 +2,9 @@
 use std::{iter, mem, str::FromStr, sync};
 
 use base_db::{
-    CrateDisplayName, CrateGraph, CrateId, CrateName, CrateOrigin, CrateWorkspaceData, Dependency,
-    Env, FileChange, FileSet, LangCrateOrigin, SourceRoot, SourceRootDatabase, Version, VfsPath,
+    CrateDisplayName, CrateGraphBuilder, CrateId, CrateName, CrateOrigin, CrateWorkspaceData,
+    DependencyBuilder, Env, FileChange, FileSet, LangCrateOrigin, SourceRoot, SourceRootDatabase,
+    Version, VfsPath,
 };
 use cfg::CfgOptions;
 use hir_expand::{
@@ -18,6 +19,7 @@ use hir_expand::{
 use intern::Symbol;
 use rustc_hash::FxHashMap;
 use span::{Edition, EditionedFileId, FileId, Span};
+use stdx::itertools::Either;
 use test_utils::{
     extract_range_or_offset, Fixture, FixtureWithProjectMeta, RangeOrOffset, CURSOR_MARKER,
     ESCAPED_CURSOR_MARKER,
@@ -92,14 +94,16 @@ pub trait WithFixture: Default + ExpandDatabase + SourceRootDatabase + 'static {
         (db, file_id, range_or_offset)
     }
 
+    fn all_test_crates(&self) -> Vec<CrateId> {
+        self.all_crates()
+            .iter()
+            .copied()
+            .filter(|&krate| !self.crate_data(krate).origin.is_lang())
+            .collect()
+    }
+
     fn test_crate(&self) -> CrateId {
-        let crate_graph = self.crate_graph();
-        let mut it = crate_graph.iter();
-        let mut res = it.next().unwrap();
-        while crate_graph[res].origin.is_lang() {
-            res = it.next().unwrap();
-        }
-        res
+        self.all_test_crates()[0]
     }
 }
 
@@ -137,7 +141,7 @@ impl ChangeFixture {
         let mut source_change = FileChange::new();
 
         let mut files = Vec::new();
-        let mut crate_graph = CrateGraph::default();
+        let mut crate_graph = CrateGraphBuilder::default();
         let mut crates = FxHashMap::default();
         let mut crate_deps = Vec::new();
         let mut default_crate_root: Option<FileId> = None;
@@ -248,11 +252,11 @@ impl ChangeFixture {
             for (from, to, prelude) in crate_deps {
                 let from_id = crates[&from];
                 let to_id = crates[&to];
-                let sysroot = crate_graph[to_id].origin.is_lang();
+                let sysroot = crate_graph[to_id].basic.origin.is_lang();
                 crate_graph
                     .add_dep(
                         from_id,
-                        Dependency::with_prelude(
+                        DependencyBuilder::with_prelude(
                             CrateName::new(&to).unwrap(),
                             to_id,
                             prelude,
@@ -273,7 +277,7 @@ impl ChangeFixture {
 
             source_change.change_file(core_file, Some(mini_core.source_code()));
 
-            let all_crates = crate_graph.crates_in_topological_order();
+            let all_crates = crate_graph.iter().collect::<Vec<_>>();
 
             let core_crate = crate_graph.add_crate_root(
                 core_file,
@@ -294,7 +298,7 @@ impl ChangeFixture {
                 crate_graph
                     .add_dep(
                         krate,
-                        Dependency::with_prelude(
+                        DependencyBuilder::with_prelude(
                             CrateName::new("core").unwrap(),
                             core_crate,
                             true,
@@ -320,7 +324,7 @@ impl ChangeFixture {
 
             source_change.change_file(proc_lib_file, Some(source));
 
-            let all_crates = crate_graph.crates_in_topological_order();
+            let all_crates = crate_graph.iter().collect::<Vec<_>>();
 
             let proc_macros_crate = crate_graph.add_crate_root(
                 proc_lib_file,
@@ -342,7 +346,10 @@ impl ChangeFixture {
                 crate_graph
                     .add_dep(
                         krate,
-                        Dependency::new(CrateName::new("proc_macros").unwrap(), proc_macros_crate),
+                        DependencyBuilder::new(
+                            CrateName::new("proc_macros").unwrap(),
+                            proc_macros_crate,
+                        ),
                     )
                     .unwrap();
             }
@@ -355,20 +362,18 @@ impl ChangeFixture {
         roots.push(root);
 
         let mut change =
-            ChangeWithProcMacros { source_change, proc_macros: Some(proc_macros.build()) };
+            ChangeWithProcMacros { source_change, proc_macros: Some(Either::Left(proc_macros)) };
 
         change.source_change.set_roots(roots);
-        change.source_change.set_ws_data(
-            crate_graph
-                .iter()
-                .zip(iter::repeat(From::from(CrateWorkspaceData {
-                    proc_macro_cwd: None,
-                    data_layout: target_data_layout,
-                    toolchain,
-                })))
-                .collect(),
-        );
-        change.source_change.set_crate_graph(crate_graph);
+        let ws_data = crate_graph
+            .iter()
+            .zip(iter::repeat(From::from(CrateWorkspaceData {
+                proc_macro_cwd: None,
+                data_layout: target_data_layout,
+                toolchain,
+            })))
+            .collect();
+        change.source_change.set_crate_graph_and_ws_data(crate_graph, ws_data);
 
         ChangeFixture { file_position, files, change }
     }

@@ -18,8 +18,7 @@ pub fn prettify_macro_expansion(
     // Because `syntax_bridge::prettify_macro_expansion::prettify_macro_expansion()` clones subtree for `syn`,
     // that means it will be offsetted to the beginning.
     let span_offset = syn.text_range().start();
-    let crate_graph = db.crate_graph();
-    let target_crate = &crate_graph[target_crate_id];
+    let target_crate = db.crate_data(target_crate_id);
     let mut syntax_ctx_id_to_dollar_crate_replacement = FxHashMap::default();
     syntax_bridge::prettify_macro_expansion::prettify_macro_expansion(syn, &mut |dollar_crate| {
         let ctx = span_map.span_at(dollar_crate.text_range().start() + span_offset).ctx;
@@ -42,7 +41,8 @@ pub fn prettify_macro_expansion(
                     target_crate.dependencies.iter().find(|dep| dep.crate_id == macro_def_crate)
                 {
                     make::tokens::ident(&dep.name)
-                } else if let Some(crate_name) = &crate_graph[macro_def_crate].display_name {
+                } else if let Some(crate_name) = &db.extra_crate_data(macro_def_crate).display_name
+                {
                     make::tokens::ident(crate_name.crate_name())
                 } else {
                     return dollar_crate.clone();

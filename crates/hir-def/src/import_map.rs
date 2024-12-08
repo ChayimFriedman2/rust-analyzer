@@ -405,10 +405,8 @@ pub fn search_dependencies(
 ) -> FxHashSet<ItemInNs> {
     let _p = tracing::info_span!("search_dependencies", ?query).entered();
 
-    let graph = db.crate_graph();
-
     let import_maps: Vec<_> =
-        graph[krate].dependencies.iter().map(|dep| db.import_map(dep.crate_id)).collect();
+        db.crate_data(krate).dependencies.iter().map(|dep| db.import_map(dep.crate_id)).collect();
 
     let mut op = fst::map::OpBuilder::new();
 
@@ -511,11 +509,12 @@ mod tests {
 
     fn check_search(ra_fixture: &str, crate_name: &str, query: Query, expect: Expect) {
         let db = TestDB::with_files(ra_fixture);
-        let crate_graph = db.crate_graph();
-        let krate = crate_graph
+        let all_crates = db.all_crates();
+        let krate = all_crates
             .iter()
+            .copied()
             .find(|&krate| {
-                crate_graph[krate]
+                db.extra_crate_data(krate)
                     .display_name
                     .as_ref()
                     .is_some_and(|it| &**it.crate_name() == crate_name)
@@ -544,7 +543,7 @@ mod tests {
 
                 Some(format!(
                     "{}::{} ({})\n",
-                    crate_graph[dependency_krate].display_name.as_ref()?,
+                    db.extra_crate_data(dependency_krate).display_name.as_ref()?,
                     path,
                     mark
                 ))
@@ -589,12 +588,13 @@ mod tests {
 
     fn check(ra_fixture: &str, expect: Expect) {
         let db = TestDB::with_files(ra_fixture);
-        let crate_graph = db.crate_graph();
+        let all_crates = db.all_crates();
 
-        let actual = crate_graph
+        let actual = all_crates
             .iter()
+            .copied()
             .filter_map(|krate| {
-                let cdata = &crate_graph[krate];
+                let cdata = &db.extra_crate_data(krate);
                 let name = cdata.display_name.as_ref()?;
 
                 let map = db.import_map(krate);

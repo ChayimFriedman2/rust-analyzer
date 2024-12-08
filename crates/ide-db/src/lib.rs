@@ -51,8 +51,8 @@ use std::{fmt, mem::ManuallyDrop};
 
 use base_db::{
     ra_salsa::{self, Durability},
-    AnchoredPath, CrateId, FileLoader, FileLoaderDelegate, SourceDatabase, Upcast,
-    DEFAULT_FILE_TEXT_LRU_CAP,
+    AnchoredPath, CrateGraphBuilder, CrateId, FileLoader, FileLoaderDelegate, SourceDatabase,
+    Upcast, DEFAULT_FILE_TEXT_LRU_CAP,
 };
 use hir::{
     db::{DefDatabase, ExpandDatabase, HirDatabase},
@@ -147,7 +147,9 @@ impl Default for RootDatabase {
 impl RootDatabase {
     pub fn new(lru_capacity: Option<u16>) -> RootDatabase {
         let mut db = RootDatabase { storage: ManuallyDrop::new(ra_salsa::Storage::default()) };
-        db.set_crate_graph_with_durability(Default::default(), Durability::HIGH);
+        // This needs to be here otherwise `CrateGraphBuilder` will panic.
+        db.set_all_crates(Arc::new(Box::new([])));
+        CrateGraphBuilder::default().set_in_db(&mut db);
         db.set_proc_macros_with_durability(Default::default(), Durability::HIGH);
         db.set_local_roots_with_durability(Default::default(), Durability::HIGH);
         db.set_library_roots_with_durability(Default::default(), Durability::HIGH);

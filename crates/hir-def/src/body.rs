@@ -189,7 +189,7 @@ impl Body {
                         let item_tree = f.id.item_tree(db);
                         let func = &item_tree[f.id.value];
                         let krate = f.container.module(db).krate;
-                        let crate_graph = db.crate_graph();
+                        let cfg_options = db.crate_cfg(krate);
                         (
                             param_list,
                             (0..func.params.len()).map(move |idx| {
@@ -202,7 +202,7 @@ impl Body {
                                             Idx::from_raw(RawIdx::from(idx as u32)),
                                         ),
                                     )
-                                    .is_cfg_enabled(&crate_graph[krate].cfg_options)
+                                    .is_cfg_enabled(&cfg_options)
                             }),
                         )
                     });

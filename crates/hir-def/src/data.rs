@@ -56,8 +56,7 @@ impl FunctionData {
             item_tree[func.visibility].clone()
         };
 
-        let crate_graph = db.crate_graph();
-        let cfg_options = &crate_graph[krate].cfg_options;
+        let cfg_options = db.crate_cfg(krate);
         let attr_owner = |idx| {
             item_tree::AttrOwner::Param(loc.id.value, Idx::from_raw(RawIdx::from(idx as u32)))
         };
@@ -66,7 +65,7 @@ impl FunctionData {
         if flags.contains(FnFlags::HAS_SELF_PARAM) {
             // If there's a self param in the syntax, but it is cfg'd out, remove the flag.
             let is_cfgd_out =
-                !item_tree.attrs(db, krate, attr_owner(0usize)).is_cfg_enabled(cfg_options);
+                !item_tree.attrs(db, krate, attr_owner(0usize)).is_cfg_enabled(&cfg_options);
             if is_cfgd_out {
                 cov_mark::hit!(cfgd_out_self_param);
                 flags.remove(FnFlags::HAS_SELF_PARAM);
@@ -74,7 +73,7 @@ impl FunctionData {
         }
         if flags.contains(FnFlags::IS_VARARGS) {
             if let Some((_, param)) = func.params.iter().enumerate().rev().find(|&(idx, _)| {
-                item_tree.attrs(db, krate, attr_owner(idx)).is_cfg_enabled(cfg_options)
+                item_tree.attrs(db, krate, attr_owner(idx)).is_cfg_enabled(&cfg_options)
             }) {
                 if param.type_ref.is_some() {
                     flags.remove(FnFlags::IS_VARARGS);
@@ -94,7 +93,7 @@ impl FunctionData {
             .map(Box::new);
         let rustc_allow_incoherent_impl = attrs.by_key(&sym::rustc_allow_incoherent_impl).exists();
         if flags.contains(FnFlags::HAS_UNSAFE_KW)
-            && !crate_graph[krate].edition.at_least_2024()
+            && !db.crate_data(krate).edition.at_least_2024()
             && attrs.by_key(&sym::rustc_deprecated_safe_2024).exists()
         {
             flags.remove(FnFlags::HAS_UNSAFE_KW);
@@ -107,7 +106,7 @@ impl FunctionData {
                 .iter()
                 .enumerate()
                 .filter(|&(idx, _)| {
-                    item_tree.attrs(db, krate, attr_owner(idx)).is_cfg_enabled(cfg_options)
+                    item_tree.attrs(db, krate, attr_owner(idx)).is_cfg_enabled(&cfg_options)
                 })
                 .filter_map(|(_, param)| param.type_ref)
                 .collect(),
@@ -513,7 +512,7 @@ impl ExternCrateDeclData {
         let crate_id = if name == sym::self_.clone() {
             Some(krate)
         } else {
-            db.crate_graph()[krate].dependencies.iter().find_map(|dep| {
+            db.crate_data(krate).dependencies.iter().find_map(|dep| {
                 if dep.name.symbol() == name.symbol() {
                     Some(dep.crate_id)
                 } else {

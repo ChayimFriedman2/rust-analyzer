@@ -5,7 +5,7 @@ use base_db::{
         debug::{DebugQueryTable, TableEntry},
         Database, Durability, Query, QueryTable,
     },
-    SourceRootId,
+    CratesIdMap, SourceRootId,
 };
 use profile::{memory_usage, Bytes};
 use rustc_hash::FxHashSet;
@@ -19,7 +19,7 @@ impl RootDatabase {
         self.synthetic_write(Durability::LOW);
     }
 
-    pub fn apply_change(&mut self, change: ChangeWithProcMacros) {
+    pub fn apply_change(&mut self, change: ChangeWithProcMacros) -> Option<CratesIdMap> {
         let _p = tracing::info_span!("RootDatabase::apply_change").entered();
         self.request_cancellation();
         tracing::trace!("apply_change {:?}", change);
@@ -37,7 +37,7 @@ impl RootDatabase {
             self.set_local_roots_with_durability(Arc::new(local_roots), Durability::HIGH);
             self.set_library_roots_with_durability(Arc::new(library_roots), Durability::HIGH);
         }
-        change.apply(self);
+        change.apply(self)
     }
 
     // Feature: Memory Usage
@@ -239,7 +239,13 @@ impl RootDatabase {
             // SourceDatabase
             base_db::ParseQuery
             base_db::ParseErrorsQuery
-            base_db::CrateGraphQuery
+            base_db::AllCratesQuery
+            base_db::InternUniqueCrateDataQuery
+            base_db::InternUniqueCrateDataLookupQuery
+            base_db::CrateDataQuery
+            base_db::ExtraCrateDataQuery
+            base_db::CrateCfgQuery
+            base_db::CrateEnvQuery
             base_db::CrateWorkspaceDataQuery
 
             // SourceDatabaseExt

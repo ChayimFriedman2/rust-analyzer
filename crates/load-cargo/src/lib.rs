@@ -7,10 +7,10 @@ use std::{collections::hash_map::Entry, iter, mem, path::Path, sync};
 use crossbeam_channel::{unbounded, Receiver};
 use hir_expand::proc_macro::{
     ProcMacro, ProcMacroExpander, ProcMacroExpansionError, ProcMacroKind, ProcMacroLoadResult,
-    ProcMacros,
+    ProcMacrosBuilder,
 };
 use ide_db::{
-    base_db::{CrateGraph, CrateWorkspaceData, Env, SourceRoot, SourceRootId},
+    base_db::{CrateGraphBuilder, CrateWorkspaceData, Env, SourceRoot, SourceRootId},
     prime_caches, ChangeWithProcMacros, FxHashMap, RootDatabase,
 };
 use itertools::Itertools;
@@ -410,8 +410,8 @@ pub fn load_proc_macro(
 
 fn load_crate_graph(
     ws: &ProjectWorkspace,
-    crate_graph: CrateGraph,
-    proc_macros: ProcMacros,
+    crate_graph: CrateGraphBuilder,
+    proc_macros: ProcMacrosBuilder,
     source_root_config: SourceRootConfig,
     vfs: &mut vfs::Vfs,
     receiver: &Receiver<vfs::loader::Message>,
@@ -535,7 +535,7 @@ mod tests {
         let (db, _vfs, _proc_macro) =
             load_workspace_at(path, &cargo_config, &load_cargo_config, &|_| {}).unwrap();
 
-        let n_crates = db.crate_graph().iter().count();
+        let n_crates = db.all_crates().len();
         // RA has quite a few crates, but the exact count doesn't matter
         assert!(n_crates > 20);
     }

@@ -3,7 +3,7 @@
 use core::fmt;
 use std::{panic::RefUnwindSafe, sync};
 
-use base_db::{CrateId, Env};
+use base_db::{CrateBuilderId, CrateId, Env};
 use intern::Symbol;
 use rustc_hash::FxHashMap;
 use span::Span;
@@ -45,8 +45,31 @@ pub type ProcMacroLoadResult = Result<Vec<ProcMacro>, (String, bool)>;
 type StoredProcMacroLoadResult = Result<Box<[ProcMacro]>, (Box<str>, bool)>;
 
 #[derive(Default, Debug)]
-pub struct ProcMacrosBuilder(FxHashMap<CrateId, StoredProcMacroLoadResult>);
+pub struct ProcMacrosBuilder(FxHashMap<CrateBuilderId, StoredProcMacroLoadResult>);
 impl ProcMacrosBuilder {
+    pub fn insert(&mut self, proc_macros_crate: CrateBuilderId, proc_macro: ProcMacroLoadResult) {
+        self.0.insert(
+            proc_macros_crate,
+            match proc_macro {
+                Ok(it) => Ok(it.into_boxed_slice()),
+                Err((e, hard_err)) => Err((e.into_boxed_str(), hard_err)),
+            },
+        );
+    }
+    pub fn build(self, crates_id_map: &FxHashMap<CrateBuilderId, CrateId>) -> ProcMacros {
+        let mut map = self
+            .0
+            .into_iter()
+            .map(|(krate, proc_macro)| (crates_id_map[&krate], proc_macro))
+            .collect::<FxHashMap<_, _>>();
+        map.shrink_to_fit();
+        ProcMacros(map)
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct BuiltProcMacrosBuilder(FxHashMap<CrateId, StoredProcMacroLoadResult>);
+impl BuiltProcMacrosBuilder {
     pub fn insert(&mut self, proc_macros_crate: CrateId, proc_macro: ProcMacroLoadResult) {
         self.0.insert(
             proc_macros_crate,
@@ -65,13 +88,13 @@ impl ProcMacrosBuilder {
 #[derive(Default, Debug)]
 pub struct ProcMacros(FxHashMap<CrateId, StoredProcMacroLoadResult>);
 
-impl FromIterator<(CrateId, ProcMacroLoadResult)> for ProcMacros {
-    fn from_iter<T: IntoIterator<Item = (CrateId, ProcMacroLoadResult)>>(iter: T) -> Self {
+impl FromIterator<(CrateBuilderId, ProcMacroLoadResult)> for ProcMacrosBuilder {
+    fn from_iter<T: IntoIterator<Item = (CrateBuilderId, ProcMacroLoadResult)>>(iter: T) -> Self {
         let mut builder = ProcMacrosBuilder::default();
         for (k, v) in iter {
             builder.insert(k, v);
         }
-        builder.build()
+        builder
     }
 }
 
@@ -232,13 +255,12 @@ impl CustomProcMacroExpander {
                     }
                 };
 
-                let krate_graph = db.crate_graph();
                 // Proc macros have access to the environment variables of the invoking crate.
-                let env = &krate_graph[calling_crate].env;
+                let env = db.crate_env(calling_crate);
                 match proc_macro.expander.expand(
                     tt,
                     attr_arg,
-                    env,
+                    &env,
                     def_site,
                     call_site,
                     mixed_site,

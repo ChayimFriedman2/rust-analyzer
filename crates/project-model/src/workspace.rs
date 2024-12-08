@@ -6,8 +6,8 @@ use std::{collections::VecDeque, fmt, fs, iter, sync};
 
 use anyhow::Context;
 use base_db::{
-    CrateDisplayName, CrateGraph, CrateId, CrateName, CrateOrigin, Dependency, Env,
-    LangCrateOrigin, ProcMacroPaths, TargetLayoutLoadResult,
+    CrateBuilderId, CrateDisplayName, CrateGraphBuilder, CrateName, CrateOrigin, DependencyBuilder,
+    Env, LangCrateOrigin, ProcMacroPaths, TargetLayoutLoadResult,
 };
 use cfg::{CfgAtom, CfgDiff, CfgOptions};
 use intern::{sym, Symbol};
@@ -743,21 +743,18 @@ impl ProjectWorkspace {
         &self,
         load: FileLoader<'_>,
         extra_env: &FxHashMap<String, String>,
-    ) -> (CrateGraph, ProcMacroPaths) {
+    ) -> (CrateGraphBuilder, ProcMacroPaths) {
         let _p = tracing::info_span!("ProjectWorkspace::to_crate_graph").entered();
 
         let Self { kind, sysroot, cfg_overrides, rustc_cfg, .. } = self;
-        let ((mut crate_graph, proc_macros), sysroot) = match kind {
-            ProjectWorkspaceKind::Json(project) => (
-                project_json_to_crate_graph(
-                    rustc_cfg.clone(),
-                    load,
-                    project,
-                    sysroot,
-                    extra_env,
-                    cfg_overrides,
-                ),
+        let (crate_graph, proc_macros) = match kind {
+            ProjectWorkspaceKind::Json(project) => project_json_to_crate_graph(
+                rustc_cfg.clone(),
+                load,
+                project,
                 sysroot,
+                extra_env,
+                cfg_overrides,
             ),
             ProjectWorkspaceKind::Cargo {
                 cargo,
@@ -766,20 +763,17 @@ impl ProjectWorkspace {
                 cargo_config_extra_env: _,
                 error: _,
                 set_test,
-            } => (
-                cargo_to_crate_graph(
-                    load,
-                    rustc.as_ref().map(|a| a.as_ref()).ok(),
-                    cargo,
-                    sysroot,
-                    rustc_cfg.clone(),
-                    cfg_overrides,
-                    build_scripts,
-                    *set_test,
-                ),
+            } => cargo_to_crate_graph(
+                load,
+                rustc.as_ref().map(|a| a.as_ref()).ok(),
+                cargo,
                 sysroot,
+                rustc_cfg.clone(),
+                cfg_overrides,
+                build_scripts,
+                *set_test,
             ),
-            ProjectWorkspaceKind::DetachedFile { file, cargo: cargo_script, set_test, .. } => (
+            ProjectWorkspaceKind::DetachedFile { file, cargo: cargo_script, set_test, .. } => {
                 if let Some((cargo, build_scripts, _)) = cargo_script {
                     cargo_to_crate_graph(
                         &mut |path| load(path),
@@ -800,16 +794,10 @@ impl ProjectWorkspace {
                         cfg_overrides,
                         *set_test,
                     )
-                },
-                sysroot,
-            ),
+                }
+            }
         };
 
-        if matches!(sysroot.mode(), SysrootMode::Stitched(_)) && crate_graph.patch_cfg_if() {
-            debug!("Patched std to depend on cfg-if")
-        } else {
-            debug!("Did not patch std to depend on cfg-if")
-        }
         (crate_graph, proc_macros)
     }
 
@@ -893,8 +881,8 @@ fn project_json_to_crate_graph(
     sysroot: &Sysroot,
     extra_env: &FxHashMap<String, String>,
     override_cfg: &CfgOverrides,
-) -> (CrateGraph, ProcMacroPaths) {
-    let mut res = (CrateGraph::default(), ProcMacroPaths::default());
+) -> (CrateGraphBuilder, ProcMacroPaths) {
+    let mut res = (CrateGraphBuilder::default(), ProcMacroPaths::default());
     let (crate_graph, proc_macros) = &mut res;
     let (public_deps, libproc_macro) =
         sysroot_to_crate_graph(crate_graph, sysroot, rustc_cfg.clone(), load);
@@ -902,7 +890,7 @@ fn project_json_to_crate_graph(
     let r_a_cfg_flag = CfgAtom::Flag(sym::rust_analyzer.clone());
     let mut cfg_cache: FxHashMap<&str, Vec<CfgAtom>> = FxHashMap::default();
 
-    let idx_to_crate_id: FxHashMap<CrateArrayIdx, CrateId> = project
+    let idx_to_crate_id: FxHashMap<CrateArrayIdx, _> = project
         .crates()
         .filter_map(|(idx, krate)| Some((idx, krate, load(&krate.root_module)?)))
         .map(
@@ -1011,9 +999,9 @@ fn cargo_to_crate_graph(
     override_cfg: &CfgOverrides,
     build_scripts: &WorkspaceBuildScripts,
     set_test: bool,
-) -> (CrateGraph, ProcMacroPaths) {
+) -> (CrateGraphBuilder, ProcMacroPaths) {
     let _p = tracing::info_span!("cargo_to_crate_graph").entered();
-    let mut res = (CrateGraph::default(), ProcMacroPaths::default());
+    let mut res = (CrateGraphBuilder::default(), ProcMacroPaths::default());
     let crate_graph = &mut res.0;
     let proc_macros = &mut res.1;
     let (public_deps, libproc_macro) =
@@ -1200,9 +1188,9 @@ fn detached_file_to_crate_graph(
     sysroot: &Sysroot,
     override_cfg: &CfgOverrides,
     set_test: bool,
-) -> (CrateGraph, ProcMacroPaths) {
+) -> (CrateGraphBuilder, ProcMacroPaths) {
     let _p = tracing::info_span!("detached_file_to_crate_graph").entered();
-    let mut crate_graph = CrateGraph::default();
+    let mut crate_graph = CrateGraphBuilder::default();
     let (public_deps, _libproc_macro) =
         sysroot_to_crate_graph(&mut crate_graph, sysroot, rustc_cfg.clone(), load);
 
@@ -1242,15 +1230,15 @@ fn detached_file_to_crate_graph(
 }
 
 fn handle_rustc_crates(
-    crate_graph: &mut CrateGraph,
+    crate_graph: &mut CrateGraphBuilder,
     proc_macros: &mut ProcMacroPaths,
-    pkg_to_lib_crate: &mut FxHashMap<Package, CrateId>,
+    pkg_to_lib_crate: &mut FxHashMap<Package, CrateBuilderId>,
     load: FileLoader<'_>,
     rustc_workspace: &CargoWorkspace,
     cargo: &CargoWorkspace,
     public_deps: &SysrootPublicDeps,
-    libproc_macro: Option<CrateId>,
-    pkg_crates: &FxHashMap<Package, Vec<(CrateId, TargetKind)>>,
+    libproc_macro: Option<CrateBuilderId>,
+    pkg_crates: &FxHashMap<Package, Vec<(CrateBuilderId, TargetKind)>>,
     cfg_options: &CfgOptions,
     override_cfg: &CfgOverrides,
     build_scripts: &WorkspaceBuildScripts,
@@ -1336,7 +1324,7 @@ fn handle_rustc_crates(
                     // This avoids the situation where `from` depends on e.g. `arrayvec`, but
                     // `rust_analyzer` thinks that it should use the one from the `rustc_source`
                     // instead of the one from `crates.io`
-                    if !crate_graph[*from].dependencies.iter().any(|d| d.name == name) {
+                    if !crate_graph[*from].basic.dependencies.iter().any(|d| d.name == name) {
                         add_dep(crate_graph, *from, name.clone(), to);
                     }
                 }
@@ -1346,7 +1334,7 @@ fn handle_rustc_crates(
 }
 
 fn add_target_crate_root(
-    crate_graph: &mut CrateGraph,
+    crate_graph: &mut CrateGraphBuilder,
     proc_macros: &mut ProcMacroPaths,
     cargo: &CargoWorkspace,
     pkg: &PackageData,
@@ -1356,7 +1344,7 @@ fn add_target_crate_root(
     cargo_name: &str,
     kind: TargetKind,
     origin: CrateOrigin,
-) -> CrateId {
+) -> CrateBuilderId {
     let edition = pkg.edition;
     let potential_cfg_options = if pkg.features.is_empty() {
         None
@@ -1419,12 +1407,12 @@ fn add_target_crate_root(
 
 #[derive(Default, Debug)]
 struct SysrootPublicDeps {
-    deps: Vec<(CrateName, CrateId, bool)>,
+    deps: Vec<(CrateName, CrateBuilderId, bool)>,
 }
 
 impl SysrootPublicDeps {
     /// Makes `from` depend on the public sysroot crates.
-    fn add_to_crate_graph(&self, crate_graph: &mut CrateGraph, from: CrateId) {
+    fn add_to_crate_graph(&self, crate_graph: &mut CrateGraphBuilder, from: CrateBuilderId) {
         for (name, krate, prelude) in &self.deps {
             add_dep_with_prelude(crate_graph, from, name.clone(), *krate, *prelude, true);
         }
@@ -1432,11 +1420,11 @@ impl SysrootPublicDeps {
 }
 
 fn sysroot_to_crate_graph(
-    crate_graph: &mut CrateGraph,
+    crate_graph: &mut CrateGraphBuilder,
     sysroot: &Sysroot,
     rustc_cfg: Vec<CfgAtom>,
     load: FileLoader<'_>,
-) -> (SysrootPublicDeps, Option<CrateId>) {
+) -> (SysrootPublicDeps, Option<CrateBuilderId>) {
     let _p = tracing::info_span!("sysroot_to_crate_graph").entered();
     match sysroot.mode() {
         SysrootMode::Workspace(cargo) => {
@@ -1468,11 +1456,11 @@ fn sysroot_to_crate_graph(
                 // uninject `test` flag so `core` keeps working.
                 Arc::make_mut(&mut c.cfg_options).apply_diff(diff.clone());
                 // patch the origin
-                if c.origin.is_local() {
+                if c.basic.origin.is_local() {
                     let lang_crate = LangCrateOrigin::from(
-                        c.display_name.as_ref().map_or("", |it| it.canonical_name().as_str()),
+                        c.extra.display_name.as_ref().map_or("", |it| it.canonical_name().as_str()),
                     );
-                    c.origin = CrateOrigin::Lang(lang_crate);
+                    c.basic.origin = CrateOrigin::Lang(lang_crate);
                     match lang_crate {
                         LangCrateOrigin::Test
                         | LangCrateOrigin::Alloc
@@ -1522,7 +1510,7 @@ fn sysroot_to_crate_graph(
                 cfg_options.insert_atom(sym::miri.clone());
                 cfg_options
             });
-            let sysroot_crates: FxHashMap<SysrootCrate, CrateId> = stitched
+            let sysroot_crates: FxHashMap<SysrootCrate, CrateBuilderId> = stitched
                 .crates()
                 .filter_map(|krate| {
                     let file_id = load(&stitched[krate].root)?;
@@ -1571,22 +1559,32 @@ fn sysroot_to_crate_graph(
     }
 }
 
-fn add_dep(graph: &mut CrateGraph, from: CrateId, name: CrateName, to: CrateId) {
-    add_dep_inner(graph, from, Dependency::new(name, to))
+fn add_dep(
+    graph: &mut CrateGraphBuilder,
+    from: CrateBuilderId,
+    name: CrateName,
+    to: CrateBuilderId,
+) {
+    add_dep_inner(graph, from, DependencyBuilder::new(name, to))
 }
 
 fn add_dep_with_prelude(
-    graph: &mut CrateGraph,
-    from: CrateId,
+    graph: &mut CrateGraphBuilder,
+    from: CrateBuilderId,
     name: CrateName,
-    to: CrateId,
+    to: CrateBuilderId,
     prelude: bool,
     sysroot: bool,
 ) {
-    add_dep_inner(graph, from, Dependency::with_prelude(name, to, prelude, sysroot))
+    add_dep_inner(graph, from, DependencyBuilder::with_prelude(name, to, prelude, sysroot))
 }
 
-fn add_proc_macro_dep(crate_graph: &mut CrateGraph, from: CrateId, to: CrateId, prelude: bool) {
+fn add_proc_macro_dep(
+    crate_graph: &mut CrateGraphBuilder,
+    from: CrateBuilderId,
+    to: CrateBuilderId,
+    prelude: bool,
+) {
     add_dep_with_prelude(
         crate_graph,
         from,
@@ -1597,7 +1595,7 @@ fn add_proc_macro_dep(crate_graph: &mut CrateGraph, from: CrateId, to: CrateId, 
     );
 }
 
-fn add_dep_inner(graph: &mut CrateGraph, from: CrateId, dep: Dependency) {
+fn add_dep_inner(graph: &mut CrateGraphBuilder, from: CrateBuilderId, dep: DependencyBuilder) {
     if let Err(err) = graph.add_dep(from, dep) {
         tracing::warn!("{}", err)
     }

@@ -524,7 +524,7 @@ impl chalk_solve::RustIrDatabase<Interner> for ChalkContext<'_> {
 
 impl ChalkContext<'_> {
     fn edition(&self) -> Edition {
-        self.db.crate_graph()[self.krate].edition
+        self.db.crate_data(self.krate).edition
     }
 
     fn for_trait_impls(
@@ -854,7 +854,7 @@ fn impl_def_datum(
         "impl {:?}: {}{} where {:?}",
         chalk_id,
         if negative { "!" } else { "" },
-        trait_ref.display(db, db.crate_graph()[krate].edition),
+        trait_ref.display(db, db.crate_data(krate).edition),
         where_clauses
     );
 

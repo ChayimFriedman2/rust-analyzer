@@ -15,10 +15,12 @@
 // FIXME: This is a mess that needs some untangling work
 use std::{iter, mem};
 
-use hir::{db::DefDatabase, ChangeWithProcMacros, ProcMacros, ProcMacrosBuilder};
-use ide::CrateId;
+use hir::{db::DefDatabase, BuiltProcMacrosBuilder, ChangeWithProcMacros, ProcMacros};
 use ide_db::{
-    base_db::{ra_salsa::Durability, CrateGraph, CrateWorkspaceData, ProcMacroPaths},
+    base_db::{
+        ra_salsa::Durability, BuiltProcMacroPaths, CrateBuilderId, CrateGraphBuilder,
+        CrateWorkspaceData, ProcMacroPaths,
+    },
     FxHashMap,
 };
 use itertools::Itertools;
@@ -381,7 +383,7 @@ impl GlobalState {
         });
     }
 
-    pub(crate) fn fetch_proc_macros(&mut self, cause: Cause, paths: Vec<ProcMacroPaths>) {
+    pub(crate) fn fetch_proc_macros(&mut self, cause: Cause, paths: Vec<BuiltProcMacroPaths>) {
         info!(%cause, "will load proc macros");
         let ignored_proc_macros = self.config.ignored_proc_macros(None).clone();
         let proc_macro_clients = self.proc_macro_clients.clone();
@@ -397,7 +399,7 @@ impl GlobalState {
                 }
             };
 
-            let mut builder = ProcMacrosBuilder::default();
+            let mut builder = BuiltProcMacrosBuilder::default();
             let chain = proc_macro_clients
                 .iter()
                 .map(|res| res.as_ref().map_err(|e| e.to_string()))
@@ -440,7 +442,7 @@ impl GlobalState {
 
     pub(crate) fn set_proc_macros(&mut self, proc_macros: ProcMacros) {
         let mut change = ChangeWithProcMacros::new();
-        change.set_proc_macros(proc_macros);
+        change.set_built_proc_macros(proc_macros);
         self.analysis_host.apply_change(change);
     }
 
@@ -719,7 +721,6 @@ impl GlobalState {
                     .map(|id| (id, Err(("proc-macro has not been built yet".to_owned(), true))))
                     .collect(),
             );
-            self.fetch_proc_macros_queue.request_op(cause, proc_macro_paths);
         } else {
             change.set_proc_macros(
                 crate_graph
@@ -729,7 +730,17 @@ impl GlobalState {
             );
         }
         change.set_crate_graph(crate_graph, ws_data);
-        self.analysis_host.apply_change(change);
+        let crates_id_map =
+            self.analysis_host.apply_change(change).expect("we set the crate graph");
+        if self.config.expand_proc_macros() {
+            let proc_macro_paths = proc_macro_paths
+                .into_iter()
+                .map(|path| {
+                    path.into_iter().map(|(krate, path)| (crates_id_map[&krate], path)).collect()
+                })
+                .collect();
+            self.fetch_proc_macros_queue.request_op(cause, proc_macro_paths);
+        }
         self.report_progress(
             "Building CrateGraph",
             crate::lsp::utils::Progress::End,
@@ -870,8 +881,8 @@ pub fn ws_to_crate_graph(
     workspaces: &[ProjectWorkspace],
     extra_env: &FxHashMap<String, String>,
     mut load: impl FnMut(&AbsPath) -> Option<vfs::FileId>,
-) -> (CrateGraph, Vec<ProcMacroPaths>, FxHashMap<CrateId, Arc<CrateWorkspaceData>>) {
-    let mut crate_graph = CrateGraph::default();
+) -> (CrateGraphBuilder, Vec<ProcMacroPaths>, FxHashMap<CrateBuilderId, Arc<CrateWorkspaceData>>) {
+    let mut crate_graph = CrateGraphBuilder::default();
     let mut proc_macro_paths = Vec::default();
     let mut ws_data = FxHashMap::default();
     for ws in workspaces {

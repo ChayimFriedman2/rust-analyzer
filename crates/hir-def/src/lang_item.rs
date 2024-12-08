@@ -184,7 +184,7 @@ impl LangItems {
         {
             return Some(target);
         }
-        db.crate_graph()[start_crate]
+        db.crate_data(start_crate)
             .dependencies
             .iter()
             .find_map(|dep| db.lang_item(dep.crate_id, item))
@@ -214,10 +214,8 @@ pub(crate) fn notable_traits_in_deps(
     krate: CrateId,
 ) -> Arc<[Arc<[TraitId]>]> {
     let _p = tracing::info_span!("notable_traits_in_deps", ?krate).entered();
-    let crate_graph = db.crate_graph();
-
     Arc::from_iter(
-        crate_graph.transitive_deps(krate).filter_map(|krate| db.crate_notable_traits(krate)),
+        db.transitive_deps(krate).into_iter().filter_map(|krate| db.crate_notable_traits(krate)),
     )
 }
 

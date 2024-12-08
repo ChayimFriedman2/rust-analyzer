@@ -38,7 +38,7 @@ const _: () =
 /// `Arc<Box<str>>` but its size is that of a thin pointer. The active variant is encoded as a tag
 /// in the LSB of the alignment niche.
 // Note, Ideally this would encode a `ThinArc<str>` and `ThinRef<str>`/`ThinConstPtr<str>` instead of the double indirection.
-#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug, PartialOrd, Ord)]
 struct TaggedArcPtr {
     packed: NonNull<*const str>,
 }
@@ -143,7 +143,7 @@ impl TaggedArcPtr {
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Symbol {
     repr: TaggedArcPtr,
 }
