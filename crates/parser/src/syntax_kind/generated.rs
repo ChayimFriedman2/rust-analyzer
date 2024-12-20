@@ -224,6 +224,7 @@ pub enum SyntaxKind {
     INFER_TYPE,
     ITEM,
     ITEM_LIST,
+    ITEM_RECOVERY,
     LABEL,
     LET_ELSE,
     LET_EXPR,

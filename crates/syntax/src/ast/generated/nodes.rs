@@ -885,6 +885,15 @@ impl ItemList {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ItemRecovery {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ItemRecovery {
+    #[inline]
+    pub fn path(&self) -> Option<Path> { support::child(&self.syntax) }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Label {
     pub(crate) syntax: SyntaxNode,
 }
@@ -3276,6 +3285,20 @@ impl AstNode for InferType {
 impl AstNode for ItemList {
     #[inline]
     fn can_cast(kind: SyntaxKind) -> bool { kind == ITEM_LIST }
+    #[inline]
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    #[inline]
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for ItemRecovery {
+    #[inline]
+    fn can_cast(kind: SyntaxKind) -> bool { kind == ITEM_RECOVERY }
     #[inline]
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
@@ -6949,6 +6972,11 @@ impl std::fmt::Display for InferType {
     }
 }
 impl std::fmt::Display for ItemList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for ItemRecovery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }
