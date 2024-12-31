@@ -8,9 +8,10 @@ use ide_db::{
     base_db::{
         ra_salsa::{
             debug::{DebugQueryTable, TableEntry},
-            Query, QueryTable,
+            InternKey, Query, QueryTable,
         },
-        CompressedFileTextQuery, CrateData, ParseQuery, SourceDatabase, SourceRootId,
+        CompressedFileTextQuery, CrateData, ExtraCrateData, ParseQuery, SourceDatabase,
+        SourceRootId,
     },
     symbol_index::ModuleSymbolsQuery,
 };
@@ -56,26 +57,19 @@ pub(crate) fn status(db: &RootDatabase, file_id: Option<FileId>) -> String {
         if crates.is_empty() {
             format_to!(buf, "Does not belong to any crate");
         }
-        let crate_graph = db.crate_graph();
         for crate_id in crates {
-            let CrateData {
-                root_file_id,
-                edition,
-                version,
-                display_name,
-                cfg_options,
-                potential_cfg_options,
-                env,
-                dependencies,
-                origin,
-                is_proc_macro,
-            } = &crate_graph[crate_id];
+            let CrateData { root_file_id, edition, dependencies, origin, is_proc_macro } =
+                &*db.crate_data(crate_id);
+            let ExtraCrateData { version, display_name, potential_cfg_options } =
+                &*db.extra_crate_data(crate_id);
+            let cfg_options = db.crate_cfg(crate_id);
+            let env = db.crate_env(crate_id);
             format_to!(
                 buf,
                 "Crate: {}\n",
                 match display_name {
-                    Some(it) => format!("{it}({})", crate_id.into_raw()),
-                    None => format!("{}", crate_id.into_raw()),
+                    Some(it) => format!("{it}({})", crate_id.as_intern_id()),
+                    None => format!("{}", crate_id.as_intern_id()),
                 }
             );
             format_to!(buf, "    Root module file id: {}\n", root_file_id.index());
@@ -88,7 +82,7 @@ pub(crate) fn status(db: &RootDatabase, file_id: Option<FileId>) -> String {
             format_to!(buf, "    Is a proc macro crate: {}\n", is_proc_macro);
             let deps = dependencies
                 .iter()
-                .map(|dep| format!("{}={}", dep.name, dep.crate_id.into_raw()))
+                .map(|dep| format!("{}={}", dep.name, dep.crate_id.as_intern_id()))
                 .format(", ");
             format_to!(buf, "    Dependencies: {}\n", deps);
         }

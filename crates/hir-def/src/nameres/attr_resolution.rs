@@ -13,7 +13,7 @@ use triomphe::Arc;
 use crate::{
     db::DefDatabase,
     item_scope::BuiltinShadowMode,
-    nameres::path_resolution::ResolveMode,
+    nameres::{path_resolution::ResolveMode, LocalDefMap},
     path::{self, ModPath, PathKind},
     AstIdWithPath, LocalModuleId, MacroId, UnresolvedMacro,
 };
@@ -30,6 +30,7 @@ pub enum ResolvedAttr {
 impl DefMap {
     pub(crate) fn resolve_attr_macro(
         &self,
+        local_def_map: &LocalDefMap,
         db: &dyn DefDatabase,
         original_module: LocalModuleId,
         ast_id: AstIdWithPath<ast::Item>,
@@ -42,6 +43,7 @@ impl DefMap {
         }
 
         let resolved_res = self.resolve_path_fp_with_macro(
+            local_def_map,
             db,
             ResolveMode::Other,
             original_module,

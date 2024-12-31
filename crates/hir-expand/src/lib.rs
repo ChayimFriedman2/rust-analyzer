@@ -199,7 +199,7 @@ impl ExpandErrorKind {
                 kind: "proc-macro-disabled",
             },
             &ExpandErrorKind::MissingProcMacroExpander(def_crate) => {
-                match db.proc_macros().get_error_for_crate(def_crate) {
+                match db.proc_macros_for_crate(def_crate).as_ref().and_then(|it| it.get_error()) {
                     Some((e, hard_err)) => RenderedExpandError {
                         message: e.to_owned(),
                         error: hard_err,

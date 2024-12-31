@@ -21,6 +21,8 @@ extern crate rustc_pattern_analysis;
 #[cfg(not(feature = "in-rust-tree"))]
 extern crate ra_ap_rustc_pattern_analysis as rustc_pattern_analysis;
 
+static TRACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 mod builder;
 mod chalk_db;
 mod chalk_ext;

@@ -35,12 +35,14 @@ pub fn parallel_prime_caches(
 ) {
     let _p = tracing::info_span!("parallel_prime_caches").entered();
 
-    let graph = db.crate_graph();
     let mut crates_to_prime = {
+        // FIXME: We already have the crate list topologically sorted (but without the things
+        // `TopologicalSortIter` gives us). Maybe there is a way to avoid using it and rip it out
+        // of the codebase?
         let mut builder = topologic_sort::TopologicalSortIter::builder();
 
-        for crate_id in graph.iter() {
-            builder.add(crate_id, graph[crate_id].dependencies.iter().map(|d| d.crate_id));
+        for &crate_id in db.all_crates().iter() {
+            builder.add(crate_id, db.crate_data(crate_id).dependencies.iter().map(|d| d.crate_id));
         }
 
         builder.build()
@@ -54,7 +56,6 @@ pub fn parallel_prime_caches(
     let (work_sender, progress_receiver) = {
         let (progress_sender, progress_receiver) = crossbeam_channel::unbounded();
         let (work_sender, work_receiver) = crossbeam_channel::unbounded();
-        let graph = graph.clone();
         let local_roots = db.local_roots();
         let prime_caches_worker = move |db: Snapshot<RootDatabase>| {
             while let Ok((crate_id, crate_name)) = work_receiver.recv() {
@@ -62,7 +63,7 @@ pub fn parallel_prime_caches(
                     .send(ParallelPrimeCacheWorkerProgress::BeginCrate { crate_id, crate_name })?;
 
                 // Compute the DefMap and possibly ImportMap
-                let file_id = graph[crate_id].root_file_id;
+                let file_id = db.crate_data(crate_id).root_file_id;
                 let root_id = db.file_source_root(file_id);
                 if db.source_root(root_id).is_library {
                     db.crate_def_map(crate_id);
@@ -112,6 +113,7 @@ pub fn parallel_prime_caches(
     let mut crates_currently_indexing =
         FxIndexMap::with_capacity_and_hasher(num_worker_threads, Default::default());
 
+    crate::TRACK_EXECUTIONS.store(true, std::sync::atomic::Ordering::Relaxed);
     while crates_done < crates_total {
         db.unwind_if_cancelled();
 
@@ -119,7 +121,11 @@ pub fn parallel_prime_caches(
             work_sender
                 .send((
                     crate_id,
-                    graph[crate_id].display_name.as_deref().unwrap_or_default().to_owned(),
+                    db.extra_crate_data(crate_id)
+                        .display_name
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_owned(),
                 ))
                 .ok();
         }
@@ -157,4 +163,5 @@ pub fn parallel_prime_caches(
 
         cb(progress);
     }
+    crate::TRACK_EXECUTIONS.store(false, std::sync::atomic::Ordering::Relaxed);
 }

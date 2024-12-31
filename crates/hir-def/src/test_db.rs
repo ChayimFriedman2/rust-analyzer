@@ -35,6 +35,8 @@ impl Default for TestDB {
         let mut this = Self { storage: Default::default(), events: Default::default() };
         this.setup_syntax_context_root();
         this.set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
+        // This needs to be here otherwise `CrateGraphBuilder` panics.
+        this.set_all_crates(Arc::new(Box::new([])));
         this
     }
 }
@@ -79,16 +81,18 @@ impl FileLoader for TestDB {
 
 impl TestDB {
     pub(crate) fn fetch_test_crate(&self) -> CrateId {
-        let crate_graph = self.crate_graph();
-        let it = crate_graph
+        let all_crates = self.all_crates();
+        all_crates
             .iter()
-            .find(|&idx| {
-                crate_graph[idx].display_name.as_ref().map(|it| it.canonical_name().as_str())
+            .copied()
+            .find(|&krate| {
+                self.extra_crate_data(krate)
+                    .display_name
+                    .as_ref()
+                    .map(|it| it.canonical_name().as_str())
                     == Some("ra_test_fixture")
             })
-            .or_else(|| crate_graph.iter().next())
-            .unwrap();
-        it
+            .unwrap_or(all_crates[all_crates.len() - 1])
     }
 
     pub(crate) fn module_for_file(&self, file_id: FileId) -> ModuleId {

@@ -107,4 +107,31 @@ fn foo() {
     "#,
         );
     }
+
+    #[test]
+    fn foo() {
+        check_diagnostics(
+            r#"
+//- /a.rs crate:a
+#[macro_export]
+macro_rules! unknown { () => {} }
+#[macro_export]
+macro_rules! known_a {
+    () => { $crate::unknown!(); };
+}
+
+//- /b.rs crate:b deps:a
+pub use a::known_a;
+#[macro_export]
+macro_rules! known_b {
+    () => { $crate::known_a!(); };
+}
+
+//- /c.rs crate:c deps:b
+fn foo() {
+    b::known_b!();
+}
+        "#,
+        );
+    }
 }

@@ -80,7 +80,15 @@ pub(crate) fn print_path(
             }
             PathKind::Crate => write!(buf, "crate")?,
             PathKind::Abs => {}
-            PathKind::DollarCrate(_) => write!(buf, "$crate")?,
+            PathKind::DollarCrate(krate) => write!(
+                buf,
+                "{}",
+                db.extra_crate_data(*krate)
+                    .display_name
+                    .as_ref()
+                    .map(|it| it.crate_name().symbol().as_str())
+                    .unwrap_or("$crate")
+            )?,
         },
     }
 

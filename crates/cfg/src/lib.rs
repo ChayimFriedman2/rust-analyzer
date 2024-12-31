@@ -104,6 +104,12 @@ impl CfgOptions {
             _ => None,
         })
     }
+
+    pub fn to_hashable(&self) -> HashableCfgOptions {
+        let mut enabled = self.enabled.iter().cloned().collect::<Box<[_]>>();
+        enabled.sort_unstable();
+        HashableCfgOptions { _enabled: enabled }
+    }
 }
 
 impl Extend<CfgAtom> for CfgOptions {
@@ -158,6 +164,13 @@ impl CfgDiff {
         }
 
         Some(CfgDiff { enable, disable })
+    }
+
+    pub fn from_cfg_options(first: &CfgOptions, second: &CfgOptions) -> CfgDiff {
+        CfgDiff {
+            enable: second.enabled.difference(&first.enabled).cloned().collect(),
+            disable: first.enabled.difference(&second.enabled).cloned().collect(),
+        }
     }
 
     /// Returns the total number of atoms changed by this diff.
@@ -251,4 +264,10 @@ impl fmt::Display for InactiveReason {
 
         Ok(())
     }
+}
+
+/// A `CfgOptions` that implements `Hash`, for the sake of hashing only.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HashableCfgOptions {
+    _enabled: Box<[CfgAtom]>,
 }

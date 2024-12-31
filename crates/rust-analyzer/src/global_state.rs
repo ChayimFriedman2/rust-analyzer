@@ -158,7 +158,7 @@ pub(crate) struct GlobalState {
     // op queues
     pub(crate) fetch_workspaces_queue: OpQueue<FetchWorkspaceRequest, FetchWorkspaceResponse>,
     pub(crate) fetch_build_data_queue: OpQueue<(), FetchBuildDataResponse>,
-    pub(crate) fetch_proc_macros_queue: OpQueue<Vec<ProcMacroPaths>, bool>,
+    pub(crate) fetch_proc_macros_queue: OpQueue<(ChangeWithProcMacros, Vec<ProcMacroPaths>), bool>,
     pub(crate) prime_caches_queue: OpQueue,
     pub(crate) discover_workspace_queue: OpQueue,
 

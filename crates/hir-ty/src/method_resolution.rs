@@ -177,10 +177,8 @@ impl TraitImpls {
         krate: CrateId,
     ) -> Arc<[Arc<Self>]> {
         let _p = tracing::info_span!("trait_impls_in_deps_query", ?krate).entered();
-        let crate_graph = db.crate_graph();
-
         Arc::from_iter(
-            crate_graph.transitive_deps(krate).map(|krate| db.trait_impls_in_crate(krate)),
+            db.transitive_deps(krate).into_iter().map(|krate| db.trait_impls_in_crate(krate)),
         )
     }
 
@@ -371,11 +369,10 @@ pub(crate) fn incoherent_inherent_impl_crates(
 ) -> SmallVec<[CrateId; 2]> {
     let _p = tracing::info_span!("incoherent_inherent_impl_crates").entered();
     let mut res = SmallVec::new();
-    let crate_graph = db.crate_graph();
 
     // should pass crate for finger print and do reverse deps
 
-    for krate in crate_graph.transitive_deps(krate) {
+    for krate in db.transitive_deps(krate) {
         let impls = db.inherent_impls_in_crate(krate);
         if impls.map.get(&fp).map_or(false, |v| !v.is_empty()) {
             res.push(krate);
@@ -1162,7 +1159,7 @@ fn iterate_trait_method_candidates(
         {
             // FIXME: this should really be using the edition of the method name's span, in case it
             // comes from a macro
-            if !db.crate_graph()[krate].edition.at_least_2021() {
+            if !db.crate_data(krate).edition.at_least_2021() {
                 continue;
             }
         }
@@ -1175,7 +1172,7 @@ fn iterate_trait_method_candidates(
         {
             // FIXME: this should really be using the edition of the method name's span, in case it
             // comes from a macro
-            if !db.crate_graph()[krate].edition.at_least_2024() {
+            if !db.crate_data(krate).edition.at_least_2024() {
                 continue;
             }
         }

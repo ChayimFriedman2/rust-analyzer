@@ -379,7 +379,8 @@ impl TyExt for Ty {
             value: InEnvironment::new(&env.env, trait_ref.cast(Interner)),
             binders: CanonicalVarKinds::empty(Interner),
         };
-        db.trait_solve(crate_id, None, goal).is_some()
+        let result = db.trait_solve(crate_id, None, goal);
+        result.is_some()
     }
 
     fn equals_ctor(&self, other: &Ty) -> bool {

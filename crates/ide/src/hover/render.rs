@@ -416,7 +416,7 @@ pub(super) fn path(
     edition: Edition,
 ) -> String {
     let crate_name =
-        db.crate_graph()[module.krate().into()].display_name.as_ref().map(|it| it.to_string());
+        db.extra_crate_data(module.krate().into()).display_name.as_ref().map(|it| it.to_string());
     let module_path = module
         .path_to_root(db)
         .into_iter()

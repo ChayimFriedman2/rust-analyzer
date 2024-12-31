@@ -274,7 +274,7 @@ impl HirFormatter<'_> {
         match self.display_target {
             DisplayTarget::Diagnostics { edition } => edition,
             DisplayTarget::SourceCode { module_id, .. } => {
-                self.db.crate_graph()[module_id.krate()].edition
+                self.db.crate_data(module_id.krate()).edition
             }
             DisplayTarget::Test => Edition::CURRENT,
         }
@@ -550,8 +550,7 @@ fn render_const_scalar(
 ) -> Result<(), HirDisplayError> {
     // FIXME: We need to get krate from the final callers of the hir display
     // infrastructure and have it here as a field on `f`.
-    let trait_env =
-        TraitEnvironment::empty(*f.db.crate_graph().crates_in_topological_order().last().unwrap());
+    let trait_env = TraitEnvironment::empty(*f.db.all_crates().last().unwrap());
     match ty.kind(Interner) {
         TyKind::Scalar(s) => match s {
             Scalar::Bool => write!(f, "{}", b[0] != 0),
@@ -2135,8 +2134,8 @@ impl HirDisplayWithTypesMap for Path {
                 // Resolve `$crate` to the crate's display name.
                 // FIXME: should use the dependency name instead if available, but that depends on
                 // the crate invoking `HirDisplay`
-                let crate_graph = f.db.crate_graph();
-                let name = crate_graph[*id]
+                let crate_data = f.db.extra_crate_data(*id);
+                let name = crate_data
                     .display_name
                     .as_ref()
                     .map(|name| name.canonical_name())

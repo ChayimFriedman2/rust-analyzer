@@ -20,7 +20,7 @@ use crate::{
         span_with_call_site_ctxt, span_with_def_site_ctxt, span_with_mixed_site_ctxt,
         SyntaxContextExt as _,
     },
-    proc_macro::ProcMacros,
+    proc_macro::{CrateProcMacros, ProcMacros},
     span_map::{RealSpanMap, SpanMap, SpanMapRef},
     tt, AstId, BuiltinAttrExpander, BuiltinDeriveExpander, BuiltinFnLikeExpander,
     CustomProcMacroExpander, EagerCallInfo, EagerExpander, ExpandError, ExpandResult, ExpandTo,
@@ -55,9 +55,12 @@ pub enum TokenExpander {
 
 #[ra_salsa::query_group(ExpandDatabaseStorage)]
 pub trait ExpandDatabase: SourceDatabase {
-    /// The proc macros.
+    /// The proc macros. Do not use this! Use `proc_macros_for_crate()` instead.
     #[ra_salsa::input]
     fn proc_macros(&self) -> Arc<ProcMacros>;
+
+    #[ra_salsa::invoke(crate::proc_macro::proc_macros_for_crate)]
+    fn proc_macros_for_crate(&self, krate: CrateId) -> Option<Arc<CrateProcMacros>>;
 
     fn ast_id_map(&self, file_id: HirFileId) -> Arc<AstIdMap>;
 

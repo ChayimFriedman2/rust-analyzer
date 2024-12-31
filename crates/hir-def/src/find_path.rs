@@ -50,7 +50,7 @@ pub fn find_path(
             prefix: prefix_kind,
             cfg,
             ignore_local_imports,
-            is_std_item: db.crate_graph()[item_module.krate()].origin.is_lang(),
+            is_std_item: db.crate_data(item_module.krate()).origin.is_lang(),
             from,
             from_def_map: &from.def_map(db),
             fuel: Cell::new(FIND_PATH_FUEL),
@@ -174,9 +174,9 @@ fn find_path_for_module(
         }
         // - otherwise if the item is the crate root of a dependency crate, return the name from the extern prelude
 
-        let root_def_map = ctx.from.derive_crate_root().def_map(ctx.db);
+        let root_local_def_map = ctx.from.derive_crate_root().local_def_map(ctx.db).1;
         // rev here so we prefer looking at renamed extern decls first
-        for (name, (def_id, _extern_crate)) in root_def_map.extern_prelude().rev() {
+        for (name, (def_id, _extern_crate)) in root_local_def_map.extern_prelude().rev() {
             if crate_root != def_id {
                 continue;
             }
@@ -360,7 +360,7 @@ fn calculate_best_path(
         // too (unless we can't name it at all). It could *also* be (re)exported by the same crate
         // that wants to import it here, but we always prefer to use the external path here.
 
-        ctx.db.crate_graph()[ctx.from.krate].dependencies.iter().for_each(|dep| {
+        ctx.db.crate_data(ctx.from.krate).dependencies.iter().for_each(|dep| {
             find_in_dep(ctx, visited_modules, item, max_len, best_choice, dep.crate_id)
         });
     }
@@ -373,11 +373,10 @@ fn find_in_sysroot(
     max_len: usize,
     best_choice: &mut Option<Choice>,
 ) {
-    let crate_graph = ctx.db.crate_graph();
-    let dependencies = &crate_graph[ctx.from.krate].dependencies;
+    let dependencies = &ctx.db.crate_data(ctx.from.krate).dependencies;
     let mut search = |lang, best_choice: &mut _| {
         if let Some(dep) = dependencies.iter().filter(|it| it.is_sysroot()).find(|dep| {
-            match crate_graph[dep.crate_id].origin {
+            match ctx.db.crate_data(dep.crate_id).origin {
                 CrateOrigin::Lang(l) => l == lang,
                 _ => false,
             }
@@ -683,9 +682,10 @@ mod tests {
         })
         .unwrap();
 
-        let def_map = module.def_map(&db);
+        let (def_map, local_def_map) = module.local_def_map(&db);
         let resolved = def_map
             .resolve_path(
+                &local_def_map,
                 &db,
                 module.local_id,
                 &mod_path,

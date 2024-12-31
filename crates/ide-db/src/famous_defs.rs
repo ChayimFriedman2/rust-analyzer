@@ -175,11 +175,10 @@ impl FamousDefs<'_, '_> {
     fn find_lang_crate(&self, origin: LangCrateOrigin) -> Option<Crate> {
         let krate = self.1;
         let db = self.0.db;
-        let crate_graph = self.0.db.crate_graph();
         let res = krate
             .dependencies(db)
             .into_iter()
-            .find(|dep| crate_graph[dep.krate.into()].origin == CrateOrigin::Lang(origin))?
+            .find(|dep| db.crate_data(dep.krate.into()).origin == CrateOrigin::Lang(origin))?
             .krate;
         Some(res)
     }

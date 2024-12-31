@@ -18,7 +18,7 @@ fn check_cfg(db: &dyn ExpandDatabase, attr: &Attr, krate: CrateId) -> Option<boo
         return None;
     }
     let cfg = parse_from_attr_token_tree(&attr.meta()?.token_tree()?)?;
-    let enabled = db.crate_graph()[krate].cfg_options.check(&cfg) != Some(false);
+    let enabled = db.crate_cfg(krate).check(&cfg) != Some(false);
     Some(enabled)
 }
 
@@ -35,7 +35,7 @@ pub fn check_cfg_attr_value(
     krate: CrateId,
 ) -> Option<bool> {
     let cfg_expr = parse_from_attr_token_tree(attr)?;
-    let enabled = db.crate_graph()[krate].cfg_options.check(&cfg_expr) != Some(false);
+    let enabled = db.crate_cfg(krate).check(&cfg_expr) != Some(false);
     Some(enabled)
 }
 

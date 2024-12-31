@@ -20,7 +20,7 @@ use crate::{
     import_map::ImportMap,
     item_tree::{AttrOwner, ItemTree, ItemTreeSourceMaps},
     lang_item::{self, LangItem, LangItemTarget, LangItems},
-    nameres::{diagnostics::DefDiagnostics, DefMap},
+    nameres::{diagnostics::DefDiagnostics, DefMap, LocalDefMap},
     type_ref::TypesSourceMap,
     visibility::{self, Visibility},
     AttrDefId, BlockId, BlockLoc, ConstBlockId, ConstBlockLoc, ConstId, ConstLoc, DefWithBodyId,
@@ -103,6 +103,9 @@ pub trait DefDatabase: InternDatabase + ExpandDatabase + Upcast<dyn ExpandDataba
         &self,
         block_id: BlockId,
     ) -> (Arc<ItemTree>, Arc<ItemTreeSourceMaps>);
+
+    #[ra_salsa::invoke(DefMap::crate_local_def_map_query)]
+    fn crate_local_def_map(&self, krate: CrateId) -> (Arc<DefMap>, Arc<LocalDefMap>);
 
     #[ra_salsa::invoke(DefMap::crate_def_map_query)]
     fn crate_def_map(&self, krate: CrateId) -> Arc<DefMap>;
@@ -281,7 +284,7 @@ fn include_macro_invoc(
 }
 
 fn crate_supports_no_std(db: &dyn DefDatabase, crate_id: CrateId) -> bool {
-    let file = db.crate_graph()[crate_id].root_file_id();
+    let file = db.crate_data(crate_id).root_file_id();
     let item_tree = db.file_item_tree(file.into());
     let attrs = item_tree.raw_attrs(AttrOwner::TopLevel);
     for attr in &**attrs {

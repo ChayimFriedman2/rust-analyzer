@@ -5,8 +5,9 @@ mod input;
 
 use std::panic;
 
+use cfg::CfgOptions;
 use ra_salsa::Durability;
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use span::EditionedFileId;
 use syntax::{ast, Parse, SourceFile, SyntaxError};
 use triomphe::Arc;
@@ -15,9 +16,10 @@ use vfs::{AbsPathBuf, FileId};
 pub use crate::{
     change::FileChange,
     input::{
-        CrateData, CrateDisplayName, CrateGraph, CrateId, CrateName, CrateOrigin, Dependency, Env,
-        LangCrateOrigin, ProcMacroPaths, ReleaseChannel, SourceRoot, SourceRootId,
-        TargetLayoutLoadResult,
+        CrateBuilder, CrateBuilderId, CrateData, CrateDataBuilder, CrateDisplayName,
+        CrateGraphBuilder, CrateId, CrateName, CrateOrigin, CratesIdMap, Dependency,
+        DependencyBuilder, Env, ExtraCrateData, LangCrateOrigin, ProcMacroPaths, ReleaseChannel,
+        SourceRoot, SourceRootId, TargetLayoutLoadResult, UniqueCrateData,
     },
 };
 pub use ra_salsa::{self, Cancelled};
@@ -71,15 +73,60 @@ pub trait SourceDatabase: FileLoader + std::fmt::Debug {
     /// Returns the set of errors obtained from parsing the file including validation errors.
     fn parse_errors(&self, file_id: EditionedFileId) -> Option<Arc<[SyntaxError]>>;
 
-    /// The crate graph.
     #[ra_salsa::input]
-    fn crate_graph(&self) -> Arc<CrateGraph>;
-
-    #[ra_salsa::input]
-    fn crate_workspace_data(&self) -> Arc<FxHashMap<CrateId, Arc<CrateWorkspaceData>>>;
+    fn crate_workspace_data(&self, krate: CrateId) -> Arc<CrateWorkspaceData>;
 
     #[ra_salsa::transparent]
     fn toolchain_channel(&self, krate: CrateId) -> Option<ReleaseChannel>;
+
+    /// Do not use this query in analysis! It kills incrementality across crate metadata modifications.
+    ///
+    /// Returns the crates in topological order.
+    #[ra_salsa::input]
+    fn all_crates(&self) -> Arc<Box<[CrateId]>>;
+    #[ra_salsa::interned]
+    fn intern_unique_crate_data(&self, crate_data: UniqueCrateData) -> CrateId;
+    #[ra_salsa::input]
+    fn crate_data(&self, crate_id: CrateId) -> Arc<CrateData>;
+    /// Some additional crate data, that is not important for analysis.
+    #[ra_salsa::input]
+    fn extra_crate_data(&self, crate_id: CrateId) -> Arc<ExtraCrateData>;
+    #[ra_salsa::input]
+    fn crate_cfg(&self, crate_id: CrateId) -> Arc<CfgOptions>;
+    #[ra_salsa::input]
+    fn crate_env(&self, crate_id: CrateId) -> Arc<Env>;
+
+    /// Do not use this query in analysis! It kills incrementality across crate metadata modifications.
+    ///
+    /// Returns an iterator over all transitive dependencies of the given crate,
+    /// including the crate itself.
+    #[ra_salsa::transparent]
+    fn transitive_deps(&self, crate_id: CrateId) -> FxHashSet<CrateId>;
+
+    /// Do not use this query in analysis! It kills incrementality across crate metadata modifications.
+    ///
+    /// Returns all transitive reverse dependencies of the given crate,
+    /// including the crate itself.
+    #[ra_salsa::invoke(input::transitive_rev_deps)]
+    #[ra_salsa::transparent]
+    fn transitive_rev_deps(&self, of: CrateId) -> FxHashSet<CrateId>;
+}
+
+pub fn transitive_deps(db: &dyn SourceDatabase, crate_id: CrateId) -> FxHashSet<CrateId> {
+    // There is a bit of duplication here and in `CrateGraphBuilder` in the same method, but it's not terrible
+    // and removing that is a bit difficult.
+    let mut worklist = vec![crate_id];
+    let mut deps = FxHashSet::default();
+
+    while let Some(krate) = worklist.pop() {
+        if !deps.insert(krate) {
+            continue;
+        }
+
+        worklist.extend(db.crate_data(krate).dependencies.iter().map(|dep| dep.crate_id));
+    }
+
+    deps
 }
 
 /// Crate related data shared by the whole workspace.
@@ -94,11 +141,7 @@ pub struct CrateWorkspaceData {
 }
 
 fn toolchain_channel(db: &dyn SourceDatabase, krate: CrateId) -> Option<ReleaseChannel> {
-    db.crate_workspace_data()
-        .get(&krate)?
-        .toolchain
-        .as_ref()
-        .and_then(|v| ReleaseChannel::from_str(&v.pre))
+    db.crate_workspace_data(krate).toolchain.as_ref().and_then(|v| ReleaseChannel::from_str(&v.pre))
 }
 
 fn parse(db: &dyn SourceDatabase, file_id: EditionedFileId) -> Parse<ast::SourceFile> {
@@ -171,17 +214,15 @@ impl<Db: ?Sized + SourceRootDatabase> SourceDatabaseFileInputExt for Db {
 }
 
 fn source_root_crates(db: &dyn SourceRootDatabase, id: SourceRootId) -> Arc<[CrateId]> {
-    let graph = db.crate_graph();
-    let mut crates = graph
+    let crates = db.all_crates();
+    crates
         .iter()
+        .copied()
         .filter(|&krate| {
-            let root_file = graph[krate].root_file_id;
+            let root_file = db.crate_data(krate).root_file_id;
             db.file_source_root(root_file) == id
         })
-        .collect::<Vec<_>>();
-    crates.sort();
-    crates.dedup();
-    crates.into_iter().collect()
+        .collect()
 }
 
 // FIXME: Would be nice to get rid of this somehow

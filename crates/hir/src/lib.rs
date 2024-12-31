@@ -186,7 +186,7 @@ pub struct CrateDependency {
 
 impl Crate {
     pub fn origin(self, db: &dyn HirDatabase) -> CrateOrigin {
-        db.crate_graph()[self.id].origin.clone()
+        db.crate_data(self.id).origin.clone()
     }
 
     pub fn is_builtin(self, db: &dyn HirDatabase) -> bool {
@@ -194,7 +194,7 @@ impl Crate {
     }
 
     pub fn dependencies(self, db: &dyn HirDatabase) -> Vec<CrateDependency> {
-        db.crate_graph()[self.id]
+        db.crate_data(self.id)
             .dependencies
             .iter()
             .map(|dep| {
@@ -206,11 +206,12 @@ impl Crate {
     }
 
     pub fn reverse_dependencies(self, db: &dyn HirDatabase) -> Vec<Crate> {
-        let crate_graph = db.crate_graph();
-        crate_graph
+        let all_crates = db.all_crates();
+        all_crates
             .iter()
+            .copied()
             .filter(|&krate| {
-                crate_graph[krate].dependencies.iter().any(|it| it.crate_id == self.id)
+                db.crate_data(krate).dependencies.iter().any(|it| it.crate_id == self.id)
             })
             .map(|id| Crate { id })
             .collect()
@@ -220,7 +221,7 @@ impl Crate {
         self,
         db: &dyn HirDatabase,
     ) -> impl Iterator<Item = Crate> {
-        db.crate_graph().transitive_rev_deps(self.id).map(|id| Crate { id })
+        db.transitive_rev_deps(self.id).into_iter().map(|id| Crate { id })
     }
 
     pub fn root_module(self) -> Module {
@@ -233,19 +234,19 @@ impl Crate {
     }
 
     pub fn root_file(self, db: &dyn HirDatabase) -> FileId {
-        db.crate_graph()[self.id].root_file_id
+        db.crate_data(self.id).root_file_id
     }
 
     pub fn edition(self, db: &dyn HirDatabase) -> Edition {
-        db.crate_graph()[self.id].edition
+        db.crate_data(self.id).edition
     }
 
     pub fn version(self, db: &dyn HirDatabase) -> Option<String> {
-        db.crate_graph()[self.id].version.clone()
+        db.extra_crate_data(self.id).version.clone()
     }
 
     pub fn display_name(self, db: &dyn HirDatabase) -> Option<CrateDisplayName> {
-        db.crate_graph()[self.id].display_name.clone()
+        db.extra_crate_data(self.id).display_name.clone()
     }
 
     pub fn query_external_importables(
@@ -263,7 +264,7 @@ impl Crate {
     }
 
     pub fn all(db: &dyn HirDatabase) -> Vec<Crate> {
-        db.crate_graph().iter().map(|id| Crate { id }).collect()
+        db.all_crates().iter().map(|&id| Crate { id }).collect()
     }
 
     /// Try to get the root URL of the documentation of a crate.
@@ -275,12 +276,12 @@ impl Crate {
     }
 
     pub fn cfg(&self, db: &dyn HirDatabase) -> Arc<CfgOptions> {
-        db.crate_graph()[self.id].cfg_options.clone()
+        db.crate_cfg(self.id)
     }
 
     pub fn potential_cfg(&self, db: &dyn HirDatabase) -> Arc<CfgOptions> {
-        let data = &db.crate_graph()[self.id];
-        data.potential_cfg_options.clone().unwrap_or_else(|| data.cfg_options.clone())
+        let data = &db.extra_crate_data(self.id);
+        data.potential_cfg_options.clone().unwrap_or_else(|| db.crate_cfg(self.id))
     }
 }
 
@@ -583,7 +584,7 @@ impl Module {
         style_lints: bool,
     ) {
         let _p = tracing::info_span!("diagnostics", name = ?self.name(db)).entered();
-        let edition = db.crate_graph()[self.id.krate()].edition;
+        let edition = db.crate_data(self.id.krate()).edition;
         let def_map = self.id.def_map(db.upcast());
         for diag in def_map.diagnostics() {
             if diag.in_module != self.id.local_id {
@@ -950,7 +951,7 @@ fn emit_macro_def_diagnostics(db: &dyn HirDatabase, acc: &mut Vec<AnyDiagnostic>
                 return;
             };
             let krate = HasModule::krate(&m.id, db.upcast());
-            let edition = db.crate_graph()[krate].edition;
+            let edition = db.crate_data(krate).edition;
             emit_def_diagnostic_(
                 db,
                 acc,
@@ -2404,7 +2405,7 @@ impl Function {
         span_formatter: impl Fn(FileId, TextRange) -> String,
     ) -> Result<String, ConstEvalError> {
         let krate = HasModule::krate(&self.id, db.upcast());
-        let edition = db.crate_graph()[krate].edition;
+        let edition = db.crate_data(krate).edition;
         let body = db.monomorphized_mir_body(
             self.id.into(),
             Substitution::empty(Interner),
@@ -2904,7 +2905,8 @@ impl BuiltinType {
     }
 
     pub fn ty(self, db: &dyn HirDatabase) -> Type {
-        Type::new_for_crate(db.crate_graph().iter().next().unwrap(), TyBuilder::builtin(self.inner))
+        // FIXME: I don't think we ever document we require `core` to be the first crate?
+        Type::new_for_crate(db.all_crates()[0], TyBuilder::builtin(self.inner))
     }
 
     pub fn name(self) -> Name {

@@ -161,7 +161,7 @@ impl<V, T> ProjectionElem<V, T> {
                 _ => {
                     never!(
                         "Overloaded deref on type {} is not a projection",
-                        base.display(db, db.crate_graph()[krate].edition)
+                        base.display(db, db.crate_data(krate).edition)
                     );
                     TyKind::Error.intern(Interner)
                 }

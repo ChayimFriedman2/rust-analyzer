@@ -19,9 +19,10 @@ use stdx::{never, panic_context};
 use triomphe::Arc;
 
 use crate::{
-    db::HirDatabase, infer::unify::InferenceTable, utils::UnevaluatedConstEvaluatorFolder, AliasEq,
-    AliasTy, Canonical, DomainGoal, Goal, Guidance, InEnvironment, Interner, ProjectionTy,
-    ProjectionTyExt, Solution, TraitRefExt, Ty, TyKind, TypeFlags, WhereClause,
+    db::HirDatabase, from_chalk_trait_id, infer::unify::InferenceTable,
+    utils::UnevaluatedConstEvaluatorFolder, AliasEq, AliasTy, Canonical, DomainGoal, Goal,
+    Guidance, InEnvironment, Interner, ProjectionTy, ProjectionTyExt, Solution, TraitRefExt, Ty,
+    TyExt, TyKind, TypeFlags, WhereClause,
 };
 
 /// This controls how much 'time' we give the Chalk solver before giving up.
@@ -115,6 +116,16 @@ pub(crate) fn trait_solve_query(
 ) -> Option<Solution> {
     let detail = match &goal.value.goal.data(Interner) {
         GoalData::DomainGoal(DomainGoal::Holds(WhereClause::Implemented(it))) => {
+            if let Some((hir_def::AdtId::EnumId(e), _)) = it.self_type_parameter(Interner).as_adt()
+            {
+                if db.enum_data(e).name.eq_ident("Edition")
+                    && db.trait_data(from_chalk_trait_id(it.trait_id)).name.eq_ident("Copy")
+                {
+                    std::env::set_var("CHALK_DEBUG", "1");
+                    std::env::set_var("CHALK_PRINT", "1");
+                    crate::TRACK.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             db.trait_data(it.hir_trait_id()).name.display(db.upcast(), Edition::LATEST).to_string()
         }
         GoalData::DomainGoal(DomainGoal::Holds(WhereClause::AliasEq(_))) => "alias_eq".to_owned(),
@@ -143,7 +154,11 @@ pub(crate) fn trait_solve_query(
     // We currently don't deal with universes (I think / hope they're not yet
     // relevant for our use cases?)
     let u_canonical = chalk_ir::UCanonical { canonical: goal, universes: 1 };
-    solve(db, krate, block, &u_canonical)
+    let r = solve(db, krate, block, &u_canonical);
+    std::env::remove_var("CHALK_DEBUG");
+    std::env::remove_var("CHALK_PRINT");
+    crate::TRACK.store(false, std::sync::atomic::Ordering::Relaxed);
+    r
 }
 
 fn solve(

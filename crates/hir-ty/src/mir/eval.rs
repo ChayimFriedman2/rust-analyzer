@@ -2782,7 +2782,7 @@ impl Evaluator<'_> {
                 let db = self.db.upcast();
                 let loc = variant.lookup(db);
                 let enum_loc = loc.parent.lookup(db);
-                let edition = self.db.crate_graph()[self.crate_id].edition;
+                let edition = self.db.crate_data(self.crate_id).edition;
                 let name = format!(
                     "{}::{}",
                     enum_loc.id.item_tree(db)[enum_loc.id.value].name.display(db.upcast(), edition),

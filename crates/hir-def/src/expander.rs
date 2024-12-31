@@ -45,7 +45,7 @@ impl Expander {
             module,
             recursion_depth: 0,
             recursion_limit,
-            cfg_options: db.crate_graph()[module.krate].cfg_options.clone(),
+            cfg_options: db.crate_cfg(module.krate).clone(),
             span_map: OnceCell::new(),
         }
     }

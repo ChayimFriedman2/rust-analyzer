@@ -100,10 +100,10 @@ use crate::{
         Const, Enum, ExternCrate, Function, Impl, ItemTreeId, ItemTreeNode, Macro2, MacroRules,
         Static, Struct, Trait, TraitAlias, TypeAlias, Union, Use, Variant,
     },
+    nameres::LocalDefMap,
 };
 
-type FxIndexMap<K, V> =
-    indexmap::IndexMap<K, V, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+type FxIndexMap<K, V> = indexmap::IndexMap<K, V, stdx::BuildHasherDefault<rustc_hash::FxHasher>>;
 /// A wrapper around three booleans
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 pub struct ImportPathConfig {
@@ -384,6 +384,10 @@ impl CrateRootModuleId {
         db.crate_def_map(self.krate)
     }
 
+    pub(crate) fn local_def_map(&self, db: &dyn DefDatabase) -> (Arc<DefMap>, Arc<LocalDefMap>) {
+        db.crate_local_def_map(self.krate)
+    }
+
     pub fn krate(self) -> CrateId {
         self.krate
     }
@@ -447,6 +451,17 @@ impl ModuleId {
             Some(block) => db.block_def_map(block),
             None => db.crate_def_map(self.krate),
         }
+    }
+
+    pub(crate) fn local_def_map(self, db: &dyn DefDatabase) -> (Arc<DefMap>, Arc<LocalDefMap>) {
+        match self.block {
+            Some(block) => (db.block_def_map(block), self.only_local_def_map(db)),
+            None => db.crate_local_def_map(self.krate),
+        }
+    }
+
+    pub(crate) fn only_local_def_map(self, db: &dyn DefDatabase) -> Arc<LocalDefMap> {
+        db.crate_local_def_map(self.krate).1
     }
 
     pub fn crate_def_map(self, db: &dyn DefDatabase) -> Arc<DefMap> {

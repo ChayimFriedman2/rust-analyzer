@@ -2690,8 +2690,11 @@ pub(crate) fn const_or_path_to_chalk<'g>(
             .unwrap_or_else(|| unknown_const(expected_ty))
         }
         &ConstRef::Complex(it) => {
-            let crate_data = &db.crate_graph()[resolver.krate()];
-            if crate_data.env.get("__ra_is_test_fixture").is_none() && crate_data.origin.is_local()
+            let krate = resolver.krate();
+            // Keep the `&&` this way, because it's better to access the crate data, as we access it for
+            // a bunch of other things nevertheless.
+            if db.crate_data(krate).origin.is_local()
+                && db.crate_env(krate).get("__ra_is_test_fixture").is_none()
             {
                 // FIXME: current `InTypeConstId` is very unstable, so we only use it in non local crate
                 // that are unlikely to be edited.
