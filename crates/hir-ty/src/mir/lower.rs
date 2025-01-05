@@ -2142,7 +2142,6 @@ pub fn mir_body_query(db: &dyn HirDatabase, def: DefWithBodyId) -> Result<Arc<Mi
 pub(crate) fn mir_body_recover(
     _db: &dyn HirDatabase,
     _cycle: &Cycle,
-    _: HirDatabaseData,
     _def: DefWithBodyId,
 ) -> Result<Arc<MirBody>> {
     Err(MirLowerError::Loop)

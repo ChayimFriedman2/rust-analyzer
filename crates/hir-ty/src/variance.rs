@@ -58,7 +58,6 @@ pub(crate) fn variances_of(db: &dyn HirDatabase, def: GenericDefId) -> Option<Ar
 pub(crate) fn variances_of_cycle(
     db: &dyn HirDatabase,
     _cycle: &Cycle,
-    _data: HirDatabaseData,
     def: GenericDefId,
 ) -> Option<Arc<[Variance]>> {
     let generics = generics(db.upcast(), def);

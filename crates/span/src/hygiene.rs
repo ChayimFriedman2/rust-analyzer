@@ -168,8 +168,7 @@ const _: () = {
             static CACHE: zalsa_::IngredientCache<zalsa_struct_::IngredientImpl<Configuration_>> =
                 zalsa_::IngredientCache::new();
             CACHE.get_or_create(db.as_dyn_database(), || {
-                db.zalsa()
-                    .add_or_lookup_jar_by_type(&<zalsa_struct_::JarImpl<Configuration_>>::default())
+                db.zalsa().add_or_lookup_jar_by_type::<zalsa_struct_::JarImpl<Configuration_>>()
             })
         }
     }
@@ -188,10 +187,19 @@ const _: () = {
     unsafe impl Sync for SyntaxContext {}
 
     impl zalsa_::SalsaStructInDb for SyntaxContext {
-        fn lookup_ingredient_index(
-            aux: &dyn salsa::plumbing::JarAux,
-        ) -> Option<salsa::IngredientIndex> {
-            aux.lookup_jar_by_type(&zalsa_struct_::JarImpl::<Configuration_>::default())
+        fn create_or_lookup_ingredient_index(
+            aux: &salsa::plumbing::Zalsa,
+        ) -> salsa::plumbing::IngredientIndices {
+            aux.add_or_lookup_jar_by_type::<zalsa_struct_::JarImpl<Configuration_>>().into()
+        }
+
+        #[inline]
+        fn cast(id: salsa::Id, type_id: std::any::TypeId) -> Option<Self> {
+            if type_id == std::any::TypeId::of::<SyntaxContext>() {
+                Some(<Self as salsa::plumbing::FromId>::from_id(id))
+            } else {
+                None
+            }
         }
     }
 

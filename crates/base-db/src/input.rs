@@ -390,7 +390,7 @@ impl Dependency {
 
 pub type CratesIdMap = FxHashMap<CrateBuilderId, Crate>;
 
-#[salsa::input]
+#[salsa::input(no_debug)]
 pub struct Crate {
     #[return_ref]
     pub data: CrateData,
@@ -405,6 +405,12 @@ pub struct Crate {
     pub cfg_options: Arc<CfgOptions>,
     #[return_ref]
     pub env: Env,
+}
+
+impl fmt::Debug for Crate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Crate").field(&format_args!("{:04x}", self.0.as_u32())).finish()
+    }
 }
 
 /// The mapping from [`UniqueCrateData`] to their [`Crate`] input and back.

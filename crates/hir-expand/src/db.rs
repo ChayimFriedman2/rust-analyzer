@@ -60,7 +60,7 @@ pub trait ExpandDatabase: RootQueryDb {
     #[db_ext_macro::input]
     fn proc_macros(&self) -> Arc<ProcMacros>;
 
-    #[db_ext_macro::invoke(crate::proc_macro::proc_macros_for_crate)]
+    #[db_ext_macro::invoke_actual(crate::proc_macro::proc_macros_for_crate)]
     fn proc_macros_for_crate(&self, krate: Crate) -> Option<Arc<CrateProcMacros>>;
 
     fn ast_id_map(&self, file_id: HirFileId) -> Arc<AstIdMap>;
@@ -90,8 +90,10 @@ pub trait ExpandDatabase: RootQueryDb {
     ///
     /// We encode macro definitions into ids of macro calls, this what allows us
     /// to be incremental.
-    #[db_ext_macro::interned(MacroCallWrapper)]
+    #[db_ext_macro::transparent]
     fn intern_macro_call(&self, macro_call: MacroCallLoc) -> MacroCallId;
+    #[db_ext_macro::transparent]
+    fn lookup_intern_macro_call(&self, macro_call: MacroCallId) -> MacroCallLoc;
 
     #[db_ext_macro::transparent]
     #[db_ext_macro::invoke(crate::hygiene::dump_syntax_contexts)]
@@ -101,6 +103,7 @@ pub trait ExpandDatabase: RootQueryDb {
     /// query, only typing in the macro call itself changes the returned
     /// subtree.
     #[deprecated = "calling this is incorrect, call `macro_arg_considering_derives` instead"]
+    #[db_ext_macro::invoke(macro_arg)]
     fn macro_arg(&self, id: MacroCallId) -> MacroArgResult;
 
     #[db_ext_macro::transparent]
@@ -127,6 +130,7 @@ pub trait ExpandDatabase: RootQueryDb {
     /// proc macros, since they are not deterministic in general, and
     /// non-determinism breaks salsa in a very, very, very bad way.
     /// @edwin0cheng heroically debugged this once! See #4315 for details
+    #[db_ext_macro::invoke(expand_proc_macro)]
     fn expand_proc_macro(&self, call: MacroCallId) -> ExpandResult<Arc<tt::Subtree>>;
     /// Retrieves the span to be used for a proc-macro expansions spans.
     /// This is a firewall query as it requires parsing the file, which we don't want proc-macros to
@@ -136,6 +140,7 @@ pub trait ExpandDatabase: RootQueryDb {
     fn proc_macro_span(&self, fun: AstId<ast::Fn>) -> Span;
 
     /// Firewall query that returns the errors from the `parse_macro_expansion` query.
+    #[db_ext_macro::invoke(parse_macro_expansion_error)]
     fn parse_macro_expansion_error(
         &self,
         macro_call: MacroCallId,
@@ -148,6 +153,14 @@ pub trait ExpandDatabase: RootQueryDb {
 #[salsa::interned_sans_lifetime(id = span::MacroCallId)]
 pub struct MacroCallWrapper {
     pub loc: MacroCallLoc,
+}
+
+fn intern_macro_call(db: &dyn ExpandDatabase, macro_call: MacroCallLoc) -> MacroCallId {
+    MacroCallWrapper::new(db, macro_call).0
+}
+
+fn lookup_intern_macro_call(db: &dyn ExpandDatabase, macro_call: MacroCallId) -> MacroCallLoc {
+    MacroCallWrapper::ingredient(db).data(db.as_dyn_database(), macro_call.as_id()).0.clone()
 }
 
 fn syntax_context(db: &dyn ExpandDatabase, file: HirFileId) -> SyntaxContextId {
