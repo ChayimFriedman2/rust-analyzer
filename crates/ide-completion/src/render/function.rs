@@ -23,7 +23,7 @@ use crate::{
 #[derive(Debug)]
 enum FuncKind<'ctx> {
     Function(&'ctx PathCompletionCtx),
-    Method(&'ctx DotAccess, Option<hir::Name>),
+    Method(&'ctx DotAccess, Option<hir::Symbol>),
 }
 
 pub(crate) fn render_fn(
@@ -39,12 +39,12 @@ pub(crate) fn render_fn(
 pub(crate) fn render_method(
     ctx: RenderContext<'_>,
     dot_access: &DotAccess,
-    receiver: Option<hir::Name>,
+    prefix: Option<hir::Symbol>,
     local_name: Option<hir::Name>,
     func: hir::Function,
 ) -> Builder {
     let _p = tracing::info_span!("render_method").entered();
-    render(ctx, local_name, func, FuncKind::Method(dot_access, receiver))
+    render(ctx, local_name, func, FuncKind::Method(dot_access, prefix))
 }
 
 fn render(
@@ -59,16 +59,8 @@ fn render(
 
     let (call, escaped_call) = match &func_kind {
         FuncKind::Method(_, Some(receiver)) => (
-            format_smolstr!(
-                "{}.{}",
-                receiver.unescaped().display(ctx.db()),
-                name.unescaped().display(ctx.db())
-            ),
-            format_smolstr!(
-                "{}.{}",
-                receiver.display(ctx.db(), completion.edition),
-                name.display(ctx.db(), completion.edition)
-            ),
+            format_smolstr!("{}.{}", receiver, name.unescaped().display(ctx.db())),
+            format_smolstr!("{}.{}", receiver, name.display(ctx.db(), completion.edition)),
         ),
         _ => (
             name.unescaped().display(db).to_smolstr(),

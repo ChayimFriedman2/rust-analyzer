@@ -113,6 +113,9 @@ define_symbols! {
     vectorcall_dash_unwind = "vectorcall-unwind",
     win64_dash_unwind = "win64-unwind",
     x86_dash_interrupt = "x86-interrupt",
+    await_ = "await",
+    iter_call = "iter()",
+    into_iter_call = "into_iter()",
 
     @PLAIN:
     __ra_fixup,

@@ -329,7 +329,7 @@ impl Completions {
         ctx: &CompletionContext<'_>,
         dot_access: &DotAccess,
         func: hir::Function,
-        receiver: Option<hir::Name>,
+        prefix: Option<hir::Symbol>,
         local_name: Option<hir::Name>,
     ) {
         if !ctx.check_stability(Some(&func.attrs(ctx.db))) {
@@ -347,7 +347,7 @@ impl Completions {
                     .private_editable(is_private_editable)
                     .doc_aliases(doc_aliases),
                 dot_access,
-                receiver,
+                prefix,
                 local_name,
                 func,
             )
@@ -475,7 +475,7 @@ impl Completions {
         &mut self,
         ctx: &CompletionContext<'_>,
         dot_access: &DotAccess,
-        receiver: Option<hir::Name>,
+        prefix: Option<hir::Symbol>,
         field: hir::Field,
         ty: &hir::Type,
     ) {
@@ -491,7 +491,7 @@ impl Completions {
         let item = render_field(
             RenderContext::new(ctx).private_editable(is_private_editable).doc_aliases(doc_aliases),
             dot_access,
-            receiver,
+            prefix,
             field,
             ty,
         );
@@ -533,13 +533,13 @@ impl Completions {
     pub(crate) fn add_tuple_field(
         &mut self,
         ctx: &CompletionContext<'_>,
-        receiver: Option<hir::Name>,
+        prefix: Option<hir::Symbol>,
         field: usize,
         ty: &hir::Type,
     ) {
         // Only used for (unnamed) tuples, whose all fields *are* stable. No need to check
         // stability here.
-        let item = render_tuple_field(RenderContext::new(ctx), receiver, field, ty);
+        let item = render_tuple_field(RenderContext::new(ctx), prefix, field, ty);
         self.add(item);
     }
 
