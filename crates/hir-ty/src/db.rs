@@ -58,8 +58,8 @@ pub trait HirDatabase: DefDatabase + Upcast<dyn DefDatabase> + std::fmt::Debug {
         env: Arc<TraitEnvironment>,
     ) -> Result<Arc<MirBody>, MirLowerError>;
 
-    #[db_ext_macro::invoke(crate::mir::borrowck_query)]
-    #[db_ext_macro::lru(2048)]
+    #[db_ext_macro::invoke_actual(crate::mir::borrowck_query)]
+    #[db_ext_macro::lru(2024)]
     fn borrowck(&self, def: DefWithBodyId) -> Result<Arc<[BorrowckResult]>, MirLowerError>;
 
     #[db_ext_macro::invoke(crate::consteval::const_eval_query)]

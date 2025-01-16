@@ -216,11 +216,11 @@ pub trait DefDatabase:
 
     // endregion:data
 
-    #[db_ext_macro::invoke(Body::body_with_source_map_query)]
-    #[db_ext_macro::lru(512)]
+    #[db_ext_macro::invoke_actual(Body::body_with_source_map_query)]
+    #[db_ext_macro::lru(2048)]
     fn body_with_source_map(&self, def: DefWithBodyId) -> (Arc<Body>, Arc<BodySourceMap>);
 
-    #[db_ext_macro::invoke(Body::body_query)]
+    #[db_ext_macro::invoke_actual(Body::body_query)]
     fn body(&self, def: DefWithBodyId) -> Arc<Body>;
 
     #[db_ext_macro::invoke_actual(ExprScopes::expr_scopes_query)]
@@ -265,7 +265,7 @@ pub trait DefDatabase:
 
     // region:visibilities
 
-    #[db_ext_macro::invoke(visibility::field_visibilities_query)]
+    #[db_ext_macro::invoke_actual(visibility::field_visibilities_query)]
     fn field_visibilities(&self, var: VariantId) -> Arc<ArenaMap<LocalFieldId, Visibility>>;
 
     // FIXME: unify function_visibility and const_visibility?
