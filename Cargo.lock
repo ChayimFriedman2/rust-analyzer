@@ -100,7 +100,7 @@ dependencies = [
  "la-arena 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "lz4_flex",
  "rustc-hash 2.1.0",
- "salsa 0.18.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
+ "salsa 0.18.0",
  "semver",
  "span",
  "stdx",
@@ -669,7 +669,7 @@ dependencies = [
  "ra-ap-rustc_parse_format",
  "rustc-hash 2.1.0",
  "rustc_apfloat",
- "salsa 0.18.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
+ "salsa 0.18.0",
  "smallvec",
  "span",
  "stdx",
@@ -702,7 +702,7 @@ dependencies = [
  "mbe",
  "parser",
  "rustc-hash 2.1.0",
- "salsa 0.18.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
+ "salsa 0.18.0",
  "smallvec",
  "span",
  "stdx",
@@ -745,7 +745,7 @@ dependencies = [
  "ra-ap-rustc_pattern_analysis",
  "rustc-hash 2.1.0",
  "rustc_apfloat",
- "salsa 0.18.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
+ "salsa 0.18.0",
  "scoped-tls",
  "smallvec",
  "span",
@@ -984,7 +984,7 @@ dependencies = [
  "profile",
  "rayon",
  "rustc-hash 2.1.0",
- "salsa 0.18.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
+ "salsa 0.18.0",
  "span",
  "stdx",
  "syntax",
@@ -2034,7 +2034,6 @@ dependencies = [
 [[package]]
 name = "salsa"
 version = "0.18.0"
-source = "git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements#7c52974de9ea52cedf906ae20c5bf7157a66e364"
 dependencies = [
  "append-only-vec",
  "arc-swap",
@@ -2045,8 +2044,8 @@ dependencies = [
  "parking_lot",
  "rayon",
  "rustc-hash 2.1.0",
- "salsa-macro-rules 0.1.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
- "salsa-macros 0.18.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
+ "salsa-macro-rules 0.1.0",
+ "salsa-macros 0.18.0",
  "smallvec",
  "tracing",
 ]
@@ -2074,7 +2073,6 @@ dependencies = [
 [[package]]
 name = "salsa-macro-rules"
 version = "0.1.0"
-source = "git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements#7c52974de9ea52cedf906ae20c5bf7157a66e364"
 
 [[package]]
 name = "salsa-macro-rules"
@@ -2094,7 +2092,6 @@ dependencies = [
 [[package]]
 name = "salsa-macros"
 version = "0.18.0"
-source = "git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements#7c52974de9ea52cedf906ae20c5bf7157a66e364"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2245,7 +2242,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "la-arena 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-hash 2.1.0",
- "salsa 0.18.0 (git+https://github.com/davidbarsky/salsa.git?branch=chayim-david-lukas/salsa-perf-improvements)",
+ "salsa 0.18.0",
  "stdx",
  "syntax",
  "text-size",

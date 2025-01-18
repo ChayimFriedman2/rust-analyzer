@@ -189,8 +189,8 @@ fn f() {
 }
     "#,
         expect![[r#"
-            BlockId(Id(5001)) in BlockRelativeModuleId { block: Some(BlockId(Id(5000))), local_id: Idx::<ModuleData>(1) }
-            BlockId(Id(5000)) in BlockRelativeModuleId { block: None, local_id: Idx::<ModuleData>(0) }
+            BlockId(4801) in BlockRelativeModuleId { block: Some(BlockId(4800)), local_id: Idx::<ModuleData>(1) }
+            BlockId(4800) in BlockRelativeModuleId { block: None, local_id: Idx::<ModuleData>(0) }
             crate scope
         "#]],
     );
