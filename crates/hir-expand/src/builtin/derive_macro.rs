@@ -94,7 +94,7 @@ fn tuple_field_iterator(span: Span, n: usize) -> impl Iterator<Item = tt::Ident>
 
 impl VariantShape {
     fn as_pattern(&self, path: tt::TopSubtree, span: Span) -> tt::TopSubtree {
-        self.as_pattern_map(path, span, |it| quote!(span => #it))
+        self.as_pattern_map(path, span, |_, it| quote!(span => #it))
     }
 
     fn field_names(&self, span: Span) -> Vec<tt::Ident> {
@@ -109,12 +109,12 @@ impl VariantShape {
         &self,
         path: tt::TopSubtree,
         span: Span,
-        field_map: impl Fn(&tt::Ident) -> tt::TopSubtree,
+        field_map: impl Fn(usize, &tt::Ident) -> tt::TopSubtree,
     ) -> tt::TopSubtree {
         match self {
             VariantShape::Struct(fields) => {
-                let fields = fields.iter().map(|it| {
-                    let mapped = field_map(it);
+                let fields = fields.iter().enumerate().map(|(idx, it)| {
+                    let mapped = field_map(idx, it);
                     quote! {span => #it : #mapped , }
                 });
                 quote! {span =>
@@ -122,8 +122,8 @@ impl VariantShape {
                 }
             }
             &VariantShape::Tuple(n) => {
-                let fields = tuple_field_iterator(span, n).map(|it| {
-                    let mapped = field_map(&it);
+                let fields = tuple_field_iterator(span, n).enumerate().map(|(idx, it)| {
+                    let mapped = field_map(idx, &it);
                     quote! {span =>
                         #mapped ,
                     }
@@ -164,7 +164,7 @@ enum AdtShape {
 
 impl AdtShape {
     fn as_pattern(&self, span: Span, name: &tt::Ident) -> Vec<tt::TopSubtree> {
-        self.as_pattern_map(name, |it| quote!(span =>#it), span)
+        self.as_pattern_map(name, |_, it| quote!(span =>#it), span)
     }
 
     fn field_names(&self, span: Span) -> Vec<Vec<tt::Ident>> {
@@ -185,7 +185,7 @@ impl AdtShape {
     fn as_pattern_map(
         &self,
         name: &tt::Ident,
-        field_map: impl Fn(&tt::Ident) -> tt::TopSubtree,
+        field_map: impl Fn(usize, &tt::Ident) -> tt::TopSubtree,
         span: Span,
     ) -> Vec<tt::TopSubtree> {
         match self {
@@ -562,7 +562,7 @@ fn clone_expand(
         }
         let name = &adt.name;
         let patterns = adt.shape.as_pattern(span, name);
-        let exprs = adt.shape.as_pattern_map(name, |it| quote! {span => #it .clone() }, span);
+        let exprs = adt.shape.as_pattern_map(name, |_, it| quote! {span => #it .clone() }, span);
         let arms = patterns.into_iter().zip(exprs).map(|(pat, expr)| {
             let fat_arrow = fat_arrow(span);
             quote! {span =>
@@ -605,7 +605,7 @@ fn default_expand(
                 fields.as_pattern_map(
                     quote!(span =>#name),
                     span,
-                    |_| quote!(span =>#krate::default::Default::default()),
+                    |_, _| quote!(span =>#krate::default::Default::default()),
                 )
             }
             AdtShape::Enum { default_variant, variants } => {
@@ -615,7 +615,7 @@ fn default_expand(
                     fields.as_pattern_map(
                         quote!(span =>#adt_name :: #name),
                         span,
-                        |_| quote!(span =>#krate::default::Default::default()),
+                        |_, _| quote!(span =>#krate::default::Default::default()),
                     )
                 } else {
                     // FIXME: Return expand error here
@@ -793,15 +793,15 @@ fn partial_eq_expand(
                         quote!(span =>true)
                     }
                     [first, rest @ ..] => {
-                        let rest = rest.iter().map(|it| {
-                            let t1 = tt::Ident::new(&format!("{}_self", it.sym), it.span);
-                            let t2 = tt::Ident::new(&format!("{}_other", it.sym), it.span);
+                        let rest = rest.iter().zip(1usize..).map(|(it, idx)| {
+                            let t1 = tt::Ident::new(&format!("__self_{idx}"), it.span);
+                            let t2 = tt::Ident::new(&format!("__other_{idx}"), it.span);
                             let and_and = and_and(span);
                             quote!(span =>#and_and #t1 .eq( #t2 ))
                         });
                         let first = {
-                            let t1 = tt::Ident::new(&format!("{}_self", first.sym), first.span);
-                            let t2 = tt::Ident::new(&format!("{}_other", first.sym), first.span);
+                            let t1 = tt::Ident::new("__self_0", first.span);
+                            let t2 = tt::Ident::new("__other_0", first.span);
                             quote!(span =>#t1 .eq( #t2 ))
                         };
                         quote!(span =>#first # #rest)
@@ -830,16 +830,16 @@ fn self_and_other_patterns(
 ) -> (Vec<tt::TopSubtree>, Vec<tt::TopSubtree>) {
     let self_patterns = adt.shape.as_pattern_map(
         name,
-        |it| {
-            let t = tt::Ident::new(&format!("{}_self", it.sym), it.span);
+        |idx, it| {
+            let t = tt::Ident::new(&format!("__self_{idx}"), it.span);
             quote!(span =>#t)
         },
         span,
     );
     let other_patterns = adt.shape.as_pattern_map(
         name,
-        |it| {
-            let t = tt::Ident::new(&format!("{}_other", it.sym), it.span);
+        |idx, it| {
+            let t = tt::Ident::new(&format!("__other_{idx}"), it.span);
             quote!(span =>#t)
         },
         span,
@@ -880,9 +880,9 @@ fn ord_expand(
         let arms = izip!(self_patterns, other_patterns, adt.shape.field_names(span)).map(
             |(pat1, pat2, fields)| {
                 let mut body = quote!(span =>#krate::cmp::Ordering::Equal);
-                for f in fields.into_iter().rev() {
-                    let t1 = tt::Ident::new(&format!("{}_self", f.sym), f.span);
-                    let t2 = tt::Ident::new(&format!("{}_other", f.sym), f.span);
+                for (idx, f) in fields.into_iter().enumerate().rev() {
+                    let t1 = tt::Ident::new(&format!("__self_{idx}"), f.span);
+                    let t2 = tt::Ident::new(&format!("__other_{idx}"), f.span);
                     body = compare(krate, quote!(span =>#t1), quote!(span =>#t2), body, span);
                 }
                 let fat_arrow = fat_arrow(span);
@@ -946,9 +946,9 @@ fn partial_ord_expand(
             |(pat1, pat2, fields)| {
                 let mut body =
                     quote!(span =>#krate::option::Option::Some(#krate::cmp::Ordering::Equal));
-                for f in fields.into_iter().rev() {
-                    let t1 = tt::Ident::new(&format!("{}_self", f.sym), f.span);
-                    let t2 = tt::Ident::new(&format!("{}_other", f.sym), f.span);
+                for (idx, f) in fields.into_iter().enumerate().rev() {
+                    let t1 = tt::Ident::new(&format!("__self_{idx}"), f.span);
+                    let t2 = tt::Ident::new(&format!("__other_{idx}"), f.span);
                     body = compare(krate, quote!(span =>#t1), quote!(span =>#t2), body, span);
                 }
                 let fat_arrow = fat_arrow(span);

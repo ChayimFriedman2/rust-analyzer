@@ -87,7 +87,7 @@ pub use chalk_ext::*;
 pub use drop::DropGlue;
 pub use infer::{
     Adjust, Adjustment, AutoBorrow, BindingMode, InferenceDiagnostic, InferenceResult,
-    InferenceTyDiagnosticSource, OverloadedDeref, PointerCast,
+    InferenceTyDiagnosticSource, OverloadedDeref, PointerCast, TypeMismatch,
     cast::CastError,
     closure::{CaptureKind, CapturedItem},
     could_coerce, could_unify, could_unify_deeply,

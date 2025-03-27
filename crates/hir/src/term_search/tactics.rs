@@ -12,7 +12,7 @@ use std::iter;
 
 use hir_ty::TyBuilder;
 use hir_ty::db::HirDatabase;
-use hir_ty::mir::BorrowKind;
+use hir_ty::mir::{BorrowKind, borrowck};
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
 use span::Edition;
@@ -53,7 +53,7 @@ pub(super) fn trivial<'a, DB: HirDatabase>(
             ScopeDef::GenericParam(GenericParam::ConstParam(it)) => Some(Expr::ConstParam(*it)),
             ScopeDef::Local(it) => {
                 if ctx.config.enable_borrowcheck {
-                    let borrowck = db.borrowck(it.parent).ok()?;
+                    let borrowck = borrowck(db, it.parent).ok()?;
 
                     let invalid = borrowck.iter().any(|b| {
                         b.partially_moved.iter().any(|moved| {

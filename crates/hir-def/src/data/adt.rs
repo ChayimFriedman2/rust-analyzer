@@ -390,7 +390,6 @@ fn lower_fields(
                 tree_id,
                 attr_owner,
                 attrs.cfg().unwrap(),
-                cfg_options.clone(),
             ))
         }
     }

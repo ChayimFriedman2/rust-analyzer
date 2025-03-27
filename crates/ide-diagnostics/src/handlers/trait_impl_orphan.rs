@@ -1,5 +1,3 @@
-use hir::InFile;
-
 use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext};
 
 // Diagnostic: trait-impl-orphan
@@ -14,7 +12,7 @@ pub(crate) fn trait_impl_orphan(
         DiagnosticCode::RustcHardError("E0117"),
         "only traits defined in the current crate can be implemented for arbitrary types"
             .to_owned(),
-        InFile::new(d.file_id, d.impl_.into()),
+        d.impl_.map(Into::into),
     )
     // Not yet checked for false positives
     .experimental()

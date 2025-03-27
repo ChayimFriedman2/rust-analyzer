@@ -613,6 +613,7 @@ dependencies = [
  "syntax-bridge",
  "test-fixture",
  "test-utils",
+ "thin-vec",
  "tracing",
  "triomphe",
  "tt",

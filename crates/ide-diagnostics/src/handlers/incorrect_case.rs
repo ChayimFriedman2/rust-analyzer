@@ -1,6 +1,6 @@
-use hir::{CaseType, InFile, db::ExpandDatabase};
+use hir::{CaseType, InFile};
 use ide_db::{assists::Assist, defs::NameClass};
-use syntax::AstNode;
+use syntax::{AstNode, AstPtr, ast};
 
 use crate::{
     Diagnostic,
@@ -13,31 +13,41 @@ use crate::{
 // Diagnostic: incorrect-ident-case
 //
 // This diagnostic is triggered if an item name doesn't follow [Rust naming convention](https://doc.rust-lang.org/1.0.0/style/style/naming/README.html).
-pub(crate) fn incorrect_case(ctx: &DiagnosticsContext<'_>, d: &hir::IncorrectCase) -> Diagnostic {
+pub(crate) fn incorrect_case(
+    ctx: &DiagnosticsContext<'_>,
+    d: &hir::IncorrectCase,
+) -> Option<Diagnostic> {
     let code = match d.expected_case {
         CaseType::LowerSnakeCase => DiagnosticCode::RustcLint("non_snake_case"),
         CaseType::UpperSnakeCase => DiagnosticCode::RustcLint("non_upper_case_globals"),
         // The name is lying. It also covers variants, traits, ...
         CaseType::UpperCamelCase => DiagnosticCode::RustcLint("non_camel_case_types"),
     };
-    Diagnostic::new_with_syntax_node_ptr(
-        ctx,
-        code,
-        format!(
-            "{} `{}` should have {} name, e.g. `{}`",
-            d.ident_type, d.ident_text, d.expected_case, d.suggested_text
-        ),
-        InFile::new(d.file, d.ident.into()),
+    let resolved = d.source.resolve(ctx.db())?;
+    Some(
+        Diagnostic::new_with_syntax_node_ptr(
+            ctx,
+            code,
+            format!(
+                "{} `{}` should have {} name, e.g. `{}`",
+                d.ident_type, d.ident, d.expected_case, d.suggested_text
+            ),
+            resolved.map(Into::into),
+        )
+        .with_fixes(fixes(ctx, d, resolved)),
     )
-    .with_fixes(fixes(ctx, d))
 }
 
-fn fixes(ctx: &DiagnosticsContext<'_>, d: &hir::IncorrectCase) -> Option<Vec<Assist>> {
-    let root = ctx.sema.db.parse_or_expand(d.file);
-    let name_node = d.ident.to_node(&root);
+fn fixes(
+    ctx: &DiagnosticsContext<'_>,
+    d: &hir::IncorrectCase,
+    resolved: InFile<AstPtr<ast::Name>>,
+) -> Option<Vec<Assist>> {
+    let root = ctx.sema.parse_or_expand(resolved.file_id);
+    let name_node = resolved.value.to_node(&root);
     let def = NameClass::classify(&ctx.sema, &name_node)?.defined()?;
 
-    let name_node = InFile::new(d.file, name_node.syntax());
+    let name_node = resolved.with_value(name_node.syntax());
     let frange = name_node.original_file_range_rooted(ctx.sema.db);
 
     let label = format!("Rename to {}", d.suggested_text);
@@ -1030,6 +1040,21 @@ fn QUX() {}
     non_snake_case
 )]
 fn foo(_HelloWorld: ()) {}
+        "#,
+        );
+    }
+
+    #[test]
+    fn derive_not_generate_incorrect_cases() {
+        check_diagnostics(
+            r#"
+//- minicore: derive, eq
+#[derive(PartialEq)]
+struct Bar;
+#[derive(PartialEq)]
+enum Foo {
+    Bar { impl_: Bar }
+}
         "#,
         );
     }

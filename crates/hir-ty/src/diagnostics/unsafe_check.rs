@@ -19,7 +19,7 @@ use crate::{
     utils::is_fn_unsafe_to_call,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MissingUnsafeResult {
     pub unsafe_exprs: Vec<(ExprOrPatId, UnsafetyReason)>,
     /// If `fn_is_unsafe` is false, `unsafe_exprs` are hard errors. If true, they're `unsafe_op_in_unsafe_fn`.
@@ -27,7 +27,26 @@ pub struct MissingUnsafeResult {
     pub deprecated_safe_calls: Vec<ExprId>,
 }
 
-pub fn missing_unsafe(db: &dyn HirDatabase, def: DefWithBodyId) -> MissingUnsafeResult {
+impl MissingUnsafeResult {
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.unsafe_exprs.is_empty() && self.deprecated_safe_calls.is_empty()
+    }
+
+    #[inline]
+    pub fn shrink_to_fit(&mut self) {
+        let MissingUnsafeResult { unsafe_exprs, fn_is_unsafe: _, deprecated_safe_calls } = self;
+        unsafe_exprs.shrink_to_fit();
+        deprecated_safe_calls.shrink_to_fit();
+    }
+}
+
+pub fn missing_unsafe(
+    db: &dyn HirDatabase,
+    def: DefWithBodyId,
+    body: &Body,
+    infer: &InferenceResult,
+) -> MissingUnsafeResult {
     let _p = tracing::info_span!("missing_unsafe").entered();
 
     let is_unsafe = match def {
@@ -39,8 +58,6 @@ pub fn missing_unsafe(db: &dyn HirDatabase, def: DefWithBodyId) -> MissingUnsafe
     };
 
     let mut res = MissingUnsafeResult { fn_is_unsafe: is_unsafe, ..MissingUnsafeResult::default() };
-    let body = db.body(def);
-    let infer = db.infer(def);
     let mut callback = |diag| match diag {
         UnsafeDiagnostic::UnsafeOperation { node, inside_unsafe_block, reason } => {
             if inside_unsafe_block == InsideUnsafeBlock::No {
@@ -68,7 +85,7 @@ pub fn missing_unsafe(db: &dyn HirDatabase, def: DefWithBodyId) -> MissingUnsafe
     res
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsafetyReason {
     UnionField,
     UnsafeFnCall,

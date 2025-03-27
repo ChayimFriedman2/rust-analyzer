@@ -513,6 +513,10 @@ impl DefMap {
         &self.data.registered_attrs
     }
 
+    pub fn unstable_features(&self) -> FxHashSet<Symbol> {
+        self.data.unstable_features.clone()
+    }
+
     pub fn is_unstable_feature_enabled(&self, feature: &Symbol) -> bool {
         self.data.unstable_features.contains(feature)
     }

@@ -1,32 +1,46 @@
-//! Re-export diagnostics such that clients of `hir` don't have to depend on
-//! low-level crates.
+//! IDE translation for diagnostics.
 //!
-//! This probably isn't the best way to do this -- ideally, diagnostics should
-//! be expressed in terms of hir types themselves.
-use cfg::{CfgExpr, CfgOptions};
+//! This module should serve as a thin translation layer between [`crate::diagnostic_queries`]'s types
+//! and syntax trees. It should never do any heavy work. This is left for the queries in [`crate::diagnostic_queries`].
+
+use cfg::CfgExpr;
 use either::Either;
 use hir_def::{
-    DefWithBodyId, SyntheticSyntax,
-    expr_store::ExprOrPatPtr,
+    AdtId, DefWithBodyId, GenericDefId, HasModule, ImplId, SyntheticSyntax,
+    expr_store::{ExprOrPatPtr, ExpressionStoreDiagnostics},
     hir::ExprOrPatId,
+    item_tree::{AttrOwner, FieldParent, ItemTreeFieldId},
+    nameres::diagnostics::DefDiagnosticKind,
     path::{ModPath, hir_segment_to_ast_segment},
     type_ref::TypesSourceMap,
 };
-use hir_expand::{HirFileId, InFile, name::Name};
+use hir_expand::{
+    ExpandResult, HirFileId, InFile, MacroCallKind, RenderedExpandError, ValueResult,
+    attrs::collect_attrs, name::Name,
+};
 use hir_ty::{
     CastError, InferenceDiagnostic, InferenceTyDiagnosticSource, PathLoweringDiagnostic,
     TyLoweringDiagnostic, TyLoweringDiagnosticKind,
     db::HirDatabase,
     diagnostics::{BodyValidationDiagnostic, UnsafetyReason},
+    mir::MirSpan,
 };
+use itertools::Itertools;
+use span::MacroCallId;
+use stdx::never;
 use syntax::{
-    AstNode, AstPtr, SyntaxError, SyntaxNodePtr, TextRange,
-    ast::{self, HasGenericArgs},
+    AstNode, AstPtr, SyntaxError, SyntaxNodePtr, T, TextRange,
+    ast::{self, HasAttrs, HasGenericArgs, HasGenericParams, HasName},
     match_ast,
 };
 use triomphe::Arc;
 
-use crate::{AssocItem, Field, Function, Local, Trait, Type};
+use crate::{
+    AssocItem, Crate, Field, Function, Local, Trait, Type,
+    diagnostic_queries::{
+        AnyDiagnostic as QueriesAnyDiagnostic, BorrowckDiagnostic, TypesMapOwner,
+    },
+};
 
 pub use hir_def::VariantId;
 pub use hir_ty::{
@@ -175,7 +189,7 @@ pub struct UndeclaredLabel {
 pub struct InactiveCode {
     pub node: InFile<SyntaxNodePtr>,
     pub cfg: CfgExpr,
-    pub opts: CfgOptions,
+    pub krate: Crate,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -354,36 +368,31 @@ pub struct MovedOutOfRef {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct IncoherentImpl {
-    pub file_id: HirFileId,
-    pub impl_: AstPtr<ast::Impl>,
+    pub impl_: InFile<AstPtr<ast::Impl>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TraitImplOrphan {
-    pub file_id: HirFileId,
-    pub impl_: AstPtr<ast::Impl>,
+    pub impl_: InFile<AstPtr<ast::Impl>>,
 }
 
 // FIXME: Split this off into the corresponding 4 rustc errors
 #[derive(Debug, PartialEq, Eq)]
 pub struct TraitImplIncorrectSafety {
-    pub file_id: HirFileId,
-    pub impl_: AstPtr<ast::Impl>,
+    pub impl_: InFile<AstPtr<ast::Impl>>,
     pub should_be_safe: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TraitImplMissingAssocItems {
-    pub file_id: HirFileId,
-    pub impl_: AstPtr<ast::Impl>,
+    pub impl_: InFile<AstPtr<ast::Impl>>,
     pub missing: Vec<(Name, AssocItem)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TraitImplRedundantAssocItems {
-    pub file_id: HirFileId,
     pub trait_: Trait,
-    pub impl_: AstPtr<ast::Impl>,
+    pub impl_: InFile<AstPtr<ast::Impl>>,
     pub assoc_item: (Name, AssocItem),
 }
 
@@ -430,18 +439,18 @@ pub struct BadRtn {
 impl AnyDiagnostic {
     pub(crate) fn body_validation_diagnostic(
         db: &dyn HirDatabase,
-        diagnostic: BodyValidationDiagnostic,
+        diagnostic: &BodyValidationDiagnostic,
         source_map: &hir_def::expr_store::BodySourceMap,
     ) -> Option<AnyDiagnostic> {
         match diagnostic {
             BodyValidationDiagnostic::RecordMissingFields { record, variant, missed_fields } => {
                 let variant_data = variant.variant_data(db.upcast());
                 let missed_fields = missed_fields
-                    .into_iter()
-                    .map(|idx| variant_data.fields()[idx].name.clone())
+                    .iter()
+                    .map(|&idx| variant_data.fields()[idx].name.clone())
                     .collect();
 
-                let record = match record {
+                let record = match *record {
                     Either::Left(record_expr) => source_map.expr_syntax(record_expr).ok()?,
                     Either::Right(record_pat) => source_map.pat_syntax(record_pat).ok()?,
                 };
@@ -482,7 +491,7 @@ impl AnyDiagnostic {
                 }
             }
             BodyValidationDiagnostic::ReplaceFilterMapNextWithFindMap { method_call_expr } => {
-                if let Ok(next_source_ptr) = source_map.expr_syntax(method_call_expr) {
+                if let Ok(next_source_ptr) = source_map.expr_syntax(*method_call_expr) {
                     return Some(
                         ReplaceFilterMapNextWithFindMap {
                             file: next_source_ptr.file_id,
@@ -493,7 +502,7 @@ impl AnyDiagnostic {
                 }
             }
             BodyValidationDiagnostic::MissingMatchArms { match_expr, uncovered_patterns } => {
-                match source_map.expr_syntax(match_expr) {
+                match source_map.expr_syntax(*match_expr) {
                     Ok(source_ptr) => {
                         let root = source_ptr.file_syntax(db.upcast());
                         if let Either::Left(ast::Expr::MatchExpr(match_expr)) =
@@ -507,7 +516,7 @@ impl AnyDiagnostic {
                                                 source_ptr.file_id,
                                                 AstPtr::new(&scrut_expr),
                                             ),
-                                            uncovered_patterns,
+                                            uncovered_patterns: uncovered_patterns.clone(),
                                         }
                                         .into(),
                                     );
@@ -520,13 +529,13 @@ impl AnyDiagnostic {
                 }
             }
             BodyValidationDiagnostic::NonExhaustiveLet { pat, uncovered_patterns } => {
-                match source_map.pat_syntax(pat) {
+                match source_map.pat_syntax(*pat) {
                     Ok(source_ptr) => {
                         if let Some(ast_pat) = source_ptr.value.cast::<ast::Pat>() {
                             return Some(
                                 NonExhaustiveLet {
                                     pat: InFile::new(source_ptr.file_id, ast_pat),
-                                    uncovered_patterns,
+                                    uncovered_patterns: uncovered_patterns.clone(),
                                 }
                                 .into(),
                             );
@@ -536,7 +545,7 @@ impl AnyDiagnostic {
                 }
             }
             BodyValidationDiagnostic::RemoveTrailingReturn { return_expr } => {
-                if let Ok(source_ptr) = source_map.expr_syntax(return_expr) {
+                if let Ok(source_ptr) = source_map.expr_syntax(*return_expr) {
                     // Filters out desugared return expressions (e.g. desugared try operators).
                     if let Some(ptr) = source_ptr.value.cast::<ast::ReturnExpr>() {
                         return Some(
@@ -549,7 +558,7 @@ impl AnyDiagnostic {
                 }
             }
             BodyValidationDiagnostic::RemoveUnnecessaryElse { if_expr } => {
-                if let Ok(source_ptr) = source_map.expr_syntax(if_expr) {
+                if let Ok(source_ptr) = source_map.expr_syntax(*if_expr) {
                     if let Some(ptr) = source_ptr.value.cast::<ast::IfExpr>() {
                         return Some(
                             RemoveUnnecessaryElse { if_expr: InFile::new(source_ptr.file_id, ptr) }
@@ -770,5 +779,695 @@ impl AnyDiagnostic {
                 Self::path_diagnostic(diag, source.with_value(syntax.path()?))?
             }
         })
+    }
+}
+
+fn emit_def_diagnostic(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    krate: base_db::Crate,
+    diag: &DefDiagnosticKind,
+) {
+    match diag {
+        DefDiagnosticKind::UnresolvedModule { ast: declaration, candidates } => {
+            let decl = declaration.to_ptr(db.upcast());
+            acc.push(
+                UnresolvedModule {
+                    decl: InFile::new(declaration.file_id, decl),
+                    candidates: candidates.clone(),
+                }
+                .into(),
+            )
+        }
+        DefDiagnosticKind::UnresolvedExternCrate { ast } => {
+            let item = ast.to_ptr(db.upcast());
+            acc.push(UnresolvedExternCrate { decl: InFile::new(ast.file_id, item) }.into());
+        }
+
+        DefDiagnosticKind::MacroError { ast, path, err } => {
+            let item = ast.to_ptr(db.upcast());
+            let RenderedExpandError { message, error, kind } = err.render_to_string(db.upcast());
+            let edition = krate.data(db).edition;
+            acc.push(
+                MacroError {
+                    node: InFile::new(ast.file_id, item.syntax_node_ptr()),
+                    precise_location: None,
+                    message: format!("{}: {message}", path.display(db.upcast(), edition)),
+                    error,
+                    kind,
+                }
+                .into(),
+            )
+        }
+        DefDiagnosticKind::UnresolvedImport { id, index } => {
+            let file_id = id.file_id();
+            let item_tree = id.item_tree(db.upcast());
+            let import = &item_tree[id.value];
+
+            let use_tree = import.use_tree_to_ast(db.upcast(), file_id, *index);
+            acc.push(
+                UnresolvedImport { decl: InFile::new(file_id, AstPtr::new(&use_tree)) }.into(),
+            );
+        }
+
+        DefDiagnosticKind::UnconfiguredCode { tree, item, cfg } => {
+            let item_tree = tree.item_tree(db.upcast());
+            let ast_id_map = db.ast_id_map(tree.file_id());
+            // FIXME: This parses... We could probably store relative ranges for the children things
+            // here in the item tree?
+            (|| {
+                let process_field_list =
+                    |field_list: Option<_>, idx: ItemTreeFieldId| match field_list? {
+                        ast::FieldList::RecordFieldList(it) => Some(SyntaxNodePtr::new(
+                            it.fields().nth(idx.into_raw().into_u32() as usize)?.syntax(),
+                        )),
+                        ast::FieldList::TupleFieldList(it) => Some(SyntaxNodePtr::new(
+                            it.fields().nth(idx.into_raw().into_u32() as usize)?.syntax(),
+                        )),
+                    };
+                let ptr = match *item {
+                    AttrOwner::ModItem(it) => {
+                        ast_id_map.get(it.ast_id(&item_tree)).syntax_node_ptr()
+                    }
+                    AttrOwner::TopLevel => ast_id_map.root(),
+                    AttrOwner::Variant(it) => {
+                        ast_id_map.get(item_tree[it].ast_id).syntax_node_ptr()
+                    }
+                    AttrOwner::Field(FieldParent::EnumVariant(parent), idx) => process_field_list(
+                        ast_id_map
+                            .get(item_tree[parent].ast_id)
+                            .to_node(&db.parse_or_expand(tree.file_id()))
+                            .field_list(),
+                        idx,
+                    )?,
+                    AttrOwner::Field(FieldParent::Struct(parent), idx) => process_field_list(
+                        ast_id_map
+                            .get(item_tree[parent.index()].ast_id)
+                            .to_node(&db.parse_or_expand(tree.file_id()))
+                            .field_list(),
+                        idx,
+                    )?,
+                    AttrOwner::Field(FieldParent::Union(parent), idx) => SyntaxNodePtr::new(
+                        ast_id_map
+                            .get(item_tree[parent.index()].ast_id)
+                            .to_node(&db.parse_or_expand(tree.file_id()))
+                            .record_field_list()?
+                            .fields()
+                            .nth(idx.into_raw().into_u32() as usize)?
+                            .syntax(),
+                    ),
+                    AttrOwner::Param(parent, idx) => SyntaxNodePtr::new(
+                        ast_id_map
+                            .get(item_tree[parent.index()].ast_id)
+                            .to_node(&db.parse_or_expand(tree.file_id()))
+                            .param_list()?
+                            .params()
+                            .nth(idx.into_raw().into_u32() as usize)?
+                            .syntax(),
+                    ),
+                    AttrOwner::TypeOrConstParamData(parent, idx) => SyntaxNodePtr::new(
+                        ast_id_map
+                            .get(parent.ast_id(&item_tree))
+                            .to_node(&db.parse_or_expand(tree.file_id()))
+                            .generic_param_list()?
+                            .type_or_const_params()
+                            .nth(idx.into_raw().into_u32() as usize)?
+                            .syntax(),
+                    ),
+                    AttrOwner::LifetimeParamData(parent, idx) => SyntaxNodePtr::new(
+                        ast_id_map
+                            .get(parent.ast_id(&item_tree))
+                            .to_node(&db.parse_or_expand(tree.file_id()))
+                            .generic_param_list()?
+                            .lifetime_params()
+                            .nth(idx.into_raw().into_u32() as usize)?
+                            .syntax(),
+                    ),
+                };
+                acc.push(
+                    InactiveCode {
+                        node: InFile::new(tree.file_id(), ptr),
+                        cfg: cfg.clone(),
+                        krate: krate.into(),
+                    }
+                    .into(),
+                );
+                Some(())
+            })();
+        }
+        DefDiagnosticKind::UnresolvedMacroCall { ast, path } => {
+            let (node, precise_location) = precise_macro_call_location(ast, db);
+            acc.push(
+                UnresolvedMacroCall {
+                    macro_call: node,
+                    precise_location,
+                    path: path.clone(),
+                    is_bang: matches!(ast, MacroCallKind::FnLike { .. }),
+                }
+                .into(),
+            );
+        }
+        DefDiagnosticKind::UnimplementedBuiltinMacro { ast } => {
+            let node = ast.to_node(db.upcast());
+            // Must have a name, otherwise we wouldn't emit it.
+            let name = node.name().expect("unimplemented builtin macro with no name");
+            acc.push(
+                UnimplementedBuiltinMacro {
+                    node: ast.with_value(SyntaxNodePtr::from(AstPtr::new(&name))),
+                }
+                .into(),
+            );
+        }
+        DefDiagnosticKind::InvalidDeriveTarget { ast, id } => {
+            let node = ast.to_node(db.upcast());
+            let derive = node.attrs().nth(*id);
+            match derive {
+                Some(derive) => {
+                    acc.push(
+                        InvalidDeriveTarget {
+                            node: ast.with_value(SyntaxNodePtr::from(AstPtr::new(&derive))),
+                        }
+                        .into(),
+                    );
+                }
+                None => stdx::never!("derive diagnostic on item without derive attribute"),
+            }
+        }
+        DefDiagnosticKind::MalformedDerive { ast, id } => {
+            let node = ast.to_node(db.upcast());
+            let derive = node.attrs().nth(*id);
+            match derive {
+                Some(derive) => {
+                    acc.push(
+                        MalformedDerive {
+                            node: ast.with_value(SyntaxNodePtr::from(AstPtr::new(&derive))),
+                        }
+                        .into(),
+                    );
+                }
+                None => stdx::never!("derive diagnostic on item without derive attribute"),
+            }
+        }
+        DefDiagnosticKind::MacroDefError { ast, message } => {
+            let node = ast.to_node(db.upcast());
+            acc.push(
+                MacroDefError {
+                    node: InFile::new(ast.file_id, AstPtr::new(&node)),
+                    name: node.name().map(|it| it.syntax().text_range()),
+                    message: message.clone(),
+                }
+                .into(),
+            );
+        }
+    }
+}
+
+fn precise_macro_call_location(
+    ast: &MacroCallKind,
+    db: &dyn HirDatabase,
+) -> (InFile<SyntaxNodePtr>, Option<TextRange>) {
+    // FIXME: maybe we actually want slightly different ranges for the different macro diagnostics
+    // - e.g. the full attribute for macro errors, but only the name for name resolution
+    match ast {
+        MacroCallKind::FnLike { ast_id, .. } => {
+            let node = ast_id.to_node(db.upcast());
+            (
+                ast_id.with_value(SyntaxNodePtr::from(AstPtr::new(&node))),
+                node.path()
+                    .and_then(|it| it.segment())
+                    .and_then(|it| it.name_ref())
+                    .map(|it| it.syntax().text_range()),
+            )
+        }
+        MacroCallKind::Derive { ast_id, derive_attr_index, derive_index, .. } => {
+            let node = ast_id.to_node(db.upcast());
+            // Compute the precise location of the macro name's token in the derive
+            // list.
+            let token = (|| {
+                let derive_attr = collect_attrs(&node)
+                    .nth(derive_attr_index.ast_index())
+                    .and_then(|x| Either::left(x.1))?;
+                let token_tree = derive_attr.meta()?.token_tree()?;
+                let chunk_by = token_tree
+                    .syntax()
+                    .children_with_tokens()
+                    .filter_map(|elem| match elem {
+                        syntax::NodeOrToken::Token(tok) => Some(tok),
+                        _ => None,
+                    })
+                    .chunk_by(|t| t.kind() == T![,]);
+                let (_, mut group) = chunk_by
+                    .into_iter()
+                    .filter(|&(comma, _)| !comma)
+                    .nth(*derive_index as usize)?;
+                group.find(|t| t.kind() == T![ident])
+            })();
+            (
+                ast_id.with_value(SyntaxNodePtr::from(AstPtr::new(&node))),
+                token.as_ref().map(|tok| tok.text_range()),
+            )
+        }
+        MacroCallKind::Attr { ast_id, invoc_attr_index, .. } => {
+            let node = ast_id.to_node(db.upcast());
+            let attr = collect_attrs(&node)
+                .nth(invoc_attr_index.ast_index())
+                .and_then(|x| Either::left(x.1))
+                .unwrap_or_else(|| {
+                    panic!("cannot find attribute #{}", invoc_attr_index.ast_index())
+                });
+
+            (
+                ast_id.with_value(SyntaxNodePtr::from(AstPtr::new(&attr))),
+                Some(attr.syntax().text_range()),
+            )
+        }
+    }
+}
+
+fn macro_call_diagnostics(
+    db: &dyn HirDatabase,
+    macro_call_id: MacroCallId,
+    errors: &ExpandResult<Arc<[SyntaxError]>>,
+    acc: &mut Vec<AnyDiagnostic>,
+) {
+    let ValueResult { value: parse_errors, err } = errors;
+    if let Some(err) = err {
+        let loc = db.lookup_intern_macro_call(macro_call_id);
+        let file_id = loc.kind.file_id();
+        let node =
+            InFile::new(file_id, db.ast_id_map(file_id).get_erased(loc.kind.erased_ast_id()));
+        let RenderedExpandError { message, error, kind } = err.render_to_string(db.upcast());
+        let precise_location = if err.span().anchor.file_id == file_id {
+            Some(
+                err.span().range
+                    + db.ast_id_map(err.span().anchor.file_id.into())
+                        .get_erased(err.span().anchor.ast_id)
+                        .text_range()
+                        .start(),
+            )
+        } else {
+            None
+        };
+        acc.push(MacroError { node, precise_location, message, error, kind }.into());
+    }
+
+    if !parse_errors.is_empty() {
+        let loc = db.lookup_intern_macro_call(macro_call_id);
+        let (node, precise_location) = precise_macro_call_location(&loc.kind, db);
+        acc.push(
+            MacroExpansionParseError { node, precise_location, errors: parse_errors.clone() }
+                .into(),
+        )
+    }
+}
+
+fn handle_ty_lowering_diagnostics(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    owner: &TypesMapOwner,
+    diags: &[TyLoweringDiagnostic],
+) {
+    let item_tree_source_maps;
+    let generics_source_map;
+    let source_map = match *owner {
+        TypesMapOwner::Generics(id) => match db.generic_params_with_source_map(id).1 {
+            Some(it) => {
+                generics_source_map = it;
+                &generics_source_map
+            }
+            None => match id {
+                GenericDefId::FunctionId(id) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.function(tree_id.value).generics()
+                }
+                GenericDefId::ImplId(id) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.impl_(tree_id.value).generics()
+                }
+                GenericDefId::TraitAliasId(id) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.trait_alias_generic(tree_id.value)
+                }
+                GenericDefId::TraitId(id) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.trait_generic(tree_id.value)
+                }
+                GenericDefId::TypeAliasId(id) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.type_alias(tree_id.value).generics()
+                }
+                GenericDefId::AdtId(AdtId::StructId(id)) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.strukt(tree_id.value).generics()
+                }
+                GenericDefId::AdtId(AdtId::UnionId(id)) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.union(tree_id.value).generics()
+                }
+                GenericDefId::AdtId(AdtId::EnumId(id)) => {
+                    let tree_id = id.loc(db).id;
+                    item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+                    item_tree_source_maps.enum_generic(tree_id.value)
+                }
+                GenericDefId::StaticId(_) | GenericDefId::ConstId(_) => {
+                    never!("statics and consts cannot have generic diagnostics");
+                    return;
+                }
+            },
+        },
+        TypesMapOwner::Fields(VariantId::StructId(id)) => {
+            let tree_id = id.loc(db).id;
+            item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.strukt(tree_id.value).item()
+        }
+        TypesMapOwner::Fields(VariantId::UnionId(id)) => {
+            let tree_id = id.loc(db).id;
+            item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.union(tree_id.value).item()
+        }
+        TypesMapOwner::Fields(VariantId::EnumVariantId(id)) => {
+            let tree_id = id.loc(db).id;
+            item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.variant(tree_id.value)
+        }
+        TypesMapOwner::TypeAliasType(id) => {
+            let tree_id = id.loc(db).id;
+            item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.type_alias(tree_id.value).item()
+        }
+        TypesMapOwner::Impl(id) => {
+            let tree_id = id.loc(db).id;
+            item_tree_source_maps = tree_id.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.impl_(tree_id.value).item()
+        }
+    };
+    for diag in diags {
+        if let Some(diag) = AnyDiagnostic::ty_diagnostic(diag, source_map, db) {
+            acc.push(diag);
+        }
+    }
+}
+
+fn handle_body_lowering_diagnostics(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    owner: DefWithBodyId,
+) {
+    let (_, source_map) = db.body_with_source_map(owner);
+    let krate = owner.krate(db.upcast());
+
+    for diag in source_map.diagnostics() {
+        acc.push(match diag {
+            ExpressionStoreDiagnostics::InactiveCode { node, cfg } => {
+                InactiveCode { node: *node, cfg: cfg.clone(), krate: krate.into() }.into()
+            }
+            ExpressionStoreDiagnostics::MacroError { node, err } => {
+                let RenderedExpandError { message, error, kind } =
+                    err.render_to_string(db.upcast());
+
+                let precise_location = if err.span().anchor.file_id == node.file_id {
+                    Some(
+                        err.span().range
+                            + db.ast_id_map(err.span().anchor.file_id.into())
+                                .get_erased(err.span().anchor.ast_id)
+                                .text_range()
+                                .start(),
+                    )
+                } else {
+                    None
+                };
+                MacroError {
+                    node: (node).map(|it| it.into()),
+                    precise_location,
+                    message,
+                    error,
+                    kind,
+                }
+                .into()
+            }
+            ExpressionStoreDiagnostics::UnresolvedMacroCall { node, path } => UnresolvedMacroCall {
+                macro_call: (*node).map(|ast_ptr| ast_ptr.into()),
+                precise_location: None,
+                path: path.clone(),
+                is_bang: true,
+            }
+            .into(),
+            ExpressionStoreDiagnostics::AwaitOutsideOfAsync { node, location } => {
+                AwaitOutsideOfAsync { node: *node, location: location.clone() }.into()
+            }
+            ExpressionStoreDiagnostics::UnreachableLabel { node, name } => {
+                UnreachableLabel { node: *node, name: name.clone() }.into()
+            }
+            ExpressionStoreDiagnostics::UndeclaredLabel { node, name } => {
+                UndeclaredLabel { node: *node, name: name.clone() }.into()
+            }
+        });
+    }
+}
+
+fn handle_inference_diagnostic(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    owner: DefWithBodyId,
+    diags: &[InferenceDiagnostic],
+) {
+    let item_tree_source_maps;
+    let outer_types_source_map = match owner {
+        DefWithBodyId::FunctionId(function) => {
+            let function = function.loc(db).id;
+            item_tree_source_maps = function.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.function(function.value).item()
+        }
+        DefWithBodyId::StaticId(statik) => {
+            let statik = statik.loc(db).id;
+            item_tree_source_maps = statik.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.statik(statik.value)
+        }
+        DefWithBodyId::ConstId(konst) => {
+            let konst = konst.loc(db).id;
+            item_tree_source_maps = konst.item_tree_with_source_map(db.upcast()).1;
+            item_tree_source_maps.konst(konst.value)
+        }
+        DefWithBodyId::VariantId(_) | DefWithBodyId::InTypeConstId(_) => &TypesSourceMap::EMPTY,
+    };
+    let (_, source_map) = db.body_with_source_map(owner);
+
+    acc.extend(diags.iter().filter_map(|diag| {
+        AnyDiagnostic::inference_diagnostic(db, owner, diag, outer_types_source_map, &source_map)
+    }));
+}
+
+fn handle_type_mismatch(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    owner: DefWithBodyId,
+    node: ExprOrPatId,
+    mismatch: &hir_ty::TypeMismatch,
+) {
+    let (_, source_map) = db.body_with_source_map(owner);
+    let expr_or_pat = match node {
+        ExprOrPatId::ExprId(expr) => source_map.expr_syntax(expr).map(Either::Left),
+        ExprOrPatId::PatId(pat) => source_map.pat_syntax(pat).map(Either::Right),
+    };
+    let expr_or_pat = match expr_or_pat {
+        Ok(Either::Left(expr)) => expr,
+        Ok(Either::Right(InFile { file_id, value: pat })) => {
+            // cast from Either<Pat, SelfParam> -> Either<_, Pat>
+            let Some(ptr) = AstPtr::try_from_raw(pat.syntax_node_ptr()) else {
+                return;
+            };
+            InFile { file_id, value: ptr }
+        }
+        Err(SyntheticSyntax) => return,
+    };
+
+    acc.push(
+        TypeMismatch {
+            expr_or_pat,
+            expected: Type::new(db, owner, mismatch.expected.clone()),
+            actual: Type::new(db, owner, mismatch.actual.clone()),
+        }
+        .into(),
+    );
+}
+
+fn handle_body_validation_diagnostics(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    owner: DefWithBodyId,
+    diags: &[crate::diagnostic_queries::BodyValidationDiagnostic],
+) {
+    let (_, source_map) = db.body_with_source_map(owner);
+
+    for diag in diags {
+        match diag {
+            crate::diagnostic_queries::BodyValidationDiagnostic::Validation(diag) => {
+                acc.extend(AnyDiagnostic::body_validation_diagnostic(db, diag, &source_map))
+            }
+            crate::diagnostic_queries::BodyValidationDiagnostic::UnsafeCheck(diag) => {
+                for &(node, reason) in &diag.unsafe_exprs {
+                    match source_map.expr_or_pat_syntax(node) {
+                        Ok(node) => acc.push(
+                            MissingUnsafe {
+                                node,
+                                lint: if diag.fn_is_unsafe {
+                                    UnsafeLint::UnsafeOpInUnsafeFn
+                                } else {
+                                    UnsafeLint::HardError
+                                },
+                                reason,
+                            }
+                            .into(),
+                        ),
+                        Err(SyntheticSyntax) => {
+                            // FIXME: Here and elsewhere in this file, the `expr` was
+                            // desugared, report or assert that this doesn't happen.
+                        }
+                    }
+                }
+                for &node in &diag.deprecated_safe_calls {
+                    match source_map.expr_syntax(node) {
+                        Ok(node) => acc.push(
+                            MissingUnsafe {
+                                node,
+                                lint: UnsafeLint::DeprecatedSafe2024,
+                                reason: UnsafetyReason::UnsafeFnCall,
+                            }
+                            .into(),
+                        ),
+                        Err(SyntheticSyntax) => never!("synthetic DeprecatedSafe2024"),
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_borrowck_diagnostic(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    owner: DefWithBodyId,
+    diag: &BorrowckDiagnostic,
+) {
+    let mir_span_to_ptr = |span| {
+        let (_, source_map) = db.body_with_source_map(owner);
+        match span {
+            MirSpan::ExprId(id) => source_map.expr_syntax(id).ok().map(|it| it.map(Into::into)),
+            MirSpan::PatId(id) => source_map.pat_syntax(id).ok().map(|it| it.map(Into::into)),
+            MirSpan::BindingId(id) => source_map
+                .patterns_for_binding(id)
+                .iter()
+                .find_map(|&pat| source_map.pat_syntax(pat).ok())
+                .map(|it| it.map(Into::into)),
+            MirSpan::SelfParam => source_map.self_param_syntax().map(|it| it.map(Into::into)),
+            MirSpan::Unknown => None,
+        }
+    };
+
+    match diag {
+        BorrowckDiagnostic::MovedOutOfRef { ty, span } => {
+            acc.extend(mir_span_to_ptr(*span).map(|span| {
+                MovedOutOfRef {
+                    ty: Type::new_for_crate(owner.krate(db.upcast()), ty.clone()),
+                    span,
+                }
+                .into()
+            }))
+        }
+        BorrowckDiagnostic::UnusedVariable { variable } => acc
+            .push(UnusedVariable { local: Local { parent: owner, binding_id: *variable } }.into()),
+        BorrowckDiagnostic::NeedMut { variable, span } => {
+            acc.extend(mir_span_to_ptr(*span).map(|span| {
+                NeedMut { local: Local { parent: owner, binding_id: *variable }, span }.into()
+            }))
+        }
+        BorrowckDiagnostic::UnusedMut { variable } => {
+            acc.push(UnusedMut { local: Local { parent: owner, binding_id: *variable } }.into())
+        }
+    }
+}
+
+fn impl_id_to_source(db: &dyn HirDatabase, impl_: ImplId) -> InFile<AstPtr<ast::Impl>> {
+    let loc = impl_.loc(db);
+    let tree = loc.id.item_tree(db.upcast());
+    let node = &tree[loc.id.value];
+    let file_id = loc.id.file_id();
+    let ast_id_map = db.ast_id_map(file_id);
+    InFile::new(file_id, ast_id_map.get(node.ast_id))
+}
+
+pub(crate) fn convert_from_queries(
+    db: &dyn HirDatabase,
+    acc: &mut Vec<AnyDiagnostic>,
+    diagnostics: &[QueriesAnyDiagnostic],
+) {
+    for diagnostic in diagnostics {
+        match diagnostic {
+            QueriesAnyDiagnostic::DefDiagnostic { krate, diag } => {
+                emit_def_diagnostic(db, acc, *krate, diag)
+            }
+            QueriesAnyDiagnostic::MacroError { macro_call_id, errors } => {
+                macro_call_diagnostics(db, *macro_call_id, errors, acc)
+            }
+            QueriesAnyDiagnostic::TyLoweringDiagnostic { owner, diags } => {
+                handle_ty_lowering_diagnostics(db, acc, owner, &diags.slice)
+            }
+            QueriesAnyDiagnostic::BodyLoweringDiagnostics { body } => {
+                handle_body_lowering_diagnostics(db, acc, *body)
+            }
+            QueriesAnyDiagnostic::InferenceDiagnostics { owner, diags } => {
+                handle_inference_diagnostic(db, acc, *owner, diags)
+            }
+            QueriesAnyDiagnostic::TypeMismatch { owner, node, mismatch } => {
+                handle_type_mismatch(db, acc, *owner, *node, mismatch)
+            }
+            QueriesAnyDiagnostic::BodyValidationDiagnostics { owner, diags } => {
+                handle_body_validation_diagnostics(db, acc, *owner, diags)
+            }
+            QueriesAnyDiagnostic::BorrowckDiagnostic { owner, diag } => {
+                handle_borrowck_diagnostic(db, acc, *owner, diag)
+            }
+            QueriesAnyDiagnostic::IncoherentImpl { impl_ } => {
+                acc.push(IncoherentImpl { impl_: impl_id_to_source(db, *impl_) }.into())
+            }
+            QueriesAnyDiagnostic::IncorrectCase(diag) => acc.push(diag.clone().into()),
+            QueriesAnyDiagnostic::TraitImplOrphan { impl_ } => {
+                acc.push(TraitImplOrphan { impl_: impl_id_to_source(db, *impl_) }.into())
+            }
+            &QueriesAnyDiagnostic::TraitImplIncorrectSafety { impl_, should_be_safe } => acc.push(
+                TraitImplIncorrectSafety { impl_: impl_id_to_source(db, impl_), should_be_safe }
+                    .into(),
+            ),
+            QueriesAnyDiagnostic::TraitImplRedundantAssocItems {
+                impl_,
+                trait_,
+                assoc_item: (assoc_item_name, assoc_item_id),
+            } => acc.push(
+                TraitImplRedundantAssocItems {
+                    impl_: impl_id_to_source(db, *impl_),
+                    assoc_item: (assoc_item_name.clone(), AssocItem::from(*assoc_item_id)),
+                    trait_: Trait::from(*trait_),
+                }
+                .into(),
+            ),
+            QueriesAnyDiagnostic::TraitImplMissingAssocItems { impl_, trait_: _, missing } => acc
+                .push(
+                    TraitImplMissingAssocItems {
+                        impl_: impl_id_to_source(db, *impl_),
+                        missing: missing
+                            .iter()
+                            .map(|(name, id)| (name.clone(), AssocItem::from(*id)))
+                            .collect(),
+                    }
+                    .into(),
+                ),
+        }
     }
 }

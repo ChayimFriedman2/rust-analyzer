@@ -144,6 +144,7 @@ smallvec = { version = "1.14.0", features = [
 ] }
 smol_str = "0.3.2"
 text-size = "1.1.1"
+thin-vec = "0.2.14"
 tracing = "0.1.41"
 tracing-tree = "0.4.0"
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [

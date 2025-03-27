@@ -557,6 +557,8 @@ pub struct Binding {
 pub struct RecordFieldPat {
     pub name: Name,
     pub pat: PatId,
+    /// Whether this was written using shorthand syntax `Struct { field }`.
+    pub is_shorthand: bool,
 }
 
 /// Close relative to rustc's hir::PatKind

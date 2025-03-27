@@ -55,7 +55,7 @@ use base_db::{
     SourceDatabase, SourceRoot, SourceRootId, SourceRootInput, Upcast, query_group,
 };
 use hir::{
-    FilePositionWrapper, FileRangeWrapper,
+    DiagnosticsConfig, FilePositionWrapper, FileRangeWrapper,
     db::{DefDatabase, ExpandDatabase, HirDatabase},
 };
 use triomphe::Arc;
@@ -224,6 +224,10 @@ impl RootDatabase {
         db.set_local_roots_with_durability(Default::default(), Durability::HIGH);
         db.set_library_roots_with_durability(Default::default(), Durability::HIGH);
         db.set_expand_proc_attr_macros_with_durability(false, Durability::HIGH);
+        db.set_diagnostics_config_with_durability(
+            DiagnosticsConfig { style_lints: false, enable_borrowck: false },
+            Durability::HIGH,
+        );
         db.update_base_query_lru_capacities(lru_capacity);
         db
     }

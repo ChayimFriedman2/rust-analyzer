@@ -84,6 +84,10 @@ impl FunctionData {
             flags.insert(FnFlags::HAS_TARGET_FEATURE);
         }
 
+        if attrs.by_key(&sym::no_mangle).exists() {
+            flags.insert(FnFlags::IS_NO_MANGLE);
+        }
+
         Arc::new(FunctionData {
             name: func.name.clone(),
             params: func
@@ -133,6 +137,10 @@ impl FunctionData {
 
     pub fn is_deprecated_safe_2024(&self) -> bool {
         self.flags.contains(FnFlags::DEPRECATED_SAFE_2024)
+    }
+
+    pub fn is_no_mangle(&self) -> bool {
+        self.flags.contains(FnFlags::IS_NO_MANGLE)
     }
 
     pub fn is_safe(&self) -> bool {

@@ -10,13 +10,13 @@ mod tests;
 
 use std::ops::{Deref, Index};
 
-use cfg::{CfgExpr, CfgOptions};
+use cfg::CfgExpr;
 use either::Either;
 use hir_expand::{ExpandError, InFile, name::Name};
 use la_arena::{Arena, ArenaMap};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use span::{Edition, MacroFileId, SyntaxContext};
+use span::{Edition, MacroCallId, SyntaxContext};
 use syntax::{AstPtr, SyntaxNodePtr, ast};
 use triomphe::Arc;
 use tt::TextRange;
@@ -106,6 +106,19 @@ pub struct ExpressionStore {
     /// Expressions (and destructuing patterns) that can be recorded here are single segment path, although not all single segments path refer
     /// to variables and have hygiene (some refer to items, we don't know at this stage).
     ident_hygiene: FxHashMap<ExprOrPatId, HygieneId>,
+
+    /// The order of the expansions here corresponds to the order of [`ExpressionStoreSourceMap::expansion_sources`].
+    expansions: Box<[MacroCallId]>,
+
+    /// Our diagnostics have a problem: they need to refer the AST directly. But we cannot let the main query
+    /// refer the AST. This is the reason they are defined in the source map, but that means we cannot have
+    /// queries that cache the diagnostics of all bodies in, say, a module.
+    ///
+    /// So the solution I came up with is to store only a flag. Then, the module diagnostics collector will mark
+    /// a `DefWithBodyId` as having diagnostics if it has the flag set. Hopefully, the number of bodies with errors
+    /// across the whole project stays low, so this should be effective. Then, the IDE layer will fetch the
+    /// diagnostics for all bodies that are marked as having errors.
+    pub has_diagnostics: bool,
 }
 
 #[derive(Debug, Eq, PartialEq, Default)]
@@ -132,7 +145,8 @@ pub struct ExpressionStoreSourceMap {
 
     template_map: Option<Box<FormatTemplate>>,
 
-    expansions: FxHashMap<InFile<MacroCallPtr>, MacroFileId>,
+    /// The order of the expansions here corresponds to the order of [`ExpressionStore::expansions`].
+    expansion_sources: Vec<InFile<MacroCallPtr>>,
 
     /// Diagnostics accumulated during lowering. These contain `AstPtr`s and so are stored in
     /// the source map (since they're just as volatile).
@@ -151,6 +165,7 @@ pub struct ExpressionStoreBuilder {
     block_scopes: Vec<BlockId>,
     binding_hygiene: FxHashMap<BindingId, HygieneId>,
     ident_hygiene: FxHashMap<ExprOrPatId, HygieneId>,
+    expansions: Vec<MacroCallId>,
 }
 
 #[derive(Default, Debug, Eq, PartialEq)]
@@ -169,7 +184,7 @@ struct FormatTemplate {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum ExpressionStoreDiagnostics {
-    InactiveCode { node: InFile<SyntaxNodePtr>, cfg: CfgExpr, opts: CfgOptions },
+    InactiveCode { node: InFile<SyntaxNodePtr>, cfg: CfgExpr },
     MacroError { node: InFile<MacroCallPtr>, err: ExpandError },
     UnresolvedMacroCall { node: InFile<MacroCallPtr>, path: ModPath },
     UnreachableLabel { node: InFile<AstPtr<ast::Lifetime>>, name: Name },
@@ -178,7 +193,7 @@ pub enum ExpressionStoreDiagnostics {
 }
 
 impl ExpressionStoreBuilder {
-    fn finish(self) -> ExpressionStore {
+    fn finish(self, source_map: &ExpressionStoreSourceMap) -> ExpressionStore {
         let Self {
             block_scopes,
             mut exprs,
@@ -189,6 +204,7 @@ impl ExpressionStoreBuilder {
             mut binding_hygiene,
             mut ident_hygiene,
             mut types,
+            expansions,
         } = self;
         exprs.shrink_to_fit();
         labels.shrink_to_fit();
@@ -209,17 +225,25 @@ impl ExpressionStoreBuilder {
             block_scopes: block_scopes.into_boxed_slice(),
             binding_hygiene,
             ident_hygiene,
+            expansions: expansions.into_boxed_slice(),
+            has_diagnostics: !source_map.diagnostics.is_empty(),
         }
     }
 }
 
 impl ExpressionStore {
     /// Returns an iterator over all block expressions in this store that define inner items.
-    pub fn blocks<'a>(
-        &'a self,
-        db: &'a dyn DefDatabase,
-    ) -> impl Iterator<Item = (BlockId, Arc<DefMap>)> + 'a {
+    pub fn blocks(&self, db: &dyn DefDatabase) -> impl Iterator<Item = (BlockId, Arc<DefMap>)> {
         self.block_scopes.iter().map(move |&block| (block, db.block_def_map(block)))
+    }
+
+    /// Returns an iterator over all block expressions in this store that define inner items.
+    pub fn blocks_no_def_map(&self) -> impl Iterator<Item = BlockId> {
+        self.block_scopes.iter().copied()
+    }
+
+    pub fn expansions(&self) -> impl Iterator<Item = MacroCallId> {
+        self.expansions.iter().copied()
     }
 
     pub fn walk_bindings_in_pat(&self, pat_id: PatId, mut f: impl FnMut(BindingId)) {
@@ -621,15 +645,6 @@ impl ExpressionStoreSourceMap {
         self.expr_map.get(&src).cloned()
     }
 
-    pub fn node_macro_file(&self, node: InFile<&ast::MacroCall>) -> Option<MacroFileId> {
-        let src = node.map(AstPtr::new);
-        self.expansions.get(&src).cloned()
-    }
-
-    pub fn macro_calls(&self) -> impl Iterator<Item = (InFile<MacroCallPtr>, MacroFileId)> + '_ {
-        self.expansions.iter().map(|(&a, &b)| (a, b))
-    }
-
     pub fn pat_syntax(&self, pat: PatId) -> Result<ExprOrPatSource, SyntheticSyntax> {
         self.pat_map_back.get(pat).cloned().ok_or(SyntheticSyntax)
     }
@@ -664,8 +679,11 @@ impl ExpressionStoreSourceMap {
         self.expr_map.get(&src).copied()
     }
 
-    pub fn expansions(&self) -> impl Iterator<Item = (&InFile<MacroCallPtr>, &MacroFileId)> {
-        self.expansions.iter()
+    pub fn expansions(
+        &self,
+        exprs: &ExpressionStore,
+    ) -> impl Iterator<Item = (InFile<MacroCallPtr>, MacroCallId)> {
+        std::iter::zip(&self.expansion_sources, &exprs.expansions).map(|(a, b)| (*a, *b))
     }
 
     pub fn implicit_format_args(
@@ -713,7 +731,7 @@ impl ExpressionStoreSourceMap {
             label_map_back,
             field_map_back,
             pat_field_map_back,
-            expansions,
+            expansion_sources,
             template_map,
             diagnostics,
             binding_definitions,
@@ -737,7 +755,7 @@ impl ExpressionStoreSourceMap {
         label_map_back.shrink_to_fit();
         field_map_back.shrink_to_fit();
         pat_field_map_back.shrink_to_fit();
-        expansions.shrink_to_fit();
+        expansion_sources.shrink_to_fit();
         diagnostics.shrink_to_fit();
         binding_definitions.shrink_to_fit();
         types.shrink_to_fit();

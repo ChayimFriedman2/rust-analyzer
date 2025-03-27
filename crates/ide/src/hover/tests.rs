@@ -9306,7 +9306,7 @@ fn main() {
             S
             ```
             ___
-            Implements notable traits: Future<Output = u32>, Iterator<Item = S>, Notable"#]],
+            Implements notable traits: Notable, Future<Output = u32>, Iterator<Item = S>"#]],
     );
 }
 

@@ -120,7 +120,7 @@ pub(super) fn lower_body(
         let body_expr = collector.missing_expr();
         return (
             Body {
-                store: collector.store.finish(),
+                store: collector.store.finish(&collector.source_map),
                 params: params.into_boxed_slice(),
                 self_param,
                 body_expr,
@@ -174,7 +174,7 @@ pub(super) fn lower_body(
 
     (
         Body {
-            store: collector.store.finish(),
+            store: collector.store.finish(&collector.source_map),
             params: params.into_boxed_slice(),
             self_param,
             body_expr,
@@ -204,7 +204,7 @@ pub(super) fn lower(
     });
     let mut expr_collector = ExprCollector::new(db, owner, expander, krate, span_map);
     expr_collector.collect(body, Awaitable::No("?"));
-    (expr_collector.store.finish(), expr_collector.source_map)
+    (expr_collector.store.finish(&expr_collector.source_map), expr_collector.source_map)
 }
 
 type ExprStoreOwnerId = DefWithBodyId;
@@ -921,7 +921,8 @@ impl ExprCollector<'_> {
                         let name = f.field_name()?.as_name();
                         let src = self.expander.in_file(AstPtr::new(&f).wrap_left());
                         self.source_map.pat_field_map_back.insert(pat, src);
-                        Some(RecordFieldPat { name, pat })
+                        let is_shorthand = f.name_ref().is_none();
+                        Some(RecordFieldPat { name, pat, is_shorthand })
                     })
                     .collect();
                 self.alloc_pat_from_expr(Pat::Record { path, args, ellipsis }, syntax_ptr)
@@ -1345,7 +1346,8 @@ impl ExprCollector<'_> {
                 // Keep collecting even with expansion errors so we can provide completions and
                 // other services in incomplete macro expressions.
                 if let Some(macro_file) = self.expander.current_file_id().macro_file() {
-                    self.source_map.expansions.insert(macro_call_ptr, macro_file);
+                    self.source_map.expansion_sources.push(macro_call_ptr);
+                    self.store.expansions.push(macro_file.macro_call_id);
                 }
                 let prev_ast_id_map = mem::replace(
                     &mut self.ast_id_map,
@@ -1723,7 +1725,8 @@ impl ExprCollector<'_> {
                         let name = f.field_name()?.as_name();
                         let src = self.expander.in_file(AstPtr::new(&f).wrap_right());
                         self.source_map.pat_field_map_back.insert(pat, src);
-                        Some(RecordFieldPat { name, pat })
+                        let is_shorthand = f.name_ref().is_none();
+                        Some(RecordFieldPat { name, pat, is_shorthand })
                     })
                     .collect();
 
@@ -1901,7 +1904,6 @@ impl ExprCollector<'_> {
                 self.source_map.diagnostics.push(ExpressionStoreDiagnostics::InactiveCode {
                     node: self.expander.in_file(SyntaxNodePtr::new(owner.syntax())),
                     cfg,
-                    opts: self.expander.cfg_options(self.db).clone(),
                 });
 
                 None

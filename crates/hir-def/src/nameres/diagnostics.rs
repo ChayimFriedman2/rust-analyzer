@@ -2,7 +2,7 @@
 
 use std::ops::Not;
 
-use cfg::{CfgExpr, CfgOptions};
+use cfg::CfgExpr;
 use hir_expand::{ExpandErrorKind, MacroCallKind, attrs::AttrId};
 use la_arena::Idx;
 use syntax::ast;
@@ -14,12 +14,12 @@ use crate::{
     path::ModPath,
 };
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefDiagnosticKind {
     UnresolvedModule { ast: AstId<ast::Module>, candidates: Box<[String]> },
     UnresolvedExternCrate { ast: AstId<ast::ExternCrate> },
     UnresolvedImport { id: ItemTreeId<item_tree::Use>, index: Idx<ast::UseTree> },
-    UnconfiguredCode { tree: TreeId, item: AttrOwner, cfg: CfgExpr, opts: CfgOptions },
+    UnconfiguredCode { tree: TreeId, item: AttrOwner, cfg: CfgExpr },
     UnresolvedMacroCall { ast: MacroCallKind, path: ModPath },
     UnimplementedBuiltinMacro { ast: AstId<ast::Macro> },
     InvalidDeriveTarget { ast: AstId<ast::Item>, id: usize },
@@ -46,7 +46,7 @@ impl DefDiagnostics {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefDiagnostic {
     pub in_module: LocalModuleId,
     pub kind: DefDiagnosticKind,
@@ -96,12 +96,8 @@ impl DefDiagnostic {
         tree: TreeId,
         item: AttrOwner,
         cfg: CfgExpr,
-        opts: CfgOptions,
     ) -> Self {
-        Self {
-            in_module: container,
-            kind: DefDiagnosticKind::UnconfiguredCode { tree, item, cfg, opts },
-        }
+        Self { in_module: container, kind: DefDiagnosticKind::UnconfiguredCode { tree, item, cfg } }
     }
 
     // FIXME: Whats the difference between this and unresolved_proc_macro

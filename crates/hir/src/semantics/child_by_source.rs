@@ -196,8 +196,8 @@ impl ChildBySource for DefWithBodyId {
             VariantId::EnumVariantId(v).child_by_source_to(db, res, file_id)
         }
 
-        sm.expansions().filter(|(ast, _)| ast.file_id == file_id).for_each(|(ast, &exp_id)| {
-            res[keys::MACRO_CALL].insert(ast.value, exp_id.macro_call_id);
+        sm.expansions(&body).filter(|(ast, _)| ast.file_id == file_id).for_each(|(ast, exp_id)| {
+            res[keys::MACRO_CALL].insert(ast.value, exp_id);
         });
 
         for (block, def_map) in body.blocks(db) {

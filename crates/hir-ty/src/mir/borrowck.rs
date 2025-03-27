@@ -88,10 +88,12 @@ fn all_mir_bodies(
     }
 }
 
-pub fn borrowck_query(
+/// Borrowck doesn't need to be a query, because it only touches the relevant body.
+/// So we keep it incremental with the rest of diagnostics, in `hir::diagnostic_queries`.
+pub fn borrowck(
     db: &dyn HirDatabase,
     def: DefWithBodyId,
-) -> Result<Arc<[BorrowckResult]>, MirLowerError> {
+) -> Result<Vec<BorrowckResult>, MirLowerError> {
     let _p = tracing::info_span!("borrowck_query").entered();
     let mut res = vec![];
     all_mir_bodies(db, def, |body| {
@@ -103,7 +105,7 @@ pub fn borrowck_query(
             mir_body: body,
         });
     })?;
-    Ok(res.into())
+    Ok(res)
 }
 
 fn make_fetch_closure_field(

@@ -2565,7 +2565,6 @@ impl ModCollector<'_, '_> {
             tree_id,
             item,
             cfg.clone(),
-            self.def_collector.cfg_options.clone(),
         ));
     }
 

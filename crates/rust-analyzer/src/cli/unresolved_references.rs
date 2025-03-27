@@ -114,9 +114,7 @@ fn find_unresolved_references(
     let mut unresolved_references = all_unresolved_references(sema, file_id);
 
     // remove unresolved references which are within inactive code
-    let mut diagnostics = Vec::new();
-    module.diagnostics(db, &mut diagnostics, false);
-    for diagnostic in diagnostics {
+    for diagnostic in module.diagnostics(db) {
         let AnyDiagnostic::InactiveCode(inactive_code) = diagnostic else {
             continue;
         };

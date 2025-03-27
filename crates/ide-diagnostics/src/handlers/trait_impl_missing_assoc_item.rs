@@ -1,4 +1,3 @@
-use hir::InFile;
 use itertools::Itertools;
 use syntax::{AstNode, ast};
 
@@ -23,11 +22,9 @@ pub(crate) fn trait_impl_missing_assoc_item(
     Diagnostic::new(
         DiagnosticCode::RustcHardError("E0046"),
         format!("not all trait items implemented, missing: {missing}"),
-        adjusted_display_range::<ast::Impl>(
-            ctx,
-            InFile { file_id: d.file_id, value: d.impl_ },
-            &|impl_| impl_.trait_().map(|t| t.syntax().text_range()),
-        ),
+        adjusted_display_range::<ast::Impl>(ctx, d.impl_, &|impl_| {
+            impl_.trait_().map(|t| t.syntax().text_range())
+        }),
     )
 }
 

@@ -1,4 +1,3 @@
-use hir::InFile;
 use syntax::{AstNode, TextRange};
 
 use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext, adjusted_display_range};
@@ -7,7 +6,7 @@ use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext, adjusted_display_ran
 //
 // This diagnostic is triggered if the targe type of an impl is from a foreign crate.
 pub(crate) fn incoherent_impl(ctx: &DiagnosticsContext<'_>, d: &hir::IncoherentImpl) -> Diagnostic {
-    let display_range = adjusted_display_range(ctx, InFile::new(d.file_id, d.impl_), &|node| {
+    let display_range = adjusted_display_range(ctx, d.impl_, &|node| {
         Some(TextRange::new(
             node.syntax().text_range().start(),
             node.self_ty()?.syntax().text_range().end(),

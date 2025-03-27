@@ -15,7 +15,7 @@ pub(crate) fn inactive_code(
         return None;
     }
 
-    let inactive = DnfExpr::new(&d.cfg).why_inactive(&d.opts);
+    let inactive = DnfExpr::new(&d.cfg).why_inactive(d.krate.cfg(ctx.db()));
     let mut message = "code is inactive due to #[cfg] directives".to_owned();
 
     if let Some(inactive) = inactive {

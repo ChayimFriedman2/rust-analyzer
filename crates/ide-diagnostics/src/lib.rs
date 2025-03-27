@@ -286,7 +286,7 @@ struct DiagnosticsContext<'a> {
     is_nightly: bool,
 }
 
-impl DiagnosticsContext<'_> {
+impl<'a> DiagnosticsContext<'a> {
     fn resolve_precise_location(
         &self,
         node: &InFile<SyntaxNodePtr>,
@@ -305,6 +305,11 @@ impl DiagnosticsContext<'_> {
         })()
         .unwrap_or_else(|| sema.diagnostics_display_range(*node))
         .into()
+    }
+
+    #[inline]
+    pub(crate) fn db(&self) -> &'a RootDatabase {
+        self.sema.db
     }
 }
 
@@ -411,7 +416,7 @@ pub fn semantic_diagnostics(
         Some(m) => {
             if db.parse_errors(editioned_file_id_wrapper).as_deref().is_none_or(|es| es.len() < 16)
             {
-                m.diagnostics(db, &mut diags, config.style_lints);
+                diags = m.diagnostics(db);
             }
         }
         None => handlers::unlinked_file::unlinked_file(&ctx, &mut res, editioned_file_id.file_id()),
@@ -427,7 +432,10 @@ pub fn semantic_diagnostics(
                 None => continue,
             }
             AnyDiagnostic::IncoherentImpl(d) => handlers::incoherent_impl::incoherent_impl(&ctx, &d),
-            AnyDiagnostic::IncorrectCase(d) => handlers::incorrect_case::incorrect_case(&ctx, &d),
+            AnyDiagnostic::IncorrectCase(d) => match handlers::incorrect_case::incorrect_case(&ctx, &d) {
+                Some(it) => it,
+                None => continue,
+            },
             AnyDiagnostic::InvalidCast(d) => handlers::invalid_cast::invalid_cast(&ctx, &d),
             AnyDiagnostic::InvalidDeriveTarget(d) => handlers::invalid_derive_target::invalid_derive_target(&ctx, &d),
             AnyDiagnostic::MacroDefError(d) => handlers::macro_error::macro_def_error(&ctx, &d),

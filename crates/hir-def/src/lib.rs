@@ -429,7 +429,10 @@ impl ModuleId {
     }
 
     pub fn name(self, db: &dyn DefDatabase) -> Option<Name> {
-        let def_map = self.def_map(db);
+        self.name_with_def_map(&self.def_map(db))
+    }
+
+    pub fn name_with_def_map(self, def_map: &DefMap) -> Option<Name> {
         let parent = def_map[self.local_id].parent?;
         def_map[parent].children.iter().find_map(|(name, module_id)| {
             if *module_id == self.local_id { Some(name.clone()) } else { None }

@@ -15,7 +15,10 @@
 // FIXME: This is a mess that needs some untangling work
 use std::{iter, mem};
 
-use hir::{ChangeWithProcMacros, ProcMacrosBuilder, db::DefDatabase};
+use hir::{
+    ChangeWithProcMacros, ProcMacrosBuilder,
+    db::{DefDatabase, HirDatabase},
+};
 use ide_db::{
     FxHashMap,
     base_db::{CrateGraphBuilder, ProcMacroPaths, salsa::Durability},
@@ -110,6 +113,15 @@ impl GlobalState {
         {
             self.analysis_host.raw_database_mut().set_expand_proc_attr_macros_with_durability(
                 self.config.expand_proc_attr_macros(),
+                Durability::HIGH,
+            );
+        }
+
+        if self.config.db_diagnostics_config(None)
+            != self.analysis_host.raw_database().diagnostics_config()
+        {
+            self.analysis_host.raw_database_mut().set_diagnostics_config_with_durability(
+                self.config.db_diagnostics_config(None),
                 Durability::HIGH,
             );
         }

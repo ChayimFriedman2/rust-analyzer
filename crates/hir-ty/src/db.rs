@@ -25,7 +25,7 @@ use crate::{
     layout::{Layout, LayoutError},
     lower::{Diagnostics, GenericDefaults, GenericPredicates},
     method_resolution::{InherentImpls, TraitImpls, TyFingerprint},
-    mir::{BorrowckResult, MirBody, MirLowerError},
+    mir::{MirBody, MirLowerError},
 };
 
 #[query_group::query_group]
@@ -58,10 +58,6 @@ pub trait HirDatabase: DefDatabase + Upcast<dyn DefDatabase> + std::fmt::Debug {
         subst: Substitution,
         env: Arc<TraitEnvironment>,
     ) -> Result<Arc<MirBody>, MirLowerError>;
-
-    #[salsa::invoke(crate::mir::borrowck_query)]
-    #[salsa::lru(2024)]
-    fn borrowck(&self, def: DefWithBodyId) -> Result<Arc<[BorrowckResult]>, MirLowerError>;
 
     #[salsa::invoke(crate::consteval::const_eval_query)]
     #[salsa::cycle(crate::consteval::const_eval_recover)]
@@ -311,6 +307,9 @@ pub trait HirDatabase: DefDatabase + Upcast<dyn DefDatabase> + std::fmt::Debug {
     #[salsa::invoke(crate::drop::has_drop_glue)]
     #[salsa::cycle(crate::drop::has_drop_glue_recover)]
     fn has_drop_glue(&self, ty: Ty, env: Arc<TraitEnvironment>) -> DropGlue;
+
+    #[salsa::input]
+    fn diagnostics_config(&self) -> DiagnosticsConfig;
 }
 
 #[test]
@@ -337,3 +336,12 @@ impl_intern_key!(InternedCoroutineId, InternedCoroutine);
 // This exists just for Chalk, because Chalk just has a single `FnDefId` where
 // we have different IDs for struct and enum variant constructors.
 impl_intern_key!(InternedCallableDefId, CallableDefId);
+
+// This is largely unrelated here, it should be in `hir`, but we don't have a database trait there.
+/// All diagnostics configuration that matter when we compute the diagnostics, and not just when
+/// translating them to LSP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticsConfig {
+    pub style_lints: bool,
+    pub enable_borrowck: bool,
+}

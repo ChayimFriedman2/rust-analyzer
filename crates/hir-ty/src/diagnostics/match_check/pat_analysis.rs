@@ -3,7 +3,7 @@
 use std::cell::LazyCell;
 use std::fmt;
 
-use hir_def::{DefWithBodyId, EnumId, EnumVariantId, HasModule, LocalFieldId, ModuleId, VariantId};
+use hir_def::{EnumId, EnumVariantId, HasModule, LocalFieldId, ModuleId, VariantId};
 use intern::sym;
 use rustc_pattern_analysis::{
     Captures, IndexVec, PatCx, PrivateUninhabitedField,
@@ -12,9 +12,10 @@ use rustc_pattern_analysis::{
 };
 use smallvec::{SmallVec, smallvec};
 use stdx::never;
+use triomphe::Arc;
 
 use crate::{
-    AdtId, Interner, Scalar, Ty, TyExt, TyKind,
+    AdtId, Interner, Scalar, TraitEnvironment, Ty, TyExt, TyKind,
     db::HirDatabase,
     infer::normalize,
     inhabitedness::{is_enum_variant_uninhabited_from, is_ty_uninhabited_from},
@@ -66,16 +67,19 @@ impl rustc_pattern_analysis::Idx for EnumVariantContiguousIndex {
 #[derive(Clone)]
 pub(crate) struct MatchCheckCtx<'db> {
     module: ModuleId,
-    body: DefWithBodyId,
     pub(crate) db: &'db dyn HirDatabase,
+    trait_env: Arc<TraitEnvironment>,
     exhaustive_patterns: bool,
 }
 
 impl<'db> MatchCheckCtx<'db> {
-    pub(crate) fn new(module: ModuleId, body: DefWithBodyId, db: &'db dyn HirDatabase) -> Self {
-        let def_map = db.crate_def_map(module.krate());
-        let exhaustive_patterns = def_map.is_unstable_feature_enabled(&sym::exhaustive_patterns);
-        Self { module, body, db, exhaustive_patterns }
+    pub(crate) fn new(
+        module: ModuleId,
+        db: &'db dyn HirDatabase,
+        trait_env: Arc<TraitEnvironment>,
+        exhaustive_patterns_feature_enabled: bool,
+    ) -> Self {
+        Self { module, db, trait_env, exhaustive_patterns: exhaustive_patterns_feature_enabled }
     }
 
     pub(crate) fn compute_match_usefulness(
@@ -143,7 +147,7 @@ impl<'db> MatchCheckCtx<'db> {
 
         (0..fields_len).map(|idx| LocalFieldId::from_raw(idx.into())).map(move |fid| {
             let ty = field_tys[fid].clone().substitute(Interner, substs);
-            let ty = normalize(self.db, self.db.trait_environment_for_body(self.body), ty);
+            let ty = normalize(self.db, self.trait_env.clone(), ty);
             (fid, ty)
         })
     }

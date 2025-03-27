@@ -1580,6 +1580,17 @@ impl Config {
             term_search_borrowck: self.assist_termSearch_borrowcheck(source_root).to_owned(),
         }
     }
+
+    pub fn db_diagnostics_config(
+        &self,
+        source_root: Option<SourceRootId>,
+    ) -> hir::DiagnosticsConfig {
+        hir::DiagnosticsConfig {
+            style_lints: *self.diagnostics_styleLints_enable(source_root),
+            enable_borrowck: *self.diagnostics_experimental_enable(source_root),
+        }
+    }
+
     pub fn expand_proc_attr_macros(&self) -> bool {
         self.procMacro_enable().to_owned() && self.procMacro_attributes_enable().to_owned()
     }

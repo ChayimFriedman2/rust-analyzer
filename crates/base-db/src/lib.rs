@@ -26,7 +26,7 @@ pub use vfs::{AnchoredPath, AnchoredPathBuf, FileId, VfsPath, file_set::FileSet}
 
 #[macro_export]
 macro_rules! impl_intern_key {
-    ($id:ident, $loc:ident) => {
+    ($id:ident, $loc:path) => {
         #[salsa::interned(no_debug, no_lifetime)]
         pub struct $id {
             pub loc: $loc,

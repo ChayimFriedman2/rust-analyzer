@@ -165,7 +165,6 @@ impl<'a> AssocItemCollector<'a> {
                 tree_id,
                 ModItem::from(item).into(),
                 attrs.cfg().unwrap(),
-                self.module_id.krate.cfg_options(self.db).clone(),
             ));
             return;
         }

@@ -2,8 +2,9 @@
 use base_db::{Crate, RootQueryDb, SourceDatabase, Upcast};
 use either::Either;
 use hir_expand::{HirFileId, MacroDefId, db::ExpandDatabase};
-use intern::sym;
+use intern::{Symbol, sym};
 use la_arena::ArenaMap;
+use rustc_hash::FxHashSet;
 use span::{EditionedFileId, MacroCallId};
 use syntax::{AstPtr, ast};
 use triomphe::Arc;
@@ -312,6 +313,11 @@ fn include_macro_invoc(
                 .map(|x| (*invoc.1, x))
         })
         .collect()
+}
+
+#[salsa::tracked(return_ref)]
+pub fn crate_unstable_features(db: &dyn DefDatabase, krate: Crate) -> FxHashSet<Symbol> {
+    db.crate_def_map(krate).unstable_features()
 }
 
 fn crate_supports_no_std(db: &dyn DefDatabase, crate_id: Crate) -> bool {

@@ -1,4 +1,4 @@
-use hir::{HasSource, HirDisplay, db::ExpandDatabase};
+use hir::{HasSource, HirDisplay};
 use ide_db::text_edit::TextRange;
 use ide_db::{
     assists::{Assist, AssistId},
@@ -21,7 +21,7 @@ pub(crate) fn trait_impl_redundant_assoc_item(
     let redundant_assoc_item_name = name.display(db, ctx.edition);
     let assoc_item = d.assoc_item.1;
 
-    let default_range = d.impl_.syntax_node_ptr().text_range();
+    let default_range = d.impl_.value.syntax_node_ptr().text_range();
     let trait_name = d.trait_.name(db).display_no_db(ctx.edition).to_smolstr();
 
     let (redundant_item_name, diagnostic_range, redundant_item_def) = match assoc_item {
@@ -57,7 +57,7 @@ pub(crate) fn trait_impl_redundant_assoc_item(
     Diagnostic::new(
         DiagnosticCode::RustcHardError("E0407"),
         format!("{redundant_item_name} is not a member of trait `{trait_name}`"),
-        hir::InFile::new(d.file_id, diagnostic_range).original_node_file_range_rooted(db),
+        hir::InFile::new(d.impl_.file_id, diagnostic_range).original_node_file_range_rooted(db),
     )
     .with_fixes(quickfix_for_redundant_assoc_item(
         ctx,
@@ -76,9 +76,10 @@ fn quickfix_for_redundant_assoc_item(
 ) -> Option<Vec<Assist>> {
     let add_assoc_item_def = |builder: &mut SourceChangeBuilder| -> Option<()> {
         let db = ctx.sema.db;
-        let root = db.parse_or_expand(d.file_id);
+        let root = ctx.sema.parse_or_expand(d.impl_.file_id);
         // don't modify trait def in outer crate
-        let current_crate = ctx.sema.scope(&d.impl_.syntax_node_ptr().to_node(&root))?.krate();
+        let current_crate =
+            ctx.sema.scope(&d.impl_.value.syntax_node_ptr().to_node(&root))?.krate();
         let trait_def_crate = d.trait_.module(db).krate();
         if trait_def_crate != current_crate {
             return None;
@@ -87,12 +88,12 @@ fn quickfix_for_redundant_assoc_item(
         let trait_def = d.trait_.source(db)?.value;
         let l_curly = trait_def.assoc_item_list()?.l_curly_token()?.text_range();
         let where_to_insert =
-            hir::InFile::new(d.file_id, l_curly).original_node_file_range_rooted(db).range;
+            hir::InFile::new(d.impl_.file_id, l_curly).original_node_file_range_rooted(db).range;
 
         builder.insert(where_to_insert.end(), redundant_item_def);
         Some(())
     };
-    let file_id = d.file_id.file_id()?;
+    let file_id = d.impl_.file_id.file_id()?;
     let mut source_change_builder = SourceChangeBuilder::new(file_id);
     add_assoc_item_def(&mut source_change_builder)?;
 
