@@ -1,6 +1,5 @@
 //! The implementation of `RustIrDatabase` for Chalk, which provides information
 //! about the code that Chalk needs.
-use core::ops;
 use std::{iter, ops::ControlFlow, sync::Arc};
 
 use hir_expand::name::Name;
@@ -29,7 +28,7 @@ use crate::{
     generics::generics,
     make_binders, make_single_type_binders,
     mapping::{ToChalk, TypeAliasAsValue, from_chalk},
-    method_resolution::{ALL_FLOAT_FPS, ALL_INT_FPS, TraitImpls, TyFingerprint},
+    method_resolution::{ALL_FLOAT_FPS, ALL_INT_FPS, TyFingerprint},
     to_assoc_type_id, to_chalk_trait_id,
     traits::ChalkContext,
     utils::ClosureSubst,
@@ -135,8 +134,8 @@ impl chalk_solve::RustIrDatabase<Interner> for ChalkContext<'_> {
         }
 
         let self_ty_fp = TyFingerprint::for_trait_impl(&ty);
-        let fps: &[TyFingerprint] = match binder_kind(&ty, binders) {
-            Some(chalk_ir::TyVariableKind::Integer) => &ALL_INT_FPS,
+        let fps = match binder_kind(&ty, binders) {
+            Some(chalk_ir::TyVariableKind::Integer) => &ALL_INT_FPS[..],
             Some(chalk_ir::TyVariableKind::Float) => &ALL_FLOAT_FPS,
             _ => self_ty_fp.as_slice(),
         };
@@ -144,21 +143,20 @@ impl chalk_solve::RustIrDatabase<Interner> for ChalkContext<'_> {
         let id_to_chalk = |id: hir_def::ImplId| id.to_chalk(self.db);
 
         let mut result = vec![];
-        if fps.is_empty() {
-            debug!("Unrestricted search for {:?} impls...", trait_);
-            _ = self.for_trait_impls(trait_, self_ty_fp, |impls| {
-                result.extend(impls.for_trait(trait_).map(id_to_chalk));
-                ControlFlow::Continue(())
-            });
-        } else {
-            _ =
-                self.for_trait_impls(trait_, self_ty_fp, |impls| {
-                    result.extend(fps.iter().flat_map(move |fp| {
-                        impls.for_trait_and_self_ty(trait_, *fp).map(id_to_chalk)
-                    }));
+        if !fps.is_empty() {
+            for fp in fps {
+                _ = self.for_trait_impls(trait_, Some(*fp), |impls| {
+                    result.extend(impls.iter().copied().map(id_to_chalk));
                     ControlFlow::Continue(())
                 });
-        };
+            }
+        } else {
+            debug!("Unrestricted search for {:?} impls...", trait_);
+            self.for_trait_impls_trait(trait_, self_ty_fp, |impls| {
+                result.extend(impls.iter().copied().map(id_to_chalk));
+                ControlFlow::Continue(())
+            });
+        }
 
         debug!("impls_for_trait returned {} impls", result.len());
         result
@@ -208,16 +206,16 @@ impl chalk_solve::RustIrDatabase<Interner> for ChalkContext<'_> {
             }
         };
 
-        if let Some(fp) = self_ty_fp {
+        if self_ty_fp.is_some() {
             self.for_trait_impls(trait_id, self_ty_fp, |impls| {
-                match impls.for_trait_and_self_ty(trait_id, fp).any(check_kind) {
+                match impls.iter().copied().any(check_kind) {
                     true => ControlFlow::Break(()),
                     false => ControlFlow::Continue(()),
                 }
             })
         } else {
-            self.for_trait_impls(trait_id, self_ty_fp, |impls| {
-                match impls.for_trait(trait_id).any(check_kind) {
+            self.for_trait_impls_trait(trait_id, self_ty_fp, |impls| {
+                match impls.iter().copied().any(check_kind) {
                     true => ControlFlow::Break(()),
                     false => ControlFlow::Continue(()),
                 }
@@ -530,13 +528,16 @@ impl ChalkContext<'_> {
         &self,
         trait_id: hir_def::TraitId,
         self_ty_fp: Option<TyFingerprint>,
-        mut f: impl FnMut(&TraitImpls) -> ControlFlow<()>,
+        mut f: impl FnMut(&[hir_def::ImplId]) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
         // Note: Since we're using `impls_for_trait` and `impl_provided_for`,
         // only impls where the trait can be resolved should ever reach Chalk.
         // `impl_datum` relies on that and will panic if the trait can't be resolved.
-        let in_deps = self.db.trait_impls_in_deps(self.krate);
-        let in_self = self.db.trait_impls_in_crate(self.krate);
+        f(&self.db.trait_impls_for_ty_in_crate_and_deps(self.krate, trait_id, self_ty_fp))?;
+        if self_ty_fp.is_some() {
+            f(&self.db.trait_impls_for_ty_in_crate_and_deps(self.krate, trait_id, None))?;
+        }
+
         let trait_module = trait_id.module(self.db);
         let type_module = match self_ty_fp {
             Some(TyFingerprint::Adt(adt_id)) => Some(adt_id.module(self.db)),
@@ -547,10 +548,18 @@ impl ChalkContext<'_> {
             _ => None,
         };
 
+        let mut handle_block = |block| {
+            if self_ty_fp.is_some() {
+                f(&self.db.trait_impls_for_ty_in_block(block, trait_id, None))?;
+            }
+            f(&self.db.trait_impls_for_ty_in_block(block, trait_id, self_ty_fp))
+        };
+
         let mut def_blocks =
             [trait_module.containing_block(), type_module.and_then(|it| it.containing_block())];
+        def_blocks.iter().copied().filter_map(|it| it).try_for_each(&mut handle_block)?;
 
-        let block_impls = iter::successors(self.block, |&block_id| {
+        iter::successors(self.block, |&block_id| {
             cov_mark::hit!(block_local_impls);
             block_id.loc(self.db).module.containing_block()
         })
@@ -562,19 +571,49 @@ impl ChalkContext<'_> {
                 }
             });
         })
-        .filter_map(|block_id| self.db.trait_impls_in_block(block_id));
-        f(&in_self)?;
-        for it in in_deps.iter().map(ops::Deref::deref) {
-            f(it)?;
-        }
-        for it in block_impls {
-            f(&it)?;
-        }
-        for it in def_blocks.into_iter().flatten().filter_map(|it| self.db.trait_impls_in_block(it))
-        {
-            f(&it)?;
-        }
-        ControlFlow::Continue(())
+        .try_for_each(&mut handle_block)
+    }
+
+    fn for_trait_impls_trait(
+        &self,
+        trait_id: hir_def::TraitId,
+        self_ty_fp: Option<TyFingerprint>,
+        mut f: impl FnMut(&[hir_def::ImplId]) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        // Note: Since we're using `impls_for_trait` and `impl_provided_for`,
+        // only impls where the trait can be resolved should ever reach Chalk.
+        // `impl_datum` relies on that and will panic if the trait can't be resolved.
+        f(&self.db.trait_impls_for_trait_in_crate_and_deps(self.krate, trait_id))?;
+
+        let trait_module = trait_id.module(self.db);
+        let type_module = match self_ty_fp {
+            Some(TyFingerprint::Adt(adt_id)) => Some(adt_id.module(self.db)),
+            Some(TyFingerprint::ForeignType(type_id)) => {
+                Some(from_foreign_def_id(type_id).module(self.db))
+            }
+            Some(TyFingerprint::Dyn(trait_id)) => Some(trait_id.module(self.db)),
+            _ => None,
+        };
+
+        let mut handle_block = |block| f(&self.db.trait_impls_for_trait_in_block(block, trait_id));
+
+        let mut def_blocks =
+            [trait_module.containing_block(), type_module.and_then(|it| it.containing_block())];
+        def_blocks.iter().copied().filter_map(|it| it).try_for_each(&mut handle_block)?;
+
+        iter::successors(self.block, |&block_id| {
+            cov_mark::hit!(block_local_impls);
+            block_id.loc(self.db).module.containing_block()
+        })
+        .inspect(|&block_id| {
+            // make sure we don't search the same block twice
+            def_blocks.iter_mut().for_each(|block| {
+                if *block == Some(block_id) {
+                    *block = None;
+                }
+            });
+        })
+        .try_for_each(&mut handle_block)
     }
 }
 

@@ -223,6 +223,33 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     #[salsa::invoke_actual(TraitImpls::trait_impls_in_deps_query)]
     fn trait_impls_in_deps(&self, krate: Crate) -> Arc<[Arc<TraitImpls>]>;
 
+    /// Whenever you call this, you probably also need to call this with a `None` fingerprint.
+    #[salsa::invoke(TraitImpls::trait_impls_for_ty_in_crate_and_deps)]
+    fn trait_impls_for_ty_in_crate_and_deps(
+        &self,
+        krate: Crate,
+        trait_id: TraitId,
+        ty: Option<TyFingerprint>,
+    ) -> SmallVec<[ImplId; 4]>;
+
+    #[salsa::invoke(TraitImpls::trait_impls_for_ty_in_block)]
+    fn trait_impls_for_ty_in_block(
+        &self,
+        block: BlockId,
+        trait_id: TraitId,
+        ty: Option<TyFingerprint>,
+    ) -> SmallVec<[ImplId; 4]>;
+
+    #[salsa::invoke(TraitImpls::trait_impls_for_trait_in_crate_and_deps)]
+    fn trait_impls_for_trait_in_crate_and_deps(
+        &self,
+        krate: Crate,
+        trait_id: TraitId,
+    ) -> Arc<[ImplId]>;
+
+    #[salsa::invoke(TraitImpls::trait_impls_for_trait_in_block)]
+    fn trait_impls_for_trait_in_block(&self, block: BlockId, trait_id: TraitId) -> Arc<[ImplId]>;
+
     // Interned IDs for Chalk integration
     #[salsa::interned]
     fn intern_callable_def(&self, callable_def: CallableDefId) -> InternedCallableDefId;

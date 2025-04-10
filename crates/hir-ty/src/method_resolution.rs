@@ -4,7 +4,6 @@
 //! and the corresponding code mostly in rustc_hir_analysis/check/method/probe.rs.
 use std::ops::ControlFlow;
 
-use arrayvec::ArrayVec;
 use base_db::Crate;
 use chalk_ir::{UniverseIndex, WithKind, cast::Cast};
 use hir_def::{
@@ -148,6 +147,68 @@ pub struct TraitImpls {
 }
 
 impl TraitImpls {
+    pub(crate) fn trait_impls_for_trait_in_crate_and_deps(
+        db: &dyn HirDatabase,
+        krate: Crate,
+        trait_id: TraitId,
+    ) -> Arc<[ImplId]> {
+        let mut result = Vec::new();
+        let impls_in_crate = db.trait_impls_in_crate(krate);
+        let impls_in_deps = db.trait_impls_in_deps(krate);
+        impls_in_deps.iter().chain(Some(&impls_in_crate)).for_each(|impls| {
+            if let Some(impls) = impls.map.get(&trait_id) {
+                result.extend(impls.values().flatten().copied());
+            }
+        });
+        result.into()
+    }
+
+    pub(crate) fn trait_impls_for_trait_in_block(
+        db: &dyn HirDatabase,
+        block: BlockId,
+        trait_id: TraitId,
+    ) -> Arc<[ImplId]> {
+        let mut result = Vec::new();
+        if let Some(impls) = db.trait_impls_in_block(block) {
+            if let Some(impls) = impls.map.get(&trait_id) {
+                result.extend(impls.values().flatten().copied());
+            }
+        }
+        result.into()
+    }
+
+    pub(crate) fn trait_impls_for_ty_in_crate_and_deps(
+        db: &dyn HirDatabase,
+        krate: Crate,
+        trait_id: TraitId,
+        ty: Option<TyFingerprint>,
+    ) -> SmallVec<[ImplId; 4]> {
+        let mut result = SmallVec::new();
+        let impls_in_crate = db.trait_impls_in_crate(krate);
+        let impls_in_deps = db.trait_impls_in_deps(krate);
+        impls_in_deps.iter().chain(Some(&impls_in_crate)).for_each(|impls| {
+            if let Some(impls) = impls.map.get(&trait_id).and_then(|it| it.get(&ty)) {
+                result.extend(impls.iter().copied());
+            }
+        });
+        result
+    }
+
+    pub(crate) fn trait_impls_for_ty_in_block(
+        db: &dyn HirDatabase,
+        block: BlockId,
+        trait_id: TraitId,
+        ty: Option<TyFingerprint>,
+    ) -> SmallVec<[ImplId; 4]> {
+        let mut result = SmallVec::new();
+        if let Some(impls) = db.trait_impls_in_block(block) {
+            if let Some(impls) = impls.map.get(&trait_id).and_then(|it| it.get(&ty)) {
+                result.extend(impls.iter().copied());
+            }
+        }
+        result
+    }
+
     pub(crate) fn trait_impls_in_crate_query(db: &dyn HirDatabase, krate: Crate) -> Arc<Self> {
         let _p = tracing::info_span!("trait_impls_in_crate_query", ?krate).entered();
         let mut impls = FxHashMap::default();
@@ -727,7 +788,12 @@ fn lookup_impl_assoc_item_for_trait_ref(
     let hir_trait_id = trait_ref.hir_trait_id();
     let self_ty = trait_ref.self_type_parameter(Interner);
     let self_ty_fp = TyFingerprint::for_trait_impl(&self_ty)?;
-    let impls = db.trait_impls_in_deps(env.krate);
+    let crate_impls = [
+        db.trait_impls_for_ty_in_crate_and_deps(env.krate, hir_trait_id, Some(self_ty_fp)),
+        db.trait_impls_for_ty_in_crate_and_deps(env.krate, hir_trait_id, None),
+    ]
+    .into_iter()
+    .flatten();
 
     let trait_module = hir_trait_id.module(db);
     let type_module = match self_ty_fp {
@@ -737,17 +803,19 @@ fn lookup_impl_assoc_item_for_trait_ref(
         _ => None,
     };
 
-    let def_blocks: ArrayVec<_, 2> =
+    let block_impls =
         [trait_module.containing_block(), type_module.and_then(|it| it.containing_block())]
             .into_iter()
             .flatten()
-            .filter_map(|block_id| db.trait_impls_in_block(block_id))
-            .collect();
+            .flat_map(|block_id| {
+                [
+                    db.trait_impls_for_ty_in_block(block_id, hir_trait_id, Some(self_ty_fp)),
+                    db.trait_impls_for_ty_in_block(block_id, hir_trait_id, None),
+                ]
+            })
+            .flatten();
 
-    let impls = impls
-        .iter()
-        .chain(&def_blocks)
-        .flat_map(|impls| impls.for_trait_and_self_ty(hir_trait_id, self_ty_fp));
+    let impls = crate_impls.chain(block_impls);
 
     let table = InferenceTable::new(db, env);
 
