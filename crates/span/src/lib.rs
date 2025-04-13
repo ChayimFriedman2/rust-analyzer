@@ -215,25 +215,35 @@ mod salsa {
 /// `MacroCallId`.
 // FIXME: Give this a better fitting name
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct HirFileId(salsa::Id);
+pub struct HirFileId(
+    /// # Invariant
+    ///
+    /// If the MSB is 1, this always holds a valid `salsa::Id`.
+    u32,
+);
 
 #[cfg(feature = "salsa")]
 impl salsa::plumbing::AsId for HirFileId {
     fn as_id(&self) -> salsa::Id {
-        self.0
+        self.macro_file()
+            .expect(
+                "cannot call `salsa::AsId::as_id()` on an `HirFileId` that is not a `MacroFile`",
+            )
+            .macro_call_id
+            .as_id()
     }
 }
 
 #[cfg(feature = "salsa")]
 impl salsa::plumbing::FromId for HirFileId {
     fn from_id(id: salsa::Id) -> Self {
-        HirFileId(id)
+        MacroFileId { macro_call_id: MacroCallId::from_id(id) }.into()
     }
 }
 
 impl From<HirFileId> for u32 {
     fn from(value: HirFileId) -> Self {
-        value.0.as_u32()
+        value.0
     }
 }
 
@@ -338,7 +348,8 @@ impl From<EditionedFileId> for HirFileId {
     #[allow(clippy::let_unit_value)]
     fn from(id: EditionedFileId) -> Self {
         assert!(id.as_u32() <= Self::MAX_HIR_FILE_ID, "FileId index {} is too large", id.as_u32());
-        HirFileId(salsa::Id::from_u32(id.0))
+        // INVARIANT: The MSB is not 1.
+        HirFileId(id.0)
     }
 }
 
@@ -347,7 +358,8 @@ impl From<MacroFileId> for HirFileId {
     fn from(MacroFileId { macro_call_id: MacroCallId(id) }: MacroFileId) -> Self {
         let id: u32 = id.as_u32();
         assert!(id <= Self::MAX_HIR_FILE_ID, "MacroCallId index {id} is too large");
-        HirFileId(salsa::Id::from_u32(id | Self::MACRO_FILE_TAG_MASK))
+        // INVARIANT: This came from a Salsa ID.
+        HirFileId(id | Self::MACRO_FILE_TAG_MASK)
     }
 }
 
@@ -357,37 +369,39 @@ impl HirFileId {
 
     #[inline]
     pub fn is_macro(self) -> bool {
-        self.0.as_u32() & Self::MACRO_FILE_TAG_MASK != 0
+        self.0 & Self::MACRO_FILE_TAG_MASK != 0
     }
 
     #[inline]
     pub fn macro_file(self) -> Option<MacroFileId> {
-        match self.0.as_u32() & Self::MACRO_FILE_TAG_MASK {
+        match self.0 & Self::MACRO_FILE_TAG_MASK {
             0 => None,
             _ => Some(MacroFileId {
-                macro_call_id: MacroCallId(salsa::Id::from_u32(
-                    self.0.as_u32() ^ Self::MACRO_FILE_TAG_MASK,
-                )),
+                // SAFETY: Our invariant.
+                macro_call_id: MacroCallId(unsafe {
+                    salsa::Id::from_u32(self.0 ^ Self::MACRO_FILE_TAG_MASK)
+                }),
             }),
         }
     }
 
     #[inline]
     pub fn file_id(self) -> Option<EditionedFileId> {
-        match self.0.as_u32() & Self::MACRO_FILE_TAG_MASK {
-            0 => Some(EditionedFileId(self.0.as_u32())),
+        match self.0 & Self::MACRO_FILE_TAG_MASK {
+            0 => Some(EditionedFileId(self.0)),
             _ => None,
         }
     }
 
     #[inline]
     pub fn repr(self) -> HirFileIdRepr {
-        match self.0.as_u32() & Self::MACRO_FILE_TAG_MASK {
-            0 => HirFileIdRepr::FileId(EditionedFileId(self.0.as_u32())),
+        match self.0 & Self::MACRO_FILE_TAG_MASK {
+            0 => HirFileIdRepr::FileId(EditionedFileId(self.0)),
             _ => HirFileIdRepr::MacroFile(MacroFileId {
-                macro_call_id: MacroCallId(salsa::Id::from_u32(
-                    self.0.as_u32() ^ Self::MACRO_FILE_TAG_MASK,
-                )),
+                // SAFETY: Our invariant.
+                macro_call_id: MacroCallId(unsafe {
+                    salsa::Id::from_u32(self.0 ^ Self::MACRO_FILE_TAG_MASK)
+                }),
             }),
         }
     }
