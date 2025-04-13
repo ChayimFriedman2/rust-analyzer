@@ -27,7 +27,7 @@ pub use vfs::{AnchoredPath, AnchoredPathBuf, FileId, VfsPath, file_set::FileSet}
 #[macro_export]
 macro_rules! impl_intern_key {
     ($id:ident, $loc:ident) => {
-        #[salsa::interned(no_debug, no_lifetime)]
+        #[salsa::interned(no_lifetime)]
         pub struct $id {
             pub loc: $loc,
         }
@@ -151,7 +151,7 @@ impl Files {
     }
 }
 
-#[salsa::interned(no_lifetime)]
+#[salsa::interned(no_lifetime, debug)]
 pub struct EditionedFileId {
     pub editioned_file_id: span::EditionedFileId,
 }
@@ -168,18 +168,18 @@ impl EditionedFileId {
     }
 }
 
-#[salsa::input]
+#[salsa::input(debug)]
 pub struct FileText {
     pub text: Arc<str>,
     pub file_id: vfs::FileId,
 }
 
-#[salsa::input]
+#[salsa::input(debug)]
 pub struct FileSourceRootInput {
     pub source_root_id: SourceRootId,
 }
 
-#[salsa::input]
+#[salsa::input(debug)]
 pub struct SourceRootInput {
     pub source_root: Arc<SourceRoot>,
 }
