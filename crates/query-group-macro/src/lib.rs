@@ -10,10 +10,13 @@ use queries::{
     Queries, SetterKind, TrackedQuery, Transparent,
 };
 use quote::{ToTokens, format_ident, quote};
+use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::visit_mut::VisitMut;
 use syn::{
-    Attribute, FnArg, ItemTrait, Path, TraitItem, TraitItemFn, parse_quote, parse_quote_spanned,
+    Attribute, FnArg, ItemTrait, Path, Token, TraitItem, TraitItemFn, parse_quote,
+    parse_quote_spanned,
 };
 
 mod queries;
@@ -106,6 +109,65 @@ enum QueryKind {
     Interned,
 }
 
+#[derive(Debug, Clone)]
+struct Cycle {
+    cycle_fn: Path,
+    cycle_initial: Path,
+}
+
+impl Parse for Cycle {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let input_span = input.span();
+        let options = Punctuated::<Option, Token![,]>::parse_terminated(input)?;
+        let mut cycle_fn = None;
+        let mut cycle_initial = None;
+        for option in options {
+            let name = option.name.to_string();
+            match &*name {
+                "cycle_fn" => {
+                    if cycle_fn.is_some() {
+                        return Err(syn::Error::new_spanned(&option.name, "duplicate option"));
+                    }
+                    cycle_fn = Some(option.value);
+                }
+                "cycle_initial" => {
+                    if cycle_initial.is_some() {
+                        return Err(syn::Error::new_spanned(&option.name, "duplicate option"));
+                    }
+                    cycle_initial = Some(option.value);
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &option.name,
+                        "unknown cycle option. Accepted values: `cycle_fn`, `cycle_initial`",
+                    ));
+                }
+            }
+        }
+        let (Some(cycle_fn), Some(cycle_initial)) = (cycle_fn, cycle_initial) else {
+            return Err(syn::Error::new(
+                input_span,
+                "required both `cycle_fn` and `cycle_initial`",
+            ));
+        };
+        return Ok(Self { cycle_fn, cycle_initial });
+
+        struct Option {
+            name: syn::Ident,
+            value: Path,
+        }
+
+        impl Parse for Option {
+            fn parse(input: ParseStream) -> syn::Result<Self> {
+                let name = input.parse()?;
+                input.parse::<Token![=]>()?;
+                let value = input.parse()?;
+                Ok(Self { name, value })
+            }
+        }
+    }
+}
+
 pub(crate) fn query_group_impl(
     _args: proc_macro::TokenStream,
     input: proc_macro::TokenStream,
@@ -155,8 +217,8 @@ pub(crate) fn query_group_impl(
             for SalsaAttr { name, tts, span } in salsa_attrs {
                 match name.as_str() {
                     "cycle" => {
-                        let path = syn::parse::<Parenthesized<Path>>(tts)?;
-                        cycle = Some(path.0.clone())
+                        let c = syn::parse::<Parenthesized<Cycle>>(tts)?;
+                        cycle = Some(c.0);
                     }
                     "input" => {
                         if !pat_and_tys.is_empty() {
@@ -416,7 +478,7 @@ impl<T> syn::parse::Parse for Parenthesized<T>
 where
     T: syn::parse::Parse,
 {
-    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let content;
         syn::parenthesized!(content in input);
         content.parse::<T>().map(Parenthesized)

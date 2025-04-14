@@ -4,6 +4,7 @@ use chalk_ir::cast::Cast;
 use hir_def::AdtId;
 use hir_def::lang_item::LangItem;
 use hir_def::signatures::StructFlags;
+use salsa::CycleRecoveryAction;
 use stdx::never;
 use triomphe::Arc;
 
@@ -194,9 +195,19 @@ fn is_copy(db: &dyn HirDatabase, ty: Ty, env: Arc<TraitEnvironment>) -> bool {
     db.trait_solve(env.krate, env.block, goal).is_some()
 }
 
-pub(crate) fn has_drop_glue_recover(
+pub(crate) fn has_drop_glue_cycle_fn(
     _db: &dyn HirDatabase,
-    _cycle: &salsa::Cycle,
+    _result: &DropGlue,
+    _count: u32,
+    _: HirDatabaseData,
+    _ty: Ty,
+    _env: Arc<TraitEnvironment>,
+) -> CycleRecoveryAction<DropGlue> {
+    CycleRecoveryAction::Fallback(DropGlue::None)
+}
+
+pub(crate) fn has_drop_glue_cycle_initial(
+    _db: &dyn HirDatabase,
     _: HirDatabaseData,
     _ty: Ty,
     _env: Arc<TraitEnvironment>,

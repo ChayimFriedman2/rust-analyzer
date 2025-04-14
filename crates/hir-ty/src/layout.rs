@@ -13,8 +13,8 @@ use hir_def::{
 use la_arena::{Idx, RawIdx};
 use rustc_abi::AddressSpace;
 use rustc_index::IndexVec;
-use salsa::Cycle;
 
+use salsa::CycleRecoveryAction;
 use triomphe::Arc;
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     utils::ClosureSubst,
 };
 
-pub(crate) use self::adt::layout_of_adt_recover;
+pub(crate) use self::adt::{layout_of_adt_cycle_fn, layout_of_adt_cycle_initial};
 pub use self::{adt::layout_of_adt_query, target::target_data_layout_query};
 
 mod adt;
@@ -365,9 +365,19 @@ pub fn layout_of_ty_query(
     Ok(Arc::new(result))
 }
 
-pub(crate) fn layout_of_ty_recover(
+pub(crate) fn layout_of_ty_cycle_fn(
     _: &dyn HirDatabase,
-    _: &Cycle,
+    _result: &Result<Arc<Layout>, LayoutError>,
+    _count: u32,
+    _: HirDatabaseData,
+    _: Ty,
+    _: Arc<TraitEnvironment>,
+) -> CycleRecoveryAction<Result<Arc<Layout>, LayoutError>> {
+    CycleRecoveryAction::Fallback(Err(LayoutError::RecursiveTypeWithoutIndirection))
+}
+
+pub(crate) fn layout_of_ty_cycle_initial(
+    _: &dyn HirDatabase,
     _: HirDatabaseData,
     _: Ty,
     _: Arc<TraitEnvironment>,

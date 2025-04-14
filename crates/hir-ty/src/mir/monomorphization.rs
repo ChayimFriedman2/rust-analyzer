@@ -14,12 +14,13 @@ use chalk_ir::{
     fold::{FallibleTypeFolder, TypeFoldable, TypeSuperFoldable},
 };
 use hir_def::DefWithBodyId;
+use salsa::CycleRecoveryAction;
 use triomphe::Arc;
 
 use crate::{
     Const, Interner, ProjectionTy, Substitution, TraitEnvironment, Ty, TyKind,
     consteval::{intern_const_scalar, unknown_const},
-    db::{HirDatabase, HirDatabaseData, InternedClosure, InternedClosureId},
+    db::{HirDatabase, InternedClosure, InternedClosureId},
     from_placeholder_idx,
     generics::{Generics, generics},
     infer::normalize,
@@ -313,10 +314,19 @@ pub fn monomorphized_mir_body_query(
     Ok(Arc::new(body))
 }
 
-pub(crate) fn monomorphized_mir_body_recover(
-    _: &dyn HirDatabase,
-    _: &salsa::Cycle,
-    _: HirDatabaseData,
+pub(crate) fn monomorphized_mir_body_cycle_fn(
+    _db: &dyn HirDatabase,
+    _result: &Result<Arc<MirBody>, MirLowerError>,
+    _count: u32,
+    _: DefWithBodyId,
+    _: Substitution,
+    _: Arc<crate::TraitEnvironment>,
+) -> CycleRecoveryAction<Result<Arc<MirBody>, MirLowerError>> {
+    CycleRecoveryAction::Fallback(Err(MirLowerError::Loop))
+}
+
+pub(crate) fn monomorphized_mir_body_cycle_initial(
+    _db: &dyn HirDatabase,
     _: DefWithBodyId,
     _: Substitution,
     _: Arc<crate::TraitEnvironment>,

@@ -48,7 +48,7 @@ use hir_expand::name::Name;
 use la_arena::{Arena, ArenaMap};
 use rustc_hash::FxHashSet;
 use rustc_pattern_analysis::Captures;
-use salsa::Cycle;
+use salsa::CycleRecoveryAction;
 use stdx::{impl_from, never};
 use triomphe::{Arc, ThinArc};
 
@@ -59,7 +59,7 @@ use crate::{
     QuantifiedWhereClauses, Substitution, TraitEnvironment, TraitRef, TraitRefExt, Ty, TyBuilder,
     TyKind, WhereClause, all_super_traits,
     consteval::{intern_const_ref, path_to_const, unknown_const, unknown_const_as_generic},
-    db::{HirDatabase, HirDatabaseData},
+    db::HirDatabase,
     error_lifetime,
     generics::{Generics, generics, trait_self_param_idx},
     lower::{
@@ -950,10 +950,19 @@ pub(crate) fn generic_predicates_for_param_query(
     GenericPredicates(predicates.is_empty().not().then(|| predicates.into()))
 }
 
-pub(crate) fn generic_predicates_for_param_recover(
+pub(crate) fn generic_predicates_for_param_cycle_fn(
     _db: &dyn HirDatabase,
-    _cycle: &salsa::Cycle,
-    _: HirDatabaseData,
+    _result: &GenericPredicates,
+    _count: u32,
+    _def: GenericDefId,
+    _param_id: TypeOrConstParamId,
+    _assoc_name: Option<Name>,
+) -> CycleRecoveryAction<GenericPredicates> {
+    CycleRecoveryAction::Fallback(GenericPredicates(None))
+}
+
+pub(crate) fn generic_predicates_for_param_cycle_initial(
+    _db: &dyn HirDatabase,
     _def: GenericDefId,
     _param_id: TypeOrConstParamId,
     _assoc_name: Option<Name>,
@@ -1241,14 +1250,15 @@ pub(crate) fn generic_defaults_with_diagnostics_query(
     }
 }
 
-pub(crate) fn generic_defaults_with_diagnostics_recover(
+pub(crate) fn generic_defaults_with_diagnostics_cycle_fn(
     db: &dyn HirDatabase,
-    _cycle: &Cycle,
+    _result: &(GenericDefaults, Diagnostics),
+    _count: u32,
     def: GenericDefId,
-) -> (GenericDefaults, Diagnostics) {
+) -> CycleRecoveryAction<(GenericDefaults, Diagnostics)> {
     let generic_params = generics(db, def);
     if generic_params.len() == 0 {
-        return (GenericDefaults(None), None);
+        return CycleRecoveryAction::Fallback((GenericDefaults(None), None));
     }
     // FIXME: this code is not covered in tests.
     // we still need one default per parameter
@@ -1260,7 +1270,14 @@ pub(crate) fn generic_defaults_with_diagnostics_recover(
         };
         crate::make_binders(db, &generic_params, val)
     }))));
-    (defaults, None)
+    CycleRecoveryAction::Fallback((defaults, None))
+}
+
+pub(crate) fn generic_defaults_with_diagnostics_cycle_initial(
+    _db: &dyn HirDatabase,
+    _def: GenericDefId,
+) -> (GenericDefaults, Diagnostics) {
+    (GenericDefaults(None), None)
 }
 
 fn fn_sig_for_fn(db: &dyn HirDatabase, def: FunctionId) -> PolyFnSig {
@@ -1391,18 +1408,23 @@ fn type_for_enum_variant_constructor(
     }
 }
 
-#[salsa::tracked(recovery_fn = type_for_adt_recovery)]
+#[salsa::tracked(cycle_fn = type_for_adt_cycle_fn, cycle_initial = type_for_adt_cycle_initial)]
 fn type_for_adt_tracked(db: &dyn HirDatabase, adt: AdtId) -> Binders<Ty> {
     type_for_adt(db, adt)
 }
 
-pub(crate) fn type_for_adt_recovery(
+fn type_for_adt_cycle_fn(
     db: &dyn HirDatabase,
-    _cycle: &salsa::Cycle,
+    _result: &Binders<Ty>,
+    _count: u32,
     adt: AdtId,
-) -> Binders<Ty> {
+) -> CycleRecoveryAction<Binders<Ty>> {
     let generics = generics(db, adt.into());
-    make_binders(db, &generics, TyKind::Error.intern(Interner))
+    CycleRecoveryAction::Fallback(make_binders(db, &generics, TyKind::Error.intern(Interner)))
+}
+
+fn type_for_adt_cycle_initial(_db: &dyn HirDatabase, _adt: AdtId) -> Binders<Ty> {
+    Binders::empty(Interner, TyKind::Error.intern(Interner))
 }
 
 fn type_for_adt(db: &dyn HirDatabase, adt: AdtId) -> Binders<Ty> {
@@ -1438,13 +1460,24 @@ pub(crate) fn type_for_type_alias_with_diagnostics_query(
     (make_binders(db, &generics, inner), diags)
 }
 
-pub(crate) fn type_for_type_alias_with_diagnostics_query_recover(
+pub(crate) fn type_for_type_alias_with_diagnostics_cycle_fn(
     db: &dyn HirDatabase,
-    _cycle: &salsa::Cycle,
+    _result: &(Binders<Ty>, Diagnostics),
+    _count: u32,
     adt: TypeAliasId,
-) -> (Binders<Ty>, Diagnostics) {
+) -> CycleRecoveryAction<(Binders<Ty>, Diagnostics)> {
     let generics = generics(db, adt.into());
-    (make_binders(db, &generics, TyKind::Error.intern(Interner)), None)
+    CycleRecoveryAction::Fallback((
+        make_binders(db, &generics, TyKind::Error.intern(Interner)),
+        None,
+    ))
+}
+
+pub(crate) fn type_for_type_alias_with_diagnostics_cycle_initial(
+    _db: &dyn HirDatabase,
+    _adt: TypeAliasId,
+) -> (Binders<Ty>, Diagnostics) {
+    (Binders::empty(Interner, TyKind::Error.intern(Interner)), None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1544,13 +1577,24 @@ pub(crate) fn const_param_ty_with_diagnostics_query(
     (ty, create_diagnostics(ctx.diagnostics))
 }
 
-pub(crate) fn impl_self_ty_with_diagnostics_recover(
+pub(crate) fn impl_self_ty_with_diagnostics_cycle_fn(
     db: &dyn HirDatabase,
-    _cycle: &salsa::Cycle,
+    _result: &(Binders<Ty>, Diagnostics),
+    _count: u32,
     impl_id: ImplId,
+) -> CycleRecoveryAction<(Binders<Ty>, Diagnostics)> {
+    let generics = generics(db, impl_id.into());
+    CycleRecoveryAction::Fallback((
+        make_binders(db, &generics, TyKind::Error.intern(Interner)),
+        None,
+    ))
+}
+
+pub(crate) fn impl_self_ty_with_diagnostics_cycle_initial(
+    _db: &dyn HirDatabase,
+    _impl_id: ImplId,
 ) -> (Binders<Ty>, Diagnostics) {
-    let generics = generics(db, (impl_id).into());
-    (make_binders(db, &generics, TyKind::Error.intern(Interner)), None)
+    (Binders::empty(Interner, TyKind::Error.intern(Interner)), None)
 }
 
 pub(crate) fn impl_trait_query(db: &dyn HirDatabase, impl_id: ImplId) -> Option<Binders<TraitRef>> {

@@ -10,19 +10,14 @@ use hir_def::{
     type_ref::LiteralConstRef,
 };
 use hir_expand::Lookup;
-use salsa::Cycle;
+use salsa::CycleRecoveryAction;
 use stdx::never;
 use triomphe::Arc;
 
 use crate::{
     Const, ConstData, ConstScalar, ConstValue, GenericArg, Interner, MemoryMap, Substitution,
-    TraitEnvironment, Ty, TyBuilder,
-    db::{HirDatabase, HirDatabaseData},
-    display::DisplayTarget,
-    generics::Generics,
-    infer::InferenceContext,
-    lower::ParamLoweringMode,
-    to_placeholder_idx,
+    TraitEnvironment, Ty, TyBuilder, db::HirDatabase, display::DisplayTarget, generics::Generics,
+    infer::InferenceContext, lower::ParamLoweringMode, to_placeholder_idx,
 };
 
 use super::mir::{MirEvalError, MirLowerError, interpret_mir, lower_to_mir, pad16};
@@ -225,10 +220,19 @@ pub fn try_const_isize(db: &dyn HirDatabase, c: &Const) -> Option<i128> {
     }
 }
 
-pub(crate) fn const_eval_recover(
+pub(crate) fn const_eval_cycle_fn(
     _: &dyn HirDatabase,
-    _: &Cycle,
-    _: HirDatabaseData,
+    _result: &Result<Const, ConstEvalError>,
+    _count: u32,
+    _: GeneralConstId,
+    _: Substitution,
+    _: Option<Arc<TraitEnvironment>>,
+) -> CycleRecoveryAction<Result<Const, ConstEvalError>> {
+    CycleRecoveryAction::Fallback(Err(ConstEvalError::MirLowerError(MirLowerError::Loop)))
+}
+
+pub(crate) fn const_eval_cycle_initial(
+    _: &dyn HirDatabase,
     _: GeneralConstId,
     _: Substitution,
     _: Option<Arc<TraitEnvironment>>,
@@ -236,17 +240,33 @@ pub(crate) fn const_eval_recover(
     Err(ConstEvalError::MirLowerError(MirLowerError::Loop))
 }
 
-pub(crate) fn const_eval_static_recover(
+pub(crate) fn const_eval_static_cycle_fn(
     _: &dyn HirDatabase,
-    _: &Cycle,
+    _result: &Result<Const, ConstEvalError>,
+    _count: u32,
+    _: StaticId,
+) -> CycleRecoveryAction<Result<Const, ConstEvalError>> {
+    CycleRecoveryAction::Fallback(Err(ConstEvalError::MirLowerError(MirLowerError::Loop)))
+}
+
+pub(crate) fn const_eval_static_cycle_initial(
+    _: &dyn HirDatabase,
     _: StaticId,
 ) -> Result<Const, ConstEvalError> {
     Err(ConstEvalError::MirLowerError(MirLowerError::Loop))
 }
 
-pub(crate) fn const_eval_discriminant_recover(
+pub(crate) fn const_eval_discriminant_cycle_fn(
     _: &dyn HirDatabase,
-    _: &Cycle,
+    _result: &Result<i128, ConstEvalError>,
+    _count: u32,
+    _: EnumVariantId,
+) -> CycleRecoveryAction<Result<i128, ConstEvalError>> {
+    CycleRecoveryAction::Fallback(Err(ConstEvalError::MirLowerError(MirLowerError::Loop)))
+}
+
+pub(crate) fn const_eval_discriminant_cycle_initial(
+    _: &dyn HirDatabase,
     _: EnumVariantId,
 ) -> Result<i128, ConstEvalError> {
     Err(ConstEvalError::MirLowerError(MirLowerError::Loop))

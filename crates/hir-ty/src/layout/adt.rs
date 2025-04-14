@@ -9,7 +9,7 @@ use hir_def::{
 };
 use intern::sym;
 use rustc_index::IndexVec;
-use salsa::Cycle;
+use salsa::CycleRecoveryAction;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
@@ -20,7 +20,7 @@ use crate::{
     layout::{Layout, LayoutError, field_ty},
 };
 
-use super::{HirDatabaseData, LayoutCx};
+use super::LayoutCx;
 
 pub fn layout_of_adt_query(
     db: &dyn HirDatabase,
@@ -131,10 +131,19 @@ fn layout_scalar_valid_range(db: &dyn HirDatabase, def: AdtId) -> (Bound<u128>, 
     )
 }
 
-pub(crate) fn layout_of_adt_recover(
+pub(crate) fn layout_of_adt_cycle_fn(
     _: &dyn HirDatabase,
-    _: &Cycle,
-    _: HirDatabaseData,
+    _result: &Result<Arc<Layout>, LayoutError>,
+    _count: u32,
+    _: AdtId,
+    _: Substitution,
+    _: Arc<TraitEnvironment>,
+) -> CycleRecoveryAction<Result<Arc<Layout>, LayoutError>> {
+    CycleRecoveryAction::Fallback(Err(LayoutError::RecursiveTypeWithoutIndirection))
+}
+
+pub(crate) fn layout_of_adt_cycle_initial(
+    _: &dyn HirDatabase,
     _: AdtId,
     _: Substitution,
     _: Arc<TraitEnvironment>,

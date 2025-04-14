@@ -3,13 +3,15 @@
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{FnArg, Ident, PatType, Path, Receiver, ReturnType, Type, parse_quote, spanned::Spanned};
 
+use crate::Cycle;
+
 pub(crate) struct TrackedQuery {
     pub(crate) trait_name: Ident,
     pub(crate) signature: syn::Signature,
     pub(crate) pat_and_tys: Vec<PatType>,
     pub(crate) invoke: Option<Path>,
     pub(crate) default: Option<syn::Block>,
-    pub(crate) cycle: Option<Path>,
+    pub(crate) cycle: Option<Cycle>,
     pub(crate) lru: Option<u32>,
     pub(crate) generated_struct: Option<GeneratedInputStruct>,
 }
@@ -34,12 +36,13 @@ impl ToTokens for TrackedQuery {
         let fn_ident = &sig.ident;
         let shim: Ident = format_ident!("{}_shim", fn_ident);
 
-        let annotation = match (self.cycle.clone(), self.lru) {
-            (Some(cycle), Some(lru)) => quote!(#[salsa::tracked(lru = #lru, recovery_fn = #cycle)]),
-            (Some(cycle), None) => quote!(#[salsa::tracked(recovery_fn = #cycle)]),
-            (None, Some(lru)) => quote!(#[salsa::tracked(lru = #lru)]),
-            (None, None) => quote!(#[salsa::tracked]),
-        };
+        let options = self
+            .cycle
+            .as_ref()
+            .map(|Cycle { cycle_fn, cycle_initial }| quote!(cycle_fn = #cycle_fn, cycle_initial = #cycle_initial))
+            .into_iter()
+            .chain(self.lru.map(|lru| quote!(lru = #lru)));
+        let annotation = quote!(#[salsa::tracked( #(#options),* )]);
 
         let pat_and_tys = &self.pat_and_tys;
         let params = self

@@ -2,7 +2,7 @@
 
 use std::{fmt::Write, iter, mem};
 
-use base_db::{Crate, salsa::Cycle};
+use base_db::Crate;
 use chalk_ir::{BoundVar, ConstData, DebruijnIndex, TyKind};
 use hir_def::{
     AdtId, DefWithBodyId, EnumVariantId, GeneralConstId, HasModule, ItemContainerId, LocalFieldId,
@@ -20,6 +20,7 @@ use hir_expand::name::Name;
 use la_arena::ArenaMap;
 use rustc_apfloat::Float;
 use rustc_hash::FxHashMap;
+use salsa::CycleRecoveryAction;
 use span::{Edition, FileId};
 use syntax::TextRange;
 use triomphe::Arc;
@@ -2145,9 +2146,17 @@ pub fn mir_body_query(db: &dyn HirDatabase, def: DefWithBodyId) -> Result<Arc<Mi
     Ok(Arc::new(result))
 }
 
-pub(crate) fn mir_body_recover(
+pub(crate) fn mir_body_cycle_fn(
     _db: &dyn HirDatabase,
-    _cycle: &Cycle,
+    _result: &Result<Arc<MirBody>>,
+    _count: u32,
+    _def: DefWithBodyId,
+) -> CycleRecoveryAction<Result<Arc<MirBody>>> {
+    CycleRecoveryAction::Fallback(Err(MirLowerError::Loop))
+}
+
+pub(crate) fn mir_body_cycle_initial(
+    _db: &dyn HirDatabase,
     _def: DefWithBodyId,
 ) -> Result<Arc<MirBody>> {
     Err(MirLowerError::Loop)

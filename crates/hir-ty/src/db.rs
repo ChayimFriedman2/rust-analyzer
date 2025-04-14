@@ -36,14 +36,17 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     // region:mir
 
     #[salsa::invoke_actual(crate::mir::mir_body_query)]
-    #[salsa::cycle(crate::mir::mir_body_recover)]
+    #[salsa::cycle(cycle_fn = crate::mir::mir_body_cycle_fn, cycle_initial = crate::mir::mir_body_cycle_initial)]
     fn mir_body(&self, def: DefWithBodyId) -> Result<Arc<MirBody>, MirLowerError>;
 
     #[salsa::invoke_actual(crate::mir::mir_body_for_closure_query)]
     fn mir_body_for_closure(&self, def: InternedClosureId) -> Result<Arc<MirBody>, MirLowerError>;
 
-    #[salsa::invoke(crate::mir::monomorphized_mir_body_query)]
-    #[salsa::cycle(crate::mir::monomorphized_mir_body_recover)]
+    #[salsa::invoke_actual(crate::mir::monomorphized_mir_body_query)]
+    #[salsa::cycle(
+        cycle_fn = crate::mir::monomorphized_mir_body_cycle_fn,
+        cycle_initial = crate::mir::monomorphized_mir_body_cycle_initial,
+    )]
     fn monomorphized_mir_body(
         &self,
         def: DefWithBodyId,
@@ -63,8 +66,11 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     #[salsa::lru(2024)]
     fn borrowck(&self, def: DefWithBodyId) -> Result<Arc<[BorrowckResult]>, MirLowerError>;
 
-    #[salsa::invoke(crate::consteval::const_eval_query)]
-    #[salsa::cycle(crate::consteval::const_eval_recover)]
+    #[salsa::invoke_actual(crate::consteval::const_eval_query)]
+    #[salsa::cycle(
+        cycle_fn = crate::consteval::const_eval_cycle_fn,
+        cycle_initial = crate::consteval::const_eval_cycle_initial,
+    )]
     fn const_eval(
         &self,
         def: GeneralConstId,
@@ -73,11 +79,17 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     ) -> Result<Const, ConstEvalError>;
 
     #[salsa::invoke_actual(crate::consteval::const_eval_static_query)]
-    #[salsa::cycle(crate::consteval::const_eval_static_recover)]
+    #[salsa::cycle(
+        cycle_fn = crate::consteval::const_eval_static_cycle_fn,
+        cycle_initial = crate::consteval::const_eval_static_cycle_initial,
+    )]
     fn const_eval_static(&self, def: StaticId) -> Result<Const, ConstEvalError>;
 
     #[salsa::invoke_actual(crate::consteval::const_eval_discriminant_variant)]
-    #[salsa::cycle(crate::consteval::const_eval_discriminant_recover)]
+    #[salsa::cycle(
+        cycle_fn = crate::consteval::const_eval_discriminant_cycle_fn,
+        cycle_initial = crate::consteval::const_eval_discriminant_cycle_initial,
+    )]
     fn const_eval_discriminant(&self, def: EnumVariantId) -> Result<i128, ConstEvalError>;
 
     #[salsa::invoke(crate::method_resolution::lookup_impl_method_query)]
@@ -90,8 +102,11 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
 
     // endregion:mir
 
-    #[salsa::invoke(crate::layout::layout_of_adt_query)]
-    #[salsa::cycle(crate::layout::layout_of_adt_recover)]
+    #[salsa::invoke_actual(crate::layout::layout_of_adt_query)]
+    #[salsa::cycle(
+        cycle_fn = crate::layout::layout_of_adt_cycle_fn,
+        cycle_initial = crate::layout::layout_of_adt_cycle_initial,
+    )]
     fn layout_of_adt(
         &self,
         def: AdtId,
@@ -100,7 +115,10 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     ) -> Result<Arc<Layout>, LayoutError>;
 
     #[salsa::invoke(crate::layout::layout_of_ty_query)]
-    #[salsa::cycle(crate::layout::layout_of_ty_recover)]
+    #[salsa::cycle(
+        cycle_fn = crate::layout::layout_of_ty_cycle_fn,
+        cycle_initial = crate::layout::layout_of_ty_cycle_initial,
+    )]
     fn layout_of_ty(&self, ty: Ty, env: Arc<TraitEnvironment>) -> Result<Arc<Layout>, LayoutError>;
 
     #[salsa::invoke_actual(crate::layout::target_data_layout_query)]
@@ -113,8 +131,11 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     #[salsa::transparent]
     fn ty(&self, def: TyDefId) -> Binders<Ty>;
 
-    #[salsa::cycle(crate::lower::type_for_type_alias_with_diagnostics_query_recover)]
     #[salsa::invoke_actual(crate::lower::type_for_type_alias_with_diagnostics_query)]
+    #[salsa::cycle(
+        cycle_fn = crate::lower::type_for_type_alias_with_diagnostics_cycle_fn,
+        cycle_initial = crate::lower::type_for_type_alias_with_diagnostics_cycle_initial,
+    )]
     fn type_for_type_alias_with_diagnostics(&self, def: TypeAliasId) -> (Binders<Ty>, Diagnostics);
 
     /// Returns the type of the value of the given constant, or `None` if the `ValueTyDefId` is
@@ -123,7 +144,10 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     fn value_ty(&self, def: ValueTyDefId) -> Option<Binders<Ty>>;
 
     #[salsa::invoke_actual(crate::lower::impl_self_ty_with_diagnostics_query)]
-    #[salsa::cycle(crate::lower::impl_self_ty_with_diagnostics_recover)]
+    #[salsa::cycle(
+        cycle_fn = crate::lower::impl_self_ty_with_diagnostics_cycle_fn,
+        cycle_initial = crate::lower::impl_self_ty_with_diagnostics_cycle_initial,
+    )]
     fn impl_self_ty_with_diagnostics(&self, def: ImplId) -> (Binders<Ty>, Diagnostics);
 
     #[salsa::invoke_actual(crate::lower::impl_self_ty_query)]
@@ -159,8 +183,11 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     #[salsa::invoke_actual(crate::lower::type_alias_impl_traits)]
     fn type_alias_impl_traits(&self, def: TypeAliasId) -> Option<Arc<Binders<ImplTraits>>>;
 
-    #[salsa::invoke(crate::lower::generic_predicates_for_param_query)]
-    #[salsa::cycle(crate::lower::generic_predicates_for_param_recover)]
+    #[salsa::invoke_actual(crate::lower::generic_predicates_for_param_query)]
+    #[salsa::cycle(
+        cycle_fn = crate::lower::generic_predicates_for_param_cycle_fn,
+        cycle_initial = crate::lower::generic_predicates_for_param_cycle_initial,
+    )]
     fn generic_predicates_for_param(
         &self,
         def: GenericDefId,
@@ -188,7 +215,10 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     fn trait_environment(&self, def: GenericDefId) -> Arc<TraitEnvironment>;
 
     #[salsa::invoke_actual(crate::lower::generic_defaults_with_diagnostics_query)]
-    #[salsa::cycle(crate::lower::generic_defaults_with_diagnostics_recover)]
+    #[salsa::cycle(
+        cycle_fn = crate::lower::generic_defaults_with_diagnostics_cycle_fn,
+        cycle_initial = crate::lower::generic_defaults_with_diagnostics_cycle_initial,
+    )]
     fn generic_defaults_with_diagnostics(
         &self,
         def: GenericDefId,
@@ -272,7 +302,10 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     fn adt_variance(&self, adt_id: AdtId) -> chalk_db::Variances;
 
     #[salsa::invoke_actual(crate::variance::variances_of)]
-    #[salsa::cycle(crate::variance::variances_of_cycle)]
+    #[salsa::cycle(
+        cycle_fn = crate::variance::variances_of_cycle_fn,
+        cycle_initial = crate::variance::variances_of_cycle_initial,
+    )]
     fn variances_of(&self, def: GenericDefId) -> Option<Arc<[crate::variance::Variance]>>;
 
     #[salsa::invoke(chalk_db::associated_ty_value_query)]
@@ -307,7 +340,10 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     ) -> chalk_ir::ProgramClauses<Interner>;
 
     #[salsa::invoke(crate::drop::has_drop_glue)]
-    #[salsa::cycle(crate::drop::has_drop_glue_recover)]
+    #[salsa::cycle(
+        cycle_fn = crate::drop::has_drop_glue_cycle_fn,
+        cycle_initial = crate::drop::has_drop_glue_cycle_initial,
+    )]
     fn has_drop_glue(&self, ty: Ty, env: Arc<TraitEnvironment>) -> DropGlue;
 }
 
