@@ -1274,10 +1274,24 @@ pub(crate) fn generic_defaults_with_diagnostics_cycle_fn(
 }
 
 pub(crate) fn generic_defaults_with_diagnostics_cycle_initial(
-    _db: &dyn HirDatabase,
-    _def: GenericDefId,
+    db: &dyn HirDatabase,
+    def: GenericDefId,
 ) -> (GenericDefaults, Diagnostics) {
-    (GenericDefaults(None), None)
+    let generic_params = generics(db, def);
+    if generic_params.len() == 0 {
+        return (GenericDefaults(None), None);
+    }
+    // FIXME: this code is not covered in tests.
+    // we still need one default per parameter
+    let defaults = GenericDefaults(Some(Arc::from_iter(generic_params.iter_id().map(|id| {
+        let val = match id {
+            GenericParamId::TypeParamId(_) => TyKind::Error.intern(Interner).cast(Interner),
+            GenericParamId::ConstParamId(id) => unknown_const_as_generic(db.const_param_ty(id)),
+            GenericParamId::LifetimeParamId(_) => error_lifetime().cast(Interner),
+        };
+        crate::make_binders(db, &generic_params, val)
+    }))));
+    (defaults, None)
 }
 
 fn fn_sig_for_fn(db: &dyn HirDatabase, def: FunctionId) -> PolyFnSig {
@@ -1423,8 +1437,9 @@ fn type_for_adt_cycle_fn(
     CycleRecoveryAction::Fallback(make_binders(db, &generics, TyKind::Error.intern(Interner)))
 }
 
-fn type_for_adt_cycle_initial(_db: &dyn HirDatabase, _adt: AdtId) -> Binders<Ty> {
-    Binders::empty(Interner, TyKind::Error.intern(Interner))
+fn type_for_adt_cycle_initial(db: &dyn HirDatabase, adt: AdtId) -> Binders<Ty> {
+    let generics = generics(db, adt.into());
+    make_binders(db, &generics, TyKind::Error.intern(Interner))
 }
 
 fn type_for_adt(db: &dyn HirDatabase, adt: AdtId) -> Binders<Ty> {
@@ -1474,10 +1489,11 @@ pub(crate) fn type_for_type_alias_with_diagnostics_cycle_fn(
 }
 
 pub(crate) fn type_for_type_alias_with_diagnostics_cycle_initial(
-    _db: &dyn HirDatabase,
-    _adt: TypeAliasId,
+    db: &dyn HirDatabase,
+    adt: TypeAliasId,
 ) -> (Binders<Ty>, Diagnostics) {
-    (Binders::empty(Interner, TyKind::Error.intern(Interner)), None)
+    let generics = generics(db, adt.into());
+    (make_binders(db, &generics, TyKind::Error.intern(Interner)), None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1591,10 +1607,11 @@ pub(crate) fn impl_self_ty_with_diagnostics_cycle_fn(
 }
 
 pub(crate) fn impl_self_ty_with_diagnostics_cycle_initial(
-    _db: &dyn HirDatabase,
-    _impl_id: ImplId,
+    db: &dyn HirDatabase,
+    impl_id: ImplId,
 ) -> (Binders<Ty>, Diagnostics) {
-    (Binders::empty(Interner, TyKind::Error.intern(Interner)), None)
+    let generics = generics(db, impl_id.into());
+    (make_binders(db, &generics, TyKind::Error.intern(Interner)), None)
 }
 
 pub(crate) fn impl_trait_query(db: &dyn HirDatabase, impl_id: ImplId) -> Option<Binders<TraitRef>> {

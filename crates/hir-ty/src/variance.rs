@@ -71,10 +71,16 @@ pub(crate) fn variances_of_cycle_fn(
 }
 
 pub(crate) fn variances_of_cycle_initial(
-    _db: &dyn HirDatabase,
-    _def: GenericDefId,
+    db: &dyn HirDatabase,
+    def: GenericDefId,
 ) -> Option<Arc<[Variance]>> {
-    None
+    let generics = generics(db, def);
+    let count = generics.len();
+
+    if count == 0 {
+        return None;
+    }
+    Some(Arc::from(vec![Variance::Bivariant; count]))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
