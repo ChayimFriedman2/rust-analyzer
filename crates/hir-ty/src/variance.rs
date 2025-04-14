@@ -56,18 +56,12 @@ pub(crate) fn variances_of(db: &dyn HirDatabase, def: GenericDefId) -> Option<Ar
 }
 
 pub(crate) fn variances_of_cycle_fn(
-    db: &dyn HirDatabase,
-    _result: &Option<Arc<[Variance]>>,
+    _db: &dyn HirDatabase,
+    result: &Option<Arc<[Variance]>>,
     _count: u32,
-    def: GenericDefId,
+    _def: GenericDefId,
 ) -> CycleRecoveryAction<Option<Arc<[Variance]>>> {
-    let generics = generics(db, def);
-    let count = generics.len();
-
-    if count == 0 {
-        return CycleRecoveryAction::Fallback(None);
-    }
-    CycleRecoveryAction::Fallback(Some(Arc::from(vec![Variance::Bivariant; count])))
+    CycleRecoveryAction::Fallback(result.clone())
 }
 
 pub(crate) fn variances_of_cycle_initial(

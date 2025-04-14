@@ -952,13 +952,13 @@ pub(crate) fn generic_predicates_for_param_query(
 
 pub(crate) fn generic_predicates_for_param_cycle_fn(
     _db: &dyn HirDatabase,
-    _result: &GenericPredicates,
+    result: &GenericPredicates,
     _count: u32,
     _def: GenericDefId,
     _param_id: TypeOrConstParamId,
     _assoc_name: Option<Name>,
 ) -> CycleRecoveryAction<GenericPredicates> {
-    CycleRecoveryAction::Fallback(GenericPredicates(None))
+    CycleRecoveryAction::Fallback(result.clone())
 }
 
 pub(crate) fn generic_predicates_for_param_cycle_initial(
@@ -1251,26 +1251,12 @@ pub(crate) fn generic_defaults_with_diagnostics_query(
 }
 
 pub(crate) fn generic_defaults_with_diagnostics_cycle_fn(
-    db: &dyn HirDatabase,
-    _result: &(GenericDefaults, Diagnostics),
+    _db: &dyn HirDatabase,
+    result: &(GenericDefaults, Diagnostics),
     _count: u32,
-    def: GenericDefId,
+    _def: GenericDefId,
 ) -> CycleRecoveryAction<(GenericDefaults, Diagnostics)> {
-    let generic_params = generics(db, def);
-    if generic_params.len() == 0 {
-        return CycleRecoveryAction::Fallback((GenericDefaults(None), None));
-    }
-    // FIXME: this code is not covered in tests.
-    // we still need one default per parameter
-    let defaults = GenericDefaults(Some(Arc::from_iter(generic_params.iter_id().map(|id| {
-        let val = match id {
-            GenericParamId::TypeParamId(_) => TyKind::Error.intern(Interner).cast(Interner),
-            GenericParamId::ConstParamId(id) => unknown_const_as_generic(db.const_param_ty(id)),
-            GenericParamId::LifetimeParamId(_) => error_lifetime().cast(Interner),
-        };
-        crate::make_binders(db, &generic_params, val)
-    }))));
-    CycleRecoveryAction::Fallback((defaults, None))
+    CycleRecoveryAction::Fallback(result.clone())
 }
 
 pub(crate) fn generic_defaults_with_diagnostics_cycle_initial(
@@ -1428,13 +1414,12 @@ fn type_for_adt_tracked(db: &dyn HirDatabase, adt: AdtId) -> Binders<Ty> {
 }
 
 fn type_for_adt_cycle_fn(
-    db: &dyn HirDatabase,
-    _result: &Binders<Ty>,
+    _db: &dyn HirDatabase,
+    result: &Binders<Ty>,
     _count: u32,
-    adt: AdtId,
+    _adt: AdtId,
 ) -> CycleRecoveryAction<Binders<Ty>> {
-    let generics = generics(db, adt.into());
-    CycleRecoveryAction::Fallback(make_binders(db, &generics, TyKind::Error.intern(Interner)))
+    CycleRecoveryAction::Fallback(result.clone())
 }
 
 fn type_for_adt_cycle_initial(db: &dyn HirDatabase, adt: AdtId) -> Binders<Ty> {
@@ -1476,16 +1461,12 @@ pub(crate) fn type_for_type_alias_with_diagnostics_query(
 }
 
 pub(crate) fn type_for_type_alias_with_diagnostics_cycle_fn(
-    db: &dyn HirDatabase,
-    _result: &(Binders<Ty>, Diagnostics),
+    _db: &dyn HirDatabase,
+    result: &(Binders<Ty>, Diagnostics),
     _count: u32,
-    adt: TypeAliasId,
+    _adt: TypeAliasId,
 ) -> CycleRecoveryAction<(Binders<Ty>, Diagnostics)> {
-    let generics = generics(db, adt.into());
-    CycleRecoveryAction::Fallback((
-        make_binders(db, &generics, TyKind::Error.intern(Interner)),
-        None,
-    ))
+    CycleRecoveryAction::Fallback(result.clone())
 }
 
 pub(crate) fn type_for_type_alias_with_diagnostics_cycle_initial(
@@ -1594,16 +1575,12 @@ pub(crate) fn const_param_ty_with_diagnostics_query(
 }
 
 pub(crate) fn impl_self_ty_with_diagnostics_cycle_fn(
-    db: &dyn HirDatabase,
-    _result: &(Binders<Ty>, Diagnostics),
+    _db: &dyn HirDatabase,
+    result: &(Binders<Ty>, Diagnostics),
     _count: u32,
-    impl_id: ImplId,
+    _impl_id: ImplId,
 ) -> CycleRecoveryAction<(Binders<Ty>, Diagnostics)> {
-    let generics = generics(db, impl_id.into());
-    CycleRecoveryAction::Fallback((
-        make_binders(db, &generics, TyKind::Error.intern(Interner)),
-        None,
-    ))
+    CycleRecoveryAction::Fallback(result.clone())
 }
 
 pub(crate) fn impl_self_ty_with_diagnostics_cycle_initial(
