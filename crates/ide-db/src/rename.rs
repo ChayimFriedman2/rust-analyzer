@@ -592,7 +592,7 @@ fn source_edit_from_def(
                 // special cases required for renaming fields/locals in Record patterns
                 if let Some(pat_field) = pat.syntax().parent().and_then(ast::RecordPatField::cast) {
                     if let Some(name_ref) = pat_field.name_ref() {
-                        if new_name == name_ref.text().as_str().trim_start_matches("r#")
+                        if new_name == name_ref.text().trim_start_matches("r#")
                             && pat.at_token().is_none()
                         {
                             // Foo { field: ref mut local } -> Foo { ref mut field }

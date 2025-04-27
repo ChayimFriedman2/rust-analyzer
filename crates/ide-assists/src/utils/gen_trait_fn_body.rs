@@ -19,7 +19,7 @@ pub(crate) fn gen_trait_fn_body(
     adt: &ast::Adt,
     trait_ref: Option<TraitRef>,
 ) -> Option<()> {
-    match trait_path.segment()?.name_ref()?.text().as_str() {
+    match trait_path.segment()?.name_ref()?.text() {
         "Clone" => gen_clone_impl(adt, func),
         "Debug" => gen_debug_impl(adt, func),
         "Default" => gen_default_impl(adt, func),

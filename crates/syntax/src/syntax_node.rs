@@ -36,7 +36,7 @@ pub type PreorderWithTokens = rowan::api::PreorderWithTokens<RustLanguage>;
 #[derive(Default)]
 pub struct SyntaxTreeBuilder {
     errors: Vec<SyntaxError>,
-    inner: GreenNodeBuilder<'static>,
+    inner: GreenNodeBuilder,
 }
 
 impl SyntaxTreeBuilder {

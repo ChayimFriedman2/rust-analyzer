@@ -187,7 +187,7 @@ pub(crate) fn apply_demorgan_iterator(acc: &mut Assists, ctx: &AssistContext<'_>
     let closure_body = closure_expr.body()?.clone_for_update();
 
     let op_range = method_call.syntax().text_range();
-    let label = format!("Apply De Morgan's law to `Iterator::{}`", name.text().as_str());
+    let label = format!("Apply De Morgan's law to `Iterator::{}`", name.text());
     acc.add_group(
         &GroupLabel("Apply De Morgan's law".to_owned()),
         AssistId::refactor_rewrite("apply_demorgan_iterator"),
@@ -197,7 +197,7 @@ pub(crate) fn apply_demorgan_iterator(acc: &mut Assists, ctx: &AssistContext<'_>
             let make = SyntaxFactory::with_mappings();
             let mut editor = builder.make_editor(method_call.syntax());
             // replace the method name
-            let new_name = match name.text().as_str() {
+            let new_name = match name.text() {
                 "all" => make.name_ref("any"),
                 "any" => make.name_ref("all"),
                 _ => unreachable!(),

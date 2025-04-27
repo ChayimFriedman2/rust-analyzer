@@ -196,20 +196,22 @@ pub trait AttrsOwnerEdit: ast::HasAttrs {
 
         fn remove_attrs_and_docs(node: &SyntaxNode) {
             let mut remove_next_ws = false;
-            for child in node.children_with_tokens() {
-                match child.kind() {
-                    ATTR | COMMENT => {
-                        remove_next_ws = true;
-                        child.detach();
-                        continue;
-                    }
-                    WHITESPACE if remove_next_ws => {
-                        child.detach();
-                    }
-                    _ => (),
-                }
-                remove_next_ws = false;
-            }
+            let remove = node
+                .children_with_tokens()
+                .filter(|child| {
+                    let remove = match child.kind() {
+                        ATTR | COMMENT => {
+                            remove_next_ws = true;
+                            return true;
+                        }
+                        WHITESPACE if remove_next_ws => true,
+                        _ => false,
+                    };
+                    remove_next_ws = false;
+                    remove
+                })
+                .collect::<Vec<_>>();
+            remove.into_iter().rev().for_each(|remove| remove.detach());
         }
     }
 

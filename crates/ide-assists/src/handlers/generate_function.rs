@@ -146,7 +146,7 @@ fn gen_method(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
         return None;
     }
 
-    let (impl_, file) = get_adt_source(ctx, &adt, fn_name.text().as_str())?;
+    let (impl_, file) = get_adt_source(ctx, &adt, fn_name.text())?;
     let target = get_method_target(ctx, &impl_, &adt)?;
 
     let function_builder = FunctionBuilder::from_method_call(

@@ -232,7 +232,7 @@ pub fn add_trait_assoc_items_to_impl(
             _ => {}
         }
 
-        assoc_item_list.add_item(item)
+        assoc_item_list.add_item(item);
     }
 
     first_item.unwrap()
@@ -290,7 +290,7 @@ fn invert_special_case(make: &SyntaxFactory, expr: &ast::Expr) -> Option<ast::Ex
             let method = mce.name_ref()?;
             let arg_list = mce.arg_list()?;
 
-            let method = match method.text().as_str() {
+            let method = match method.text() {
                 "is_some" => "is_none",
                 "is_none" => "is_some",
                 "is_ok" => "is_err",
@@ -344,7 +344,7 @@ fn invert_special_case_legacy(expr: &ast::Expr) -> Option<ast::Expr> {
             let method = mce.name_ref()?;
             let arg_list = mce.arg_list()?;
 
-            let method = match method.text().as_str() {
+            let method = match method.text() {
                 "is_some" => "is_none",
                 "is_none" => "is_some",
                 "is_ok" => "is_err",

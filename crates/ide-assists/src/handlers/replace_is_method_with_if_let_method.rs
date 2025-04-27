@@ -36,7 +36,7 @@ pub(crate) fn replace_is_method_with_if_let_method(
     };
 
     let name_ref = call_expr.name_ref()?;
-    match name_ref.text().as_str() {
+    match name_ref.text() {
         "is_some" | "is_ok" => {
             let receiver = call_expr.receiver()?;
 

@@ -1051,10 +1051,16 @@ impl ExpandTo {
 
 intern::impl_internable!(ModPath, attrs::AttrInput);
 
-#[salsa::interned(no_lifetime, debug)]
+#[salsa::interned(no_lifetime)]
 #[doc(alias = "MacroFileId")]
 pub struct MacroCallId {
     pub loc: MacroCallLoc,
+}
+
+impl fmt::Debug for MacroCallId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MacroCallId").field(&self.0).finish()
+    }
 }
 
 impl From<span::MacroCallId> for MacroCallId {

@@ -11,11 +11,11 @@ authors = ["rust-analyzer team"]
 repository = "https://github.com/rust-lang/rust-analyzer"
 
 [profile.dev]
-debug = 1
+debug = 2
 
 [profile.dev.package]
 # These speed up local tests.
-rowan.opt-level = 3
+# rowan.opt-level = 3
 rustc-hash.opt-level = 3
 smol_str.opt-level = 3
 text-size.opt-level = 3
@@ -33,7 +33,7 @@ inherits = "release"
 debug = 2
 
 [patch.'crates-io']
-# rowan = { path = "../rowan" }
+rowan = { path = "../rowan" }
 
 # chalk-solve = { path = "../chalk/chalk-solve" }
 # chalk-ir = { path = "../chalk/chalk-ir" }

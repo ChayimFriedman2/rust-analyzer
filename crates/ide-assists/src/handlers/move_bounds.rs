@@ -60,6 +60,7 @@ pub(crate) fn move_bounds_to_where_clause(
                 }
             };
 
+            dbg!(&type_param_list);
             for toc_param in type_param_list.type_or_const_params() {
                 let type_param = match toc_param {
                     ast::TypeOrConstParam::Type(x) => x,

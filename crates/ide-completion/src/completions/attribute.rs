@@ -47,7 +47,7 @@ pub(crate) fn complete_known_attribute_input(
     let (path, tt) = name_ref.zip(attribute.token_tree())?;
     tt.l_paren_token()?;
 
-    match path.text().as_str() {
+    match path.text() {
         "repr" => repr::complete_repr(acc, ctx, tt),
         "feature" => lint::complete_lint(
             acc,

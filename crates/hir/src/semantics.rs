@@ -841,7 +841,7 @@ impl<'db> SemanticsImpl<'db> {
                 let Some(path) = meta.path() else { return false };
                 if let Some(attr_name) = path.as_single_name_ref() {
                     let attr_name = attr_name.text();
-                    let attr_name = Symbol::intern(attr_name.as_str());
+                    let attr_name = Symbol::intern(attr_name);
                     if attr_name == sym::derive {
                         return true;
                     }
