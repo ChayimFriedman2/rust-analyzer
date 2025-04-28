@@ -55,7 +55,7 @@ impl<'a> Ctx<'a> {
         self.span_map.get_or_init(|| self.db.span_map(self.file)).as_ref()
     }
 
-    pub(super) fn lower_module_items(mut self, item_owner: &dyn HasModuleItem) -> ItemTree {
+    pub(super) fn lower_module_items(mut self, item_owner: &impl HasModuleItem) -> ItemTree {
         self.tree.top_level =
             item_owner.items().flat_map(|item| self.lower_mod_item(&item)).collect();
         self.tree

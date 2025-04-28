@@ -139,7 +139,7 @@ fn params_from_stmt_list_scope(
 
 fn remove_duplicated(
     file_params: &mut FxHashMap<String, String>,
-    fn_params: ast::AstChildren<ast::Param>,
+    fn_params: impl Iterator<Item = ast::Param>,
 ) {
     fn_params.for_each(|param| {
         let whole_param = param.syntax().text().to_string();

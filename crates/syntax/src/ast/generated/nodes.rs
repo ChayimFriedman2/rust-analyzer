@@ -2,7 +2,7 @@
 
 #![allow(non_snake_case)]
 use crate::{
-    ast::{self, support, AstChildren, AstNode},
+    ast::{self, support, AstNode},
     SyntaxKind::{self, *},
     SyntaxNode, SyntaxToken, T,
 };
@@ -33,7 +33,7 @@ impl ArrayExpr {
     #[inline]
     pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
     #[inline]
-    pub fn exprs(&self) -> AstChildren<Expr> { support::children(&self.syntax) }
+    pub fn exprs(&self) -> impl Iterator<Item = Expr> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn l_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['[']) }
     #[inline]
@@ -103,9 +103,11 @@ pub struct AsmExpr {
 impl ast::HasAttrs for AsmExpr {}
 impl AsmExpr {
     #[inline]
-    pub fn asm_pieces(&self) -> AstChildren<AsmPiece> { support::children(&self.syntax) }
+    pub fn asm_pieces(&self) -> impl Iterator<Item = AsmPiece> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
-    pub fn template(&self) -> AstChildren<Expr> { support::children(&self.syntax) }
+    pub fn template(&self) -> impl Iterator<Item = Expr> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn pound_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![#]) }
     #[inline]
@@ -187,7 +189,9 @@ pub struct AsmOptions {
 }
 impl AsmOptions {
     #[inline]
-    pub fn asm_options(&self) -> AstChildren<AsmOption> { support::children(&self.syntax) }
+    pub fn asm_options(&self) -> impl Iterator<Item = AsmOption> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
     #[inline]
@@ -236,7 +240,9 @@ pub struct AssocItemList {
 impl ast::HasAttrs for AssocItemList {}
 impl AssocItemList {
     #[inline]
-    pub fn assoc_items(&self) -> AstChildren<AssocItem> { support::children(&self.syntax) }
+    pub fn assoc_items(&self) -> impl Iterator<Item = AssocItem> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['{']) }
     #[inline]
@@ -538,7 +544,9 @@ pub struct ExternItemList {
 impl ast::HasAttrs for ExternItemList {}
 impl ExternItemList {
     #[inline]
-    pub fn extern_items(&self) -> AstChildren<ExternItem> { support::children(&self.syntax) }
+    pub fn extern_items(&self) -> impl Iterator<Item = ExternItem> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['{']) }
     #[inline]
@@ -667,7 +675,9 @@ pub struct GenericArgList {
 }
 impl GenericArgList {
     #[inline]
-    pub fn generic_args(&self) -> AstChildren<GenericArg> { support::children(&self.syntax) }
+    pub fn generic_args(&self) -> impl Iterator<Item = GenericArg> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn coloncolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![::]) }
     #[inline]
@@ -680,7 +690,9 @@ pub struct GenericParamList {
 }
 impl GenericParamList {
     #[inline]
-    pub fn generic_params(&self) -> AstChildren<GenericParam> { support::children(&self.syntax) }
+    pub fn generic_params(&self) -> impl Iterator<Item = GenericParam> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_angle_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![<]) }
     #[inline]
@@ -944,7 +956,9 @@ impl MacroStmts {
     #[inline]
     pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
     #[inline]
-    pub fn statements(&self) -> AstChildren<Stmt> { support::children(&self.syntax) }
+    pub fn statements(&self) -> impl Iterator<Item = Stmt> + use<> {
+        support::children(&self.syntax)
+    }
 }
 pub struct MacroType {
     pub(crate) syntax: SyntaxNode,
@@ -975,7 +989,7 @@ pub struct MatchArmList {
 impl ast::HasAttrs for MatchArmList {}
 impl MatchArmList {
     #[inline]
-    pub fn arms(&self) -> AstChildren<MatchArm> { support::children(&self.syntax) }
+    pub fn arms(&self) -> impl Iterator<Item = MatchArm> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn l_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['{']) }
     #[inline]
@@ -1089,7 +1103,9 @@ pub struct OffsetOfExpr {
 impl ast::HasAttrs for OffsetOfExpr {}
 impl OffsetOfExpr {
     #[inline]
-    pub fn fields(&self) -> AstChildren<NameRef> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = NameRef> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn ty(&self) -> Option<Type> { support::child(&self.syntax) }
     #[inline]
@@ -1112,7 +1128,7 @@ pub struct OrPat {
 }
 impl OrPat {
     #[inline]
-    pub fn pats(&self) -> AstChildren<Pat> { support::children(&self.syntax) }
+    pub fn pats(&self) -> impl Iterator<Item = Pat> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn pipe_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![|]) }
 }
@@ -1135,7 +1151,7 @@ pub struct ParamList {
 }
 impl ParamList {
     #[inline]
-    pub fn params(&self) -> AstChildren<Param> { support::children(&self.syntax) }
+    pub fn params(&self) -> impl Iterator<Item = Param> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn self_param(&self) -> Option<SelfParam> { support::child(&self.syntax) }
     #[inline]
@@ -1186,7 +1202,9 @@ pub struct ParenthesizedArgList {
 }
 impl ParenthesizedArgList {
     #[inline]
-    pub fn type_args(&self) -> AstChildren<TypeArg> { support::children(&self.syntax) }
+    pub fn type_args(&self) -> impl Iterator<Item = TypeArg> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
     #[inline]
@@ -1314,7 +1332,9 @@ pub struct RecordExprFieldList {
 impl ast::HasAttrs for RecordExprFieldList {}
 impl RecordExprFieldList {
     #[inline]
-    pub fn fields(&self) -> AstChildren<RecordExprField> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = RecordExprField> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn spread(&self) -> Option<Expr> { support::child(&self.syntax) }
     #[inline]
@@ -1348,7 +1368,9 @@ pub struct RecordFieldList {
 }
 impl RecordFieldList {
     #[inline]
-    pub fn fields(&self) -> AstChildren<RecordField> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = RecordField> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['{']) }
     #[inline]
@@ -1382,7 +1404,9 @@ pub struct RecordPatFieldList {
 }
 impl RecordPatFieldList {
     #[inline]
-    pub fn fields(&self) -> AstChildren<RecordPatField> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = RecordPatField> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn rest_pat(&self) -> Option<RestPat> { support::child(&self.syntax) }
     #[inline]
@@ -1500,7 +1524,7 @@ pub struct SlicePat {
 }
 impl SlicePat {
     #[inline]
-    pub fn pats(&self) -> AstChildren<Pat> { support::children(&self.syntax) }
+    pub fn pats(&self) -> impl Iterator<Item = Pat> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn l_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['[']) }
     #[inline]
@@ -1558,7 +1582,9 @@ pub struct StmtList {
 impl ast::HasAttrs for StmtList {}
 impl StmtList {
     #[inline]
-    pub fn statements(&self) -> AstChildren<Stmt> { support::children(&self.syntax) }
+    pub fn statements(&self) -> impl Iterator<Item = Stmt> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn tail_expr(&self) -> Option<Expr> { support::child(&self.syntax) }
     #[inline]
@@ -1652,7 +1678,7 @@ pub struct TupleExpr {
 impl ast::HasAttrs for TupleExpr {}
 impl TupleExpr {
     #[inline]
-    pub fn fields(&self) -> AstChildren<Expr> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = Expr> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
     #[inline]
@@ -1673,7 +1699,9 @@ pub struct TupleFieldList {
 }
 impl TupleFieldList {
     #[inline]
-    pub fn fields(&self) -> AstChildren<TupleField> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = TupleField> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
     #[inline]
@@ -1684,7 +1712,7 @@ pub struct TuplePat {
 }
 impl TuplePat {
     #[inline]
-    pub fn fields(&self) -> AstChildren<Pat> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = Pat> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
     #[inline]
@@ -1695,7 +1723,7 @@ pub struct TupleStructPat {
 }
 impl TupleStructPat {
     #[inline]
-    pub fn fields(&self) -> AstChildren<Pat> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = Pat> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn path(&self) -> Option<Path> { support::child(&self.syntax) }
     #[inline]
@@ -1708,7 +1736,7 @@ pub struct TupleType {
 }
 impl TupleType {
     #[inline]
-    pub fn fields(&self) -> AstChildren<Type> { support::children(&self.syntax) }
+    pub fn fields(&self) -> impl Iterator<Item = Type> + use<> { support::children(&self.syntax) }
     #[inline]
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
     #[inline]
@@ -1770,7 +1798,9 @@ pub struct TypeBoundList {
 }
 impl TypeBoundList {
     #[inline]
-    pub fn bounds(&self) -> AstChildren<TypeBound> { support::children(&self.syntax) }
+    pub fn bounds(&self) -> impl Iterator<Item = TypeBound> + use<> {
+        support::children(&self.syntax)
+    }
 }
 pub struct TypeParam {
     pub(crate) syntax: SyntaxNode,
@@ -1825,7 +1855,7 @@ pub struct UseBoundGenericArgs {
 }
 impl UseBoundGenericArgs {
     #[inline]
-    pub fn use_bound_generic_args(&self) -> AstChildren<UseBoundGenericArg> {
+    pub fn use_bound_generic_args(&self) -> impl Iterator<Item = UseBoundGenericArg> + use<> {
         support::children(&self.syntax)
     }
     #[inline]
@@ -1853,7 +1883,9 @@ pub struct UseTreeList {
 }
 impl UseTreeList {
     #[inline]
-    pub fn use_trees(&self) -> AstChildren<UseTree> { support::children(&self.syntax) }
+    pub fn use_trees(&self) -> impl Iterator<Item = UseTree> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['{']) }
     #[inline]
@@ -1879,7 +1911,9 @@ pub struct VariantList {
 }
 impl VariantList {
     #[inline]
-    pub fn variants(&self) -> AstChildren<Variant> { support::children(&self.syntax) }
+    pub fn variants(&self) -> impl Iterator<Item = Variant> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn l_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['{']) }
     #[inline]
@@ -1905,7 +1939,9 @@ pub struct WhereClause {
 }
 impl WhereClause {
     #[inline]
-    pub fn predicates(&self) -> AstChildren<WherePred> { support::children(&self.syntax) }
+    pub fn predicates(&self) -> impl Iterator<Item = WherePred> + use<> {
+        support::children(&self.syntax)
+    }
     #[inline]
     pub fn where_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![where]) }
 }

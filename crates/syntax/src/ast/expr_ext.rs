@@ -7,8 +7,8 @@ use crate::{
     SyntaxKind::{self, *},
     SyntaxNode, SyntaxToken, T,
     ast::{
-        self, ArgList, AstChildren, AstNode, BlockExpr, ClosureExpr, Const, Expr, Fn,
-        FormatArgsArg, FormatArgsExpr, MacroDef, Static, TokenTree,
+        self, ArgList, AstNode, BlockExpr, ClosureExpr, Const, Expr, Fn, FormatArgsArg,
+        FormatArgsExpr, MacroDef, Static, TokenTree,
         operators::{ArithOp, BinaryOp, CmpOp, LogicOp, Ordering, RangeOp, UnaryOp},
         support,
     },
@@ -296,13 +296,13 @@ impl ast::IndexExpr {
     }
 }
 
-pub enum ArrayExprKind {
+pub enum ArrayExprKind<I> {
     Repeat { initializer: Option<ast::Expr>, repeat: Option<ast::Expr> },
-    ElementList(AstChildren<ast::Expr>),
+    ElementList(I),
 }
 
 impl ast::ArrayExpr {
-    pub fn kind(&self) -> ArrayExprKind {
+    pub fn kind(&self) -> ArrayExprKind<impl Iterator<Item = ast::Expr> + use<>> {
         if self.is_repeat() {
             ArrayExprKind::Repeat {
                 initializer: support::children(self.syntax()).next(),
@@ -515,12 +515,12 @@ impl Static {
     }
 }
 impl FormatArgsExpr {
-    pub fn args(&self) -> AstChildren<FormatArgsArg> {
+    pub fn args(&self) -> impl Iterator<Item = FormatArgsArg> + use<> {
         support::children(&self.syntax)
     }
 }
 impl ArgList {
-    pub fn args(&self) -> AstChildren<Expr> {
+    pub fn args(&self) -> impl Iterator<Item = Expr> + use<> {
         support::children(&self.syntax)
     }
 }

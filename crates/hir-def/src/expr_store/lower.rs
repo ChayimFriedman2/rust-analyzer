@@ -19,9 +19,8 @@ use stdx::never;
 use syntax::{
     AstNode, AstPtr, AstToken as _, SyntaxNodePtr,
     ast::{
-        self, ArrayExprKind, AstChildren, BlockExpr, HasArgList, HasAttrs, HasGenericArgs,
-        HasGenericParams, HasLoopBody, HasName, HasTypeBounds, IsString, RangeItem,
-        SlicePatComponents,
+        self, ArrayExprKind, BlockExpr, HasArgList, HasAttrs, HasGenericArgs, HasGenericParams,
+        HasLoopBody, HasName, HasTypeBounds, IsString, RangeItem, SlicePatComponents,
     },
 };
 use thin_vec::ThinVec;
@@ -1606,7 +1605,7 @@ impl ExprCollector<'_> {
 
         fn collect_tuple(
             this: &mut ExprCollector<'_>,
-            fields: ast::AstChildren<ast::Expr>,
+            fields: impl Iterator<Item = ast::Expr>,
         ) -> (Option<u32>, Box<[la_arena::Idx<Pat>]>) {
             let mut ellipsis = None;
             let args = fields
@@ -2459,7 +2458,7 @@ impl ExprCollector<'_> {
 
     fn collect_tuple_pat(
         &mut self,
-        args: AstChildren<ast::Pat>,
+        args: impl Iterator<Item = ast::Pat>,
         has_leading_comma: bool,
         binding_list: &mut BindingList,
     ) -> (Box<[PatId]>, Option<u32>) {

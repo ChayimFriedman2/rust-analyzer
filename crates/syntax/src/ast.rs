@@ -17,8 +17,8 @@ use std::marker::PhantomData;
 use either::Either;
 
 use crate::{
-    SyntaxKind,
-    syntax_node::{SyntaxNode, SyntaxNodeChildren, SyntaxToken},
+    SyntaxKind, SyntaxNodeChildren,
+    syntax_node::{SyntaxNode, SyntaxToken},
 };
 
 pub use self::{
@@ -98,7 +98,7 @@ pub struct AstChildren<N> {
 }
 
 impl<N> AstChildren<N> {
-    fn new(parent: &SyntaxNode) -> Self {
+    pub fn new(parent: &SyntaxNode) -> Self {
         AstChildren { inner: parent.children(), ph: PhantomData }
     }
 }
@@ -156,21 +156,25 @@ pub trait RangeItem {
 }
 
 mod support {
-    use super::{AstChildren, AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
+    use super::{AstNode, SyntaxKind, SyntaxNode, SyntaxToken};
 
     #[inline]
     pub(super) fn child<N: AstNode>(parent: &SyntaxNode) -> Option<N> {
-        parent.children().find_map(N::cast)
+        parent.children().by_kind(N::can_cast).next().map(|it| N::cast(it).unwrap())
     }
 
     #[inline]
-    pub(super) fn children<N: AstNode>(parent: &SyntaxNode) -> AstChildren<N> {
-        AstChildren::new(parent)
+    pub(super) fn children<N: AstNode>(parent: &SyntaxNode) -> impl Iterator<Item = N> + use<N> {
+        parent.children().by_kind(N::can_cast).filter_map(N::cast)
     }
 
     #[inline]
     pub(super) fn token(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
-        parent.children_with_tokens().filter_map(|it| it.into_token()).find(|it| it.kind() == kind)
+        parent
+            .children_with_tokens()
+            .by_kind(|k| k == kind)
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == kind)
     }
 }
 

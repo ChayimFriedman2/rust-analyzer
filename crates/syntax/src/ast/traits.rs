@@ -38,7 +38,7 @@ pub trait HasArgList: AstNode {
 }
 
 pub trait HasModuleItem: AstNode {
-    fn items(&self) -> AstChildren<ast::Item> {
+    fn items(&self) -> impl Iterator<Item = ast::Item> {
         support::children(self.syntax())
     }
 }
@@ -70,7 +70,7 @@ pub trait HasTypeBounds: AstNode {
 
 pub trait HasAttrs: AstNode {
     fn attrs(&self) -> AstChildren<ast::Attr> {
-        support::children(self.syntax())
+        AstChildren::new(self.syntax())
     }
     fn has_atom_attr(&self, atom: &str) -> bool {
         self.attrs().filter_map(|x| x.as_simple_atom()).any(|x| x == atom)

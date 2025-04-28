@@ -9,9 +9,11 @@ use ide_db::{
     FileId, FileRange, LineIndexDatabase, base_db::SourceDatabase, source_change::SourceChange,
 };
 use paths::Utf8Component;
+use syntax::SyntaxNode;
+use syntax::ast::AstChildren;
 use syntax::{
     AstNode, TextRange,
-    ast::{self, HasModuleItem, HasName, edit::IndentLevel},
+    ast::{self, HasName, edit::IndentLevel},
 };
 
 use crate::{Assist, Diagnostic, DiagnosticCode, DiagnosticsContext, Severity, fix};
@@ -219,9 +221,14 @@ fn make_fixes(
     let mut pub_mod_decl_builder = TextEdit::builder();
     let mut pub_crate_mod_decl_builder = TextEdit::builder();
 
+    // FIXME: Remove this.
+    #[inline]
+    fn items(node: &SyntaxNode) -> impl Iterator<Item = ast::Item> + Clone + use<> {
+        AstChildren::new(node)
+    }
     let mut items = match &source {
-        ModuleSource::SourceFile(it) => it.items(),
-        ModuleSource::Module(it) => it.item_list()?.items(),
+        ModuleSource::SourceFile(it) => items(it.syntax()),
+        ModuleSource::Module(it) => items(it.item_list()?.syntax()),
         ModuleSource::BlockExpr(_) => return None,
     };
 

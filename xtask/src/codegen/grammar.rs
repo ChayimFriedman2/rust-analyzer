@@ -152,7 +152,7 @@ fn generate_nodes(kinds: KindsSrc, grammar: &AstSrc) -> String {
                 if field.is_many() {
                     quote! {
                         #[inline]
-                        pub fn #method_name(&self) -> AstChildren<#ty> {
+                        pub fn #method_name(&self) -> impl Iterator<Item = #ty> + use<> {
                             support::children(&self.syntax)
                         }
                     }
@@ -424,7 +424,7 @@ fn generate_nodes(kinds: KindsSrc, grammar: &AstSrc) -> String {
 
         use crate::{
             SyntaxNode, SyntaxToken, SyntaxKind::{self, *},
-            ast::{self, AstNode, AstChildren, support},
+            ast::{self, AstNode, support},
             T,
         };
 

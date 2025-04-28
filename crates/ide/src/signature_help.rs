@@ -18,9 +18,7 @@ use span::Edition;
 use stdx::format_to;
 use syntax::{
     AstNode, Direction, NodeOrToken, SyntaxElementChildren, SyntaxNode, SyntaxToken, T, TextRange,
-    TextSize, ToSmolStr, algo,
-    ast::{self, AstChildren},
-    match_ast,
+    TextSize, ToSmolStr, algo, ast, match_ast,
 };
 
 use crate::RootDatabase;
@@ -694,7 +692,7 @@ fn signature_help_for_tuple_pat_ish(
     mut res: SignatureHelp,
     pat: &SyntaxNode,
     token: SyntaxToken,
-    mut field_pats: AstChildren<ast::Pat>,
+    mut field_pats: impl Iterator<Item = ast::Pat>,
     fields: impl ExactSizeIterator<Item = hir::Type>,
     display_target: DisplayTarget,
 ) -> SignatureHelp {

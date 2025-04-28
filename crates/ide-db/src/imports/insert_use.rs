@@ -8,8 +8,7 @@ use hir::Semantics;
 use syntax::{
     Direction, NodeOrToken, SyntaxKind, SyntaxNode, algo,
     ast::{
-        self, AstNode, HasAttrs, HasModuleItem, HasVisibility, PathSegmentKind,
-        edit_in_place::Removable, make,
+        self, AstNode, HasAttrs, HasVisibility, PathSegmentKind, edit_in_place::Removable, make,
     },
     ted,
 };
@@ -309,17 +308,19 @@ enum ImportGranularityGuess {
 fn guess_granularity_from_scope(scope: &ImportScope) -> ImportGranularityGuess {
     // The idea is simple, just check each import as well as the import and its precedent together for
     // whether they fulfill a granularity criteria.
-    let use_stmt = |item| match item {
-        ast::Item::Use(use_) => {
-            let use_tree = use_.use_tree()?;
-            Some((use_tree, use_.visibility(), use_.attrs()))
-        }
-        _ => None,
+    let use_stmt = |use_: ast::Use| {
+        let use_tree = use_.use_tree()?;
+        Some((use_tree, use_.visibility(), use_.attrs()))
     };
+    // FIXME: Remove this.
+    #[inline]
+    fn use_items(node: &SyntaxNode) -> impl Iterator<Item = ast::Use> {
+        node.children().by_kind(ast::Use::can_cast).filter_map(ast::Use::cast)
+    }
     let mut use_stmts = match scope {
-        ImportScope::File(f) => f.items(),
-        ImportScope::Module(m) => m.items(),
-        ImportScope::Block(b) => b.items(),
+        ImportScope::File(f) => use_items(f.syntax()),
+        ImportScope::Module(m) => use_items(m.syntax()),
+        ImportScope::Block(b) => use_items(b.syntax()),
     }
     .filter_map(use_stmt);
     let mut res = ImportGranularityGuess::Unknown;
