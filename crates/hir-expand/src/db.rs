@@ -4,6 +4,7 @@ use base_db::{Crate, RootQueryDb};
 use either::Either;
 use mbe::MatchedArmIndex;
 use rustc_hash::FxHashSet;
+use salsa::Durability;
 use span::{AstIdMap, Edition, Span, SyntaxContext};
 use syntax::{AstNode, Parse, SyntaxElement, SyntaxError, SyntaxNode, SyntaxToken, T, ast};
 use syntax_bridge::{DocCommentDesugarMode, syntax_node_to_token_tree};
@@ -56,8 +57,30 @@ pub trait ExpandDatabase: RootQueryDb {
     fn proc_macros(&self) -> Arc<ProcMacros>;
 
     /// Incrementality query to prevent queries from directly depending on `ExpandDatabase::proc_macros`.
-    #[salsa::invoke(crate::proc_macro::proc_macros_for_crate)]
-    fn proc_macros_for_crate(&self, krate: Crate) -> Option<Arc<CrateProcMacros>>;
+    #[salsa::transparent]
+    fn proc_macros_for_crate(&self, krate: Crate) -> Option<Arc<CrateProcMacros>> {
+        #[salsa::tracked(force_durability=Durability::NEVER_CHANGE)]
+        fn proc_macros_for_library_crate(
+            db: &dyn ExpandDatabase,
+            krate: Crate,
+        ) -> Option<Arc<CrateProcMacros>> {
+            crate::proc_macro::proc_macros_for_crate(db, krate)
+        }
+
+        #[salsa::tracked]
+        fn proc_macros_for_local_crate(
+            db: &dyn ExpandDatabase,
+            krate: Crate,
+        ) -> Option<Arc<CrateProcMacros>> {
+            crate::proc_macro::proc_macros_for_crate(db, krate)
+        }
+
+        if krate.data(db).origin.is_local() {
+            proc_macros_for_local_crate(db, krate)
+        } else {
+            proc_macros_for_library_crate(db, krate)
+        }
+    }
 
     #[salsa::invoke(ast_id_map)]
     #[salsa::lru(1024)]

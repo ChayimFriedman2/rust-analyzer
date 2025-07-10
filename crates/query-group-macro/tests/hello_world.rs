@@ -64,7 +64,6 @@ fn unadorned_query() {
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
-            "salsa_event(DidValidateMemoizedValue { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: length_query_shim(Id(800)) })",
             "salsa_event(WillCheckCancellation)",
@@ -84,7 +83,6 @@ fn invoke_query() {
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
-            "salsa_event(DidValidateMemoizedValue { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: invoke_length_query_shim(Id(800)) })",
             "salsa_event(WillCheckCancellation)",
@@ -104,7 +102,6 @@ fn transparent() {
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
-            "salsa_event(DidValidateMemoizedValue { database_key: create_data_HelloWorldDatabase(Id(0)) })",
         ]"#]]);
 }
 
@@ -121,7 +118,6 @@ fn transparent_invoke() {
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
-            "salsa_event(DidValidateMemoizedValue { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: transparent_and_invoke_length_shim(Id(800)) })",
             "salsa_event(WillCheckCancellation)",

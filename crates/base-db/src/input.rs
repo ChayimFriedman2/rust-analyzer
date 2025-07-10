@@ -590,10 +590,19 @@ impl CrateGraphBuilder {
                 root_file_id: krate.basic.root_file_id,
                 proc_macro_cwd: krate.basic.proc_macro_cwd.clone(),
             };
-            let disambiguator = if visited_root_files.insert(krate.basic.root_file_id) {
+            let disambiguator = if visited_root_files.insert(krate.basic.root_file_id)
+                && krate.basic.origin.is_local()
+            {
+                // Library crates have `NEVER_CHANGE` durability, and therefore always need the disambiguator,
+                // otherwise e.g. adding a feature won't work.
                 None
             } else {
                 Some(Box::new((crate_data.clone(), krate.cfg_options.to_hashable())))
+            };
+            let durability = if krate.basic.origin.is_local() {
+                Durability::MEDIUM
+            } else {
+                Durability::NEVER_CHANGE
             };
 
             let unique_crate_data =
@@ -602,30 +611,27 @@ impl CrateGraphBuilder {
                 Entry::Occupied(entry) => {
                     let old_crate = *entry.get();
                     if crate_data != *old_crate.data(db) {
-                        old_crate.set_data(db).with_durability(Durability::MEDIUM).to(crate_data);
+                        old_crate.set_data(db).with_durability(durability).to(crate_data);
                     }
                     if krate.extra != *old_crate.extra_data(db) {
                         old_crate
                             .set_extra_data(db)
-                            .with_durability(Durability::MEDIUM)
+                            .with_durability(durability)
                             .to(krate.extra.clone());
                     }
                     if krate.cfg_options != *old_crate.cfg_options(db) {
                         old_crate
                             .set_cfg_options(db)
-                            .with_durability(Durability::MEDIUM)
+                            .with_durability(durability)
                             .to(krate.cfg_options.clone());
                     }
                     if krate.env != *old_crate.env(db) {
-                        old_crate
-                            .set_env(db)
-                            .with_durability(Durability::MEDIUM)
-                            .to(krate.env.clone());
+                        old_crate.set_env(db).with_durability(durability).to(krate.env.clone());
                     }
                     if krate.ws_data != *old_crate.workspace_data(db) {
                         old_crate
                             .set_workspace_data(db)
-                            .with_durability(Durability::MEDIUM)
+                            .with_durability(durability)
                             .to(krate.ws_data.clone());
                     }
                     old_crate
@@ -638,7 +644,7 @@ impl CrateGraphBuilder {
                         krate.cfg_options.clone(),
                         krate.env.clone(),
                     )
-                    .durability(Durability::MEDIUM)
+                    .durability(durability)
                     .new(db);
                     entry.insert(input);
                     input

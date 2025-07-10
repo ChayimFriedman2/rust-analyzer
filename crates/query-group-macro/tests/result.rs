@@ -40,7 +40,6 @@ fn test_queries_with_results() {
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: create_data_ResultDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
-            "salsa_event(DidValidateMemoizedValue { database_key: create_data_ResultDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: length_shim(Id(800)) })",
             "salsa_event(WillCheckCancellation)",

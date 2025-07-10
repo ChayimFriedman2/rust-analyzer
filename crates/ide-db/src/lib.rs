@@ -190,13 +190,14 @@ impl RootDatabase {
         db.set_proc_macros_with_durability(Default::default(), Durability::MEDIUM);
         db.set_local_roots_with_durability(Default::default(), Durability::MEDIUM);
         db.set_library_roots_with_durability(Default::default(), Durability::MEDIUM);
-        db.set_expand_proc_attr_macros_with_durability(false, Durability::HIGH);
+        db.set_expand_proc_attr_macros_with_durability(false, Durability::NEVER_CHANGE);
         db.update_base_query_lru_capacities(lru_capacity);
         db
     }
 
     pub fn enable_proc_attr_macros(&mut self) {
-        self.set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
+        // FIXME: This will change nothing as the durability is `NEVER_CHANGE`.
+        self.set_expand_proc_attr_macros_with_durability(true, Durability::NEVER_CHANGE);
     }
 
     pub fn update_base_query_lru_capacities(&mut self, _lru_capacity: Option<u16>) {

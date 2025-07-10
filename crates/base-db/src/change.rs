@@ -78,9 +78,9 @@ impl FileChange {
 }
 
 fn source_root_durability(source_root: &SourceRoot) -> Durability {
-    if source_root.is_library { Durability::MEDIUM } else { Durability::LOW }
+    if source_root.is_library { Durability::NEVER_CHANGE } else { Durability::LOW }
 }
 
 fn file_text_durability(source_root: &SourceRoot) -> Durability {
-    if source_root.is_library { Durability::HIGH } else { Durability::LOW }
+    if source_root.is_library { Durability::NEVER_CHANGE } else { Durability::LOW }
 }

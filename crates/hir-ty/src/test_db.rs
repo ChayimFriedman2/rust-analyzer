@@ -42,7 +42,7 @@ impl Default for TestDB {
             files: Default::default(),
             crates_map: Default::default(),
         };
-        this.set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
+        this.set_expand_proc_attr_macros_with_durability(true, Durability::NEVER_CHANGE);
         // This needs to be here otherwise `CrateGraphBuilder` panics.
         this.set_all_crates(Arc::new(Box::new([])));
         CrateGraphBuilder::default().set_in_db(&mut this);

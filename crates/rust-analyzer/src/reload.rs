@@ -109,9 +109,10 @@ impl GlobalState {
         if self.analysis_host.raw_database().expand_proc_attr_macros()
             != self.config.expand_proc_attr_macros()
         {
+            // FIXME: This will change nothing as the durability is `NEVER_CHANGE`.
             self.analysis_host.raw_database_mut().set_expand_proc_attr_macros_with_durability(
                 self.config.expand_proc_attr_macros(),
-                Durability::HIGH,
+                Durability::NEVER_CHANGE,
             );
         }
 

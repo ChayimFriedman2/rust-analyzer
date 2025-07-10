@@ -31,7 +31,6 @@ fn query() {
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
-            "salsa_event(DidValidateMemoizedValue { database_key: create_data_HelloWorldDatabase(Id(0)) })",
             "salsa_event(WillCheckCancellation)",
             "salsa_event(WillExecute { database_key: length_query_shim(Id(800)) })",
             "salsa_event(WillCheckCancellation)",
