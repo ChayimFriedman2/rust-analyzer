@@ -75,6 +75,12 @@ pub struct Obligation<'db, T> {
     pub recursion_depth: usize,
 }
 
+impl<'db, T: Copy> Obligation<'db, T> {
+    pub fn as_goal(&self) -> Goal<'db, T> {
+        Goal { param_env: self.param_env, predicate: self.predicate }
+    }
+}
+
 impl<'db, T: PartialEq> PartialEq<Obligation<'db, T>> for Obligation<'db, T> {
     #[inline]
     fn eq(&self, other: &Obligation<'db, T>) -> bool {

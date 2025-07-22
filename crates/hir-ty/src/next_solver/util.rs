@@ -10,9 +10,14 @@ use intern::sym;
 use la_arena::Idx;
 use rustc_abi::{Float, HasDataLayout, Integer, IntegerType, Primitive, ReprOptions};
 use rustc_type_ir::data_structures::IndexMap;
-use rustc_type_ir::inherent::{AdtDef, GenericArg as _, GenericArgs as _, SliceLike, Ty as _};
+use rustc_type_ir::inherent::{
+    AdtDef, Const as _, GenericArg as _, GenericArgs as _, Region as _, SliceLike, Ty as _,
+};
 use rustc_type_ir::solve::SizedTraitKind;
-use rustc_type_ir::{BoundVar, Canonical, DebruijnIndex, GenericArgKind};
+use rustc_type_ir::{
+    BoundVar, Canonical, DebruijnIndex, GenericArgKind, INNERMOST, TypeFlags, TypeVisitable,
+    TypeVisitableExt,
+};
 use rustc_type_ir::{
     ConstKind, CoroutineArgs, FloatTy, IntTy, RegionKind, TypeFolder, TypeSuperFoldable,
     TypeSuperVisitable, TypeVisitor, UintTy, UniverseIndex, inherent::IntoKind,
@@ -20,7 +25,10 @@ use rustc_type_ir::{
 use rustc_type_ir::{InferCtxtLike, TypeFoldable};
 
 use crate::lower_nextsolver::{LifetimeElisionKind, TyLoweringContext};
-use crate::next_solver::CanonicalVarKind;
+use crate::next_solver::infer::InferCtxt;
+use crate::next_solver::{
+    CanonicalVarKind, FxIndexMap, Placeholder, PlaceholderConst, PlaceholderRegion, TypingMode,
+};
 use crate::{
     db::HirDatabase,
     from_foreign_def_id,
@@ -837,4 +845,172 @@ impl<'db> TypeVisitor<DbInterner<'db>> for ContainsTypeErrors {
             _ => t.super_visit_with(self),
         }
     }
+}
+
+/// The inverse of [`BoundVarReplacer`]: replaces placeholders with the bound vars from which they came.
+pub struct PlaceholderReplacer<'a, 'db> {
+    infcx: &'a InferCtxt<'db>,
+    mapped_regions: FxIndexMap<PlaceholderRegion, BoundRegion>,
+    mapped_types: FxIndexMap<Placeholder<BoundTy>, BoundTy>,
+    mapped_consts: FxIndexMap<PlaceholderConst, BoundVar>,
+    universe_indices: &'a [Option<UniverseIndex>],
+    current_index: DebruijnIndex,
+}
+
+impl<'a, 'db> PlaceholderReplacer<'a, 'db> {
+    pub fn replace_placeholders<T: TypeFoldable<DbInterner<'db>>>(
+        infcx: &'a InferCtxt<'db>,
+        mapped_regions: FxIndexMap<PlaceholderRegion, BoundRegion>,
+        mapped_types: FxIndexMap<Placeholder<BoundTy>, BoundTy>,
+        mapped_consts: FxIndexMap<PlaceholderConst, BoundVar>,
+        universe_indices: &'a [Option<UniverseIndex>],
+        value: T,
+    ) -> T {
+        let mut replacer = PlaceholderReplacer {
+            infcx,
+            mapped_regions,
+            mapped_types,
+            mapped_consts,
+            universe_indices,
+            current_index: INNERMOST,
+        };
+        value.fold_with(&mut replacer)
+    }
+}
+
+impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
+    fn cx(&self) -> DbInterner<'db> {
+        self.infcx.interner
+    }
+
+    fn fold_binder<T: TypeFoldable<DbInterner<'db>>>(
+        &mut self,
+        t: Binder<'db, T>,
+    ) -> Binder<'db, T> {
+        if !t.has_placeholders() && !t.has_infer() {
+            return t;
+        }
+        self.current_index.shift_in(1);
+        let t = t.super_fold_with(self);
+        self.current_index.shift_out(1);
+        t
+    }
+
+    fn fold_region(&mut self, r0: Region<'db>) -> Region<'db> {
+        let r1 = match r0.kind() {
+            RegionKind::ReVar(vid) => self
+                .infcx
+                .inner
+                .borrow_mut()
+                .unwrap_region_constraints()
+                .opportunistic_resolve_var(self.infcx.interner, vid),
+            _ => r0,
+        };
+
+        let r2 = match r1.kind() {
+            RegionKind::RePlaceholder(p) => {
+                let replace_var = self.mapped_regions.get(&p);
+                match replace_var {
+                    Some(replace_var) => {
+                        let index = self
+                            .universe_indices
+                            .iter()
+                            .position(|u| matches!(u, Some(pu) if *pu == p.universe))
+                            .unwrap_or_else(|| panic!("Unexpected placeholder universe."));
+                        let db = DebruijnIndex::from_usize(
+                            self.universe_indices.len() - index + self.current_index.as_usize() - 1,
+                        );
+                        Region::new_bound(self.cx(), db, *replace_var)
+                    }
+                    None => r1,
+                }
+            }
+            _ => r1,
+        };
+
+        tracing::debug!(?r0, ?r1, ?r2, "fold_region");
+
+        r2
+    }
+
+    fn fold_ty(&mut self, ty: Ty<'db>) -> Ty<'db> {
+        let ty = self.infcx.shallow_resolve(ty);
+        match ty.kind() {
+            TyKind::Placeholder(p) => {
+                let replace_var = self.mapped_types.get(&p);
+                match replace_var {
+                    Some(replace_var) => {
+                        let index = self
+                            .universe_indices
+                            .iter()
+                            .position(|u| matches!(u, Some(pu) if *pu == p.universe))
+                            .unwrap_or_else(|| panic!("Unexpected placeholder universe."));
+                        let db = DebruijnIndex::from_usize(
+                            self.universe_indices.len() - index + self.current_index.as_usize() - 1,
+                        );
+                        Ty::new_bound(self.infcx.interner, db, *replace_var)
+                    }
+                    None => {
+                        if ty.has_infer() {
+                            ty.super_fold_with(self)
+                        } else {
+                            ty
+                        }
+                    }
+                }
+            }
+
+            _ if ty.has_placeholders() || ty.has_infer() => ty.super_fold_with(self),
+            _ => ty,
+        }
+    }
+
+    fn fold_const(&mut self, ct: Const<'db>) -> Const<'db> {
+        let ct = self.infcx.shallow_resolve_const(ct);
+        if let ConstKind::Placeholder(p) = ct.kind() {
+            let replace_var = self.mapped_consts.get(&p);
+            match replace_var {
+                Some(replace_var) => {
+                    let index = self
+                        .universe_indices
+                        .iter()
+                        .position(|u| matches!(u, Some(pu) if *pu == p.universe))
+                        .unwrap_or_else(|| panic!("Unexpected placeholder universe."));
+                    let db = DebruijnIndex::from_usize(
+                        self.universe_indices.len() - index + self.current_index.as_usize() - 1,
+                    );
+                    Const::new_bound(self.infcx.interner, db, *replace_var)
+                }
+                None => {
+                    if ct.has_infer() {
+                        ct.super_fold_with(self)
+                    } else {
+                        ct
+                    }
+                }
+            }
+        } else {
+            ct.super_fold_with(self)
+        }
+    }
+}
+
+pub(crate) fn needs_normalization<'db, T: TypeVisitable<DbInterner<'db>>>(
+    infcx: &InferCtxt<'db>,
+    value: &T,
+) -> bool {
+    let mut flags = TypeFlags::HAS_ALIAS;
+
+    // Opaques are treated as rigid outside of `TypingMode::PostAnalysis`,
+    // so we can ignore those.
+    match infcx.typing_mode() {
+        // FIXME(#132279): We likely want to reveal opaques during post borrowck analysis
+        TypingMode::Coherence
+        | TypingMode::Analysis { .. }
+        | TypingMode::Borrowck { .. }
+        | TypingMode::PostBorrowckAnalysis { .. } => flags.remove(TypeFlags::HAS_TY_OPAQUE),
+        TypingMode::PostAnalysis => {}
+    }
+
+    value.has_type_flags(flags)
 }

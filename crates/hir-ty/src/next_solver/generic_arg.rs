@@ -5,7 +5,7 @@ use rustc_type_ir::{
     ClosureArgs, CollectAndApply, ConstVid, CoroutineArgs, CoroutineClosureArgs, FnSig, FnSigTys,
     GenericArgKind, IntTy, Interner, TermKind, TyKind, TyVid, TypeFoldable, TypeVisitable,
     Variance,
-    inherent::{GenericArg as _, GenericsOf, IntoKind, SliceLike, Ty as _},
+    inherent::{GenericArg as _, GenericsOf, IntoKind, SliceLike, Term as _, Ty as _},
     relate::{Relate, VarianceDiagInfo},
 };
 use smallvec::SmallVec;
@@ -56,6 +56,12 @@ impl<'db> std::fmt::Debug for Term<'db> {
             Self::Ty(t) => std::fmt::Debug::fmt(t, f),
             Self::Const(c) => std::fmt::Debug::fmt(c, f),
         }
+    }
+}
+
+impl<'db> Term<'db> {
+    pub fn expect_type(&self) -> Ty<'db> {
+        self.as_type().expect("expected a type, but found a const")
     }
 }
 

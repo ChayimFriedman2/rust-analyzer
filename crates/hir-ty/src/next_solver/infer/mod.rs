@@ -17,7 +17,6 @@ pub use relate::StructurallyRelateAliases;
 pub use relate::combine::PredicateEmittingRelation;
 use rustc_hash::{FxHashMap, FxHashSet};
 use rustc_pattern_analysis::Captures;
-use rustc_type_ir::TypeVisitableExt;
 use rustc_type_ir::error::{ExpectedFound, TypeError};
 use rustc_type_ir::inherent::{
     Const as _, GenericArg as _, GenericArgs as _, IntoKind, ParamEnv as _, SliceLike, Term as _,
@@ -27,6 +26,7 @@ use rustc_type_ir::{
     BoundVar, ClosureKind, ConstVid, FloatTy, FloatVarValue, FloatVid, GenericArgKind, InferConst,
     InferTy, IntTy, IntVarValue, IntVid, OutlivesPredicate, RegionVid, TyVid, UniverseIndex,
 };
+use rustc_type_ir::{TermKind, TypeVisitableExt};
 use rustc_type_ir::{TypeFoldable, TypeFolder, TypeSuperFoldable};
 use snapshot::undo_log::InferCtxtUndoLogs;
 use tracing::{debug, instrument};
@@ -55,7 +55,7 @@ pub mod region_constraints;
 pub mod relate;
 pub mod resolve;
 pub(crate) mod snapshot;
-mod traits;
+pub(crate) mod traits;
 mod type_variable;
 mod unify_key;
 
@@ -566,6 +566,13 @@ impl<'db> InferCtxt<'db> {
         let region_var =
             self.inner.borrow_mut().unwrap_region_constraints().new_region_var(universe);
         Region::new_var(self.interner, region_var)
+    }
+
+    pub fn next_term_var_of_kind(&self, term: Term<'db>, span: Span) -> Term<'db> {
+        match term.kind() {
+            TermKind::Ty(_) => self.next_ty_var(span).into(),
+            TermKind::Const(_) => self.next_const_var(span).into(),
+        }
     }
 
     /// Return the universe that the region `r` was created in. For
