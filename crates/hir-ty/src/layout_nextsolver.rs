@@ -22,8 +22,10 @@ use crate::{
     db::HirDatabase,
     layout::{Layout, LayoutError},
     next_solver::{
-        DbInterner, GenericArgs, SolverDefId, Ty,
+        DbInterner, GenericArgs, ParamEnv, SolverDefId, Ty, TypingMode,
+        infer::{DbInternerInferExt, traits::ObligationCause},
         mapping::{ChalkToNextSolver, convert_binder_to_early_binder},
+        project::solve_normalize::deeply_normalize,
     },
 };
 
@@ -79,13 +81,15 @@ pub fn layout_of_ty_query<'db>(
     trait_env: Arc<TraitEnvironment>,
 ) -> Result<Arc<Layout>, LayoutError> {
     let krate = trait_env.krate;
-    let interner = DbInterner::new_with(db, Some(krate), None);
+    let interner = DbInterner::new_with(db, Some(krate), trait_env.block);
     let Ok(target) = db.target_data_layout(krate) else {
         return Err(LayoutError::TargetLayoutNotAvailable);
     };
     let dl = &*target;
     let cx = LayoutCx::new(dl);
-    //let ty = normalize(db, trait_env.clone(), ty);
+    let infer_ctxt = interner.infer_ctxt().build(TypingMode::non_body_analysis());
+    let cause = ObligationCause::dummy();
+    let ty = deeply_normalize(infer_ctxt.at(&cause, ParamEnv::empty()), ty).unwrap_or(ty);
     let result = match ty.kind() {
         TyKind::Adt(def, args) => {
             match def.inner().id {

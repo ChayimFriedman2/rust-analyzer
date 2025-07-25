@@ -1,3 +1,5 @@
+//! Normalization within a next-solver infer context.
+
 use std::fmt::Debug;
 
 use rustc_next_trait_solver::placeholder::BoundVarReplacer;
@@ -97,7 +99,7 @@ impl<'db> NormalizationFolder<'_, 'db> {
 
         self.depth += 1;
 
-        let infer_term = infcx.next_term_var_of_kind(alias_term, self.at.cause.span);
+        let infer_term = infcx.next_term_var_of_kind(alias_term);
         let obligation = Obligation::new(
             tcx,
             self.at.cause.clone(),
@@ -221,7 +223,7 @@ pub(crate) fn deeply_normalize_for_diagnostics<'db, T: TypeFoldable<DbInterner<'
     t: T,
 ) -> T {
     t.fold_with(&mut DeeplyNormalizeForDiagnosticsFolder {
-        at: infcx.at(&ObligationCause::dummy_with_span(Span::dummy()), param_env),
+        at: infcx.at(&ObligationCause::dummy(), param_env),
     })
 }
 

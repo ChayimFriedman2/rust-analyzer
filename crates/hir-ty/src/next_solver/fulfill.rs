@@ -1,3 +1,5 @@
+//! Fulfill loop for next-solver.
+
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::ControlFlow;
@@ -8,11 +10,12 @@ use rustc_next_trait_solver::solve::{
     GoalEvaluation, GoalStalledOn, HasChanged, SolverDelegateEvalExt,
 };
 use rustc_type_ir::Interner;
+use rustc_type_ir::inherent::Span as _;
 use rustc_type_ir::solve::{Certainty, NoSolution};
 
 use crate::next_solver::infer::InferCtxt;
 use crate::next_solver::infer::traits::{PredicateObligation, PredicateObligations};
-use crate::next_solver::{DbInterner, SolverContext, TypingMode};
+use crate::next_solver::{DbInterner, SolverContext, Span, TypingMode};
 
 type PendingObligations<'db> =
     Vec<(PredicateObligation<'db>, Option<GoalStalledOn<DbInterner<'db>>>)>;
@@ -93,7 +96,7 @@ impl<'db> ObligationStorage<'db> {
                         let goal = o.as_goal();
                         let result = <&SolverContext<'db>>::from(infcx).evaluate_root_goal(
                             goal,
-                            o.cause.span,
+                            Span::dummy(),
                             stalled_on.take(),
                         );
                         matches!(result, Ok(GoalEvaluation { has_changed: HasChanged::Yes, .. }))
@@ -158,9 +161,7 @@ impl<'db> FulfillmentCtxt<'db> {
 
                 let goal = obligation.as_goal();
                 let delegate = <&SolverContext<'db>>::from(infcx);
-                if let Some(certainty) =
-                    delegate.compute_goal_fast_path(goal, obligation.cause.span)
-                {
+                if let Some(certainty) = delegate.compute_goal_fast_path(goal, Span::dummy()) {
                     match certainty {
                         Certainty::Yes => {}
                         Certainty::Maybe(_) => {
@@ -170,7 +171,7 @@ impl<'db> FulfillmentCtxt<'db> {
                     continue;
                 }
 
-                let result = delegate.evaluate_root_goal(goal, obligation.cause.span, stalled_on);
+                let result = delegate.evaluate_root_goal(goal, Span::dummy(), stalled_on);
                 let GoalEvaluation { certainty, has_changed, stalled_on } = match result {
                     Ok(result) => result,
                     Err(NoSolution) => {

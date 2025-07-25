@@ -1,14 +1,18 @@
 //! Defining `SolverContext` for next-trait-solver.
 
-use hir_def::{AssocItemId, TypeAliasId};
+use hir_def::{AssocItemId, GeneralConstId, TypeAliasId};
 use rustc_next_trait_solver::delegate::SolverDelegate;
 use rustc_type_ir::{
     UniverseIndex,
-    inherent::Span as _,
+    inherent::{SliceLike, Span as _},
     solve::{Certainty, NoSolution},
 };
 
-use crate::{TraitRefExt, db::HirDatabase};
+use crate::{
+    TraitRefExt,
+    db::HirDatabase,
+    next_solver::mapping::{ChalkToNextSolver, convert_args_for_result},
+};
 
 use super::{
     Canonical, CanonicalVarValues, Const, DbInterner, ErrorGuaranteed, GenericArg, GenericArgs,
@@ -186,7 +190,14 @@ impl<'db> SolverDelegate for SolverContext<'db> {
         param_env: <Self::Interner as rustc_type_ir::Interner>::ParamEnv,
         uv: rustc_type_ir::UnevaluatedConst<Self::Interner>,
     ) -> Option<<Self::Interner as rustc_type_ir::Interner>::Const> {
-        unimplemented!()
+        let c = match uv.def {
+            SolverDefId::ConstId(c) => GeneralConstId::ConstId(c),
+            SolverDefId::StaticId(c) => GeneralConstId::StaticId(c),
+            _ => unreachable!(),
+        };
+        let subst = convert_args_for_result(self.interner, uv.args.as_slice());
+        let ec = self.cx().db.const_eval(c, subst, None).ok()?;
+        Some(ec.to_nextsolver(self.interner))
     }
 
     fn compute_goal_fast_path(

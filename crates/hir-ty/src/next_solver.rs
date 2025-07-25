@@ -15,7 +15,7 @@ mod ir_print;
 pub mod mapping;
 mod opaques;
 pub mod predicate;
-mod project;
+pub(crate) mod project;
 mod region;
 mod solver;
 mod ty;

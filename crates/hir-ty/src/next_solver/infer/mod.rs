@@ -568,10 +568,10 @@ impl<'db> InferCtxt<'db> {
         Region::new_var(self.interner, region_var)
     }
 
-    pub fn next_term_var_of_kind(&self, term: Term<'db>, span: Span) -> Term<'db> {
+    pub fn next_term_var_of_kind(&self, term: Term<'db>) -> Term<'db> {
         match term.kind() {
-            TermKind::Ty(_) => self.next_ty_var(span).into(),
-            TermKind::Const(_) => self.next_const_var(span).into(),
+            TermKind::Ty(_) => self.next_ty_var().into(),
+            TermKind::Const(_) => self.next_const_var().into(),
         }
     }
 

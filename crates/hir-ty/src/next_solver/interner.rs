@@ -1093,7 +1093,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         match alias.def_id {
             SolverDefId::InternedOpaqueTyId(_) => AliasTermKind::OpaqueTy,
             SolverDefId::TypeAliasId(_) => AliasTermKind::ProjectionTy,
-            _ => unreachable!(),
+            SolverDefId::ConstId(_) => AliasTermKind::UnevaluatedConst,
+            _ => unreachable!("Unexpected alias: {:?}", alias.def_id),
         }
     }
 
