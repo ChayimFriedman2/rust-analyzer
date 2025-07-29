@@ -301,7 +301,7 @@ impl<'db> DbInterner<'db> {
         krate: Option<Crate>,
         block: Option<BlockId>,
     ) -> DbInterner<'db> {
-        DbInterner { db, krate, block: None }
+        DbInterner { db, krate, block }
     }
 
     pub fn db(&self) -> &'db dyn HirDatabase {

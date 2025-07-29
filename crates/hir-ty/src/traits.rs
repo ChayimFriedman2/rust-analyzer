@@ -178,7 +178,7 @@ fn solve_nextsolver<'db>(
 > {
     // FIXME: should use analysis_in_body, but that needs GenericDefId::Block
     let context = SolverContext(
-        DbInterner { db, krate: Some(krate), block }
+        DbInterner::new_with(db, Some(krate), block)
             .infer_ctxt()
             .build(TypingMode::non_body_analysis()),
     );
