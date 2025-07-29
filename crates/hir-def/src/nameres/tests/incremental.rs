@@ -91,10 +91,10 @@ pub const BAZ: u32 = 0;
         let b = add_crate("b", 1);
         let c = add_crate("c", 2);
         new_crate_graph
-            .add_dep(c, DependencyBuilder::new(CrateName::new("b").unwrap(), b))
+            .add_dep(c, DependencyBuilder::new(CrateName::new("b").unwrap(), b, false))
             .unwrap();
         new_crate_graph
-            .add_dep(b, DependencyBuilder::new(CrateName::new("a").unwrap(), a))
+            .add_dep(b, DependencyBuilder::new(CrateName::new("a").unwrap(), a, false))
             .unwrap();
         new_crate_graph.set_in_db(&mut db);
     }

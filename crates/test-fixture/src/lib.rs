@@ -232,7 +232,15 @@ impl ChangeFixture {
                         None => true,
                     };
                     let dep = CrateName::normalize_dashes(&dep);
-                    crate_deps.push((crate_name.clone(), dep, prelude))
+                    crate_deps.push((crate_name.clone(), dep, prelude, false));
+                }
+                for dep in meta.dev_deps {
+                    let prelude = match &meta.extern_prelude {
+                        Some(v) => v.contains(&dep),
+                        None => true,
+                    };
+                    let dep = CrateName::normalize_dashes(&dep);
+                    crate_deps.push((crate_name.clone(), dep, prelude, true));
                 }
             } else if meta.path == "/main.rs" || meta.path == "/lib.rs" {
                 assert!(default_crate_root.is_none());
@@ -266,14 +274,20 @@ impl ChangeFixture {
                 crate_ws_data.clone(),
             );
         } else {
-            for (from, to, prelude) in crate_deps {
+            for (from, to, prelude, is_dev_dep) in crate_deps {
                 let from_id = crates[&from];
                 let to_id = crates[&to];
                 let sysroot = crate_graph[to_id].basic.origin.is_lang();
                 crate_graph
                     .add_dep(
                         from_id,
-                        DependencyBuilder::with_prelude(to.clone(), to_id, prelude, sysroot),
+                        DependencyBuilder::with_prelude(
+                            to.clone(),
+                            to_id,
+                            is_dev_dep,
+                            prelude,
+                            sysroot,
+                        ),
                     )
                     .unwrap();
             }
@@ -315,6 +329,7 @@ impl ChangeFixture {
                         DependencyBuilder::with_prelude(
                             CrateName::new("core").unwrap(),
                             core_crate,
+                            false,
                             true,
                             true,
                         ),
@@ -365,6 +380,7 @@ impl ChangeFixture {
                         DependencyBuilder::new(
                             CrateName::new("proc_macros").unwrap(),
                             proc_macros_crate,
+                            false,
                         ),
                     )
                     .unwrap();
@@ -587,6 +603,7 @@ struct FileMeta {
     path: String,
     krate: Option<(String, CrateOrigin, Option<String>)>,
     deps: Vec<String>,
+    dev_deps: Vec<String>,
     extern_prelude: Option<Vec<String>>,
     cfg: CfgOptions,
     edition: Edition,
@@ -619,6 +636,7 @@ impl FileMeta {
             krate: f.krate.map(|it| parse_crate(it, current_source_root_kind, f.library)),
             extern_prelude: f.extern_prelude,
             deps,
+            dev_deps: f.dev_deps,
             cfg,
             edition: f.edition.map_or(Edition::CURRENT, |v| Edition::from_str(&v).unwrap()),
             env: f.env.into_iter().collect(),

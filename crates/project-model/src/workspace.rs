@@ -1185,12 +1185,12 @@ fn project_json_to_crate_graph(
         if let Some(&from) = idx_to_crate_id.get(&from_idx) {
             public_deps.add_to_crate_graph(crate_graph, from);
             if let Some(proc_macro) = libproc_macro {
-                add_proc_macro_dep(crate_graph, from, proc_macro, krate.is_proc_macro);
+                add_proc_macro_dep(crate_graph, from, proc_macro, false, krate.is_proc_macro);
             }
 
             for dep in &krate.deps {
                 if let Some(&to) = idx_to_crate_id.get(&dep.krate) {
-                    add_dep(crate_graph, from, dep.name.clone(), to);
+                    add_dep(crate_graph, from, dep.name.clone(), to, dep.is_dev_dependency);
                 }
             }
         }
@@ -1305,6 +1305,7 @@ fn cargo_to_crate_graph(
                     crate_graph,
                     crate_id,
                     proc_macro,
+                    false,
                     matches!(kind, TargetKind::Lib { is_proc_macro: true }),
                 );
             }
@@ -1326,7 +1327,7 @@ fn cargo_to_crate_graph(
                     // cargo metadata does not do any normalization,
                     // so we do it ourselves currently
                     let name = CrateName::normalize_dashes(&name);
-                    add_dep(crate_graph, from, name, to);
+                    add_dep(crate_graph, from, name, to, false);
                 }
             }
         }
@@ -1364,13 +1365,13 @@ fn cargo_to_crate_graph(
                     continue;
                 }
 
-                add_dep(crate_graph, from, name.clone(), to)
+                add_dep(crate_graph, from, name.clone(), to, dep.kind == DepKind::Dev)
             }
         }
     }
 
     for (from, name, to) in delayed_dev_deps {
-        add_dep(crate_graph, from, name, to);
+        add_dep(crate_graph, from, name, to, true);
     }
 
     if cargo.requires_rustc_private() {
@@ -1532,7 +1533,7 @@ fn handle_rustc_crates(
                     // Add dependencies on core / std / alloc for this crate
                     public_deps.add_to_crate_graph(crate_graph, crate_id);
                     if let Some(proc_macro) = libproc_macro {
-                        add_proc_macro_dep(crate_graph, crate_id, proc_macro, is_proc_macro);
+                        add_proc_macro_dep(crate_graph, crate_id, proc_macro, false, is_proc_macro);
                     }
                     pkg_crates.push(crate_id);
                 }
@@ -1546,7 +1547,7 @@ fn handle_rustc_crates(
             let name = CrateName::new(&dep.name).unwrap();
             if let Some(&to) = pkg_to_lib_crate.get(&dep.pkg) {
                 for &from in rustc_pkg_crates.get(&pkg).into_iter().flatten() {
-                    add_dep(crate_graph, from, name.clone(), to);
+                    add_dep(crate_graph, from, name.clone(), to, dep.kind == DepKind::Dev);
                 }
             }
         }
@@ -1568,7 +1569,7 @@ fn handle_rustc_crates(
                     // `rust_analyzer` thinks that it should use the one from the `rustc_source`
                     // instead of the one from `crates.io`
                     if !crate_graph[*from].basic.dependencies.iter().any(|d| d.name == name) {
-                        add_dep(crate_graph, *from, name.clone(), to);
+                        add_dep(crate_graph, *from, name.clone(), to, false);
                     }
                 }
             }
@@ -1660,7 +1661,7 @@ impl SysrootPublicDeps {
     /// Makes `from` depend on the public sysroot crates.
     fn add_to_crate_graph(&self, crate_graph: &mut CrateGraphBuilder, from: CrateBuilderId) {
         for (name, krate, prelude) in &self.deps {
-            add_dep_with_prelude(crate_graph, from, name.clone(), *krate, *prelude, true);
+            add_dep_with_prelude(crate_graph, from, name.clone(), *krate, false, *prelude, true);
         }
     }
 }
@@ -1815,7 +1816,7 @@ fn sysroot_to_crate_graph(
                     if let (Some(&from), Some(&to)) =
                         (sysroot_crates.get(&from), sysroot_crates.get(&to))
                     {
-                        add_dep(crate_graph, from, name, to);
+                        add_dep(crate_graph, from, name, to, false);
                     }
                 }
             }
@@ -1842,8 +1843,9 @@ fn add_dep(
     from: CrateBuilderId,
     name: CrateName,
     to: CrateBuilderId,
+    is_dev_dependency: bool,
 ) {
-    add_dep_inner(graph, from, DependencyBuilder::new(name, to))
+    add_dep_inner(graph, from, DependencyBuilder::new(name, to, is_dev_dependency))
 }
 
 fn add_dep_with_prelude(
@@ -1851,16 +1853,22 @@ fn add_dep_with_prelude(
     from: CrateBuilderId,
     name: CrateName,
     to: CrateBuilderId,
+    is_dev_dependency: bool,
     prelude: bool,
     sysroot: bool,
 ) {
-    add_dep_inner(graph, from, DependencyBuilder::with_prelude(name, to, prelude, sysroot))
+    add_dep_inner(
+        graph,
+        from,
+        DependencyBuilder::with_prelude(name, to, is_dev_dependency, prelude, sysroot),
+    )
 }
 
 fn add_proc_macro_dep(
     crate_graph: &mut CrateGraphBuilder,
     from: CrateBuilderId,
     to: CrateBuilderId,
+    is_dev_dependency: bool,
     prelude: bool,
 ) {
     add_dep_with_prelude(
@@ -1868,6 +1876,7 @@ fn add_proc_macro_dep(
         from,
         CrateName::new("proc_macro").unwrap(),
         to,
+        is_dev_dependency,
         prelude,
         true,
     );

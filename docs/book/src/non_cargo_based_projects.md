@@ -165,6 +165,8 @@ interface Dep {
     /// Name as should appear in the (implicit)
     /// `extern crate name` declaration.
     name: string;
+    /// Whether the dependency is a dev-dependency.
+    isDevDependency?: bool,
 }
 
 interface BuildInfo {

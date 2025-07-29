@@ -401,35 +401,45 @@ pub struct Dependency<Id> {
     pub name: CrateName,
     prelude: bool,
     sysroot: bool,
+    dev: bool,
 }
 
 pub type DependencyBuilder = Dependency<CrateBuilderId>;
 pub type BuiltDependency = Dependency<Crate>;
 
 impl DependencyBuilder {
-    pub fn new(name: CrateName, crate_id: CrateBuilderId) -> Self {
-        Self { name, crate_id, prelude: true, sysroot: false }
+    pub fn new(name: CrateName, crate_id: CrateBuilderId, is_dev_dependency: bool) -> Self {
+        Self { name, crate_id, prelude: true, sysroot: false, dev: is_dev_dependency }
     }
 
     pub fn with_prelude(
         name: CrateName,
         crate_id: CrateBuilderId,
+        is_dev_dependency: bool,
         prelude: bool,
         sysroot: bool,
     ) -> Self {
-        Self { name, crate_id, prelude, sysroot }
+        Self { name, crate_id, prelude, sysroot, dev: is_dev_dependency }
     }
 }
 
 impl BuiltDependency {
     /// Whether this dependency is to be added to the depending crate's extern prelude.
+    #[inline]
     pub fn is_prelude(&self) -> bool {
         self.prelude
     }
 
     /// Whether this dependency is a sysroot injected one.
+    #[inline]
     pub fn is_sysroot(&self) -> bool {
         self.sysroot
+    }
+
+    /// Whether this dependency is a dev-dependency.
+    #[inline]
+    pub fn is_dev_dependency(&self) -> bool {
+        self.dev
     }
 }
 
@@ -580,6 +590,7 @@ impl CrateGraphBuilder {
                     name: dep.name.clone(),
                     prelude: dep.prelude,
                     sysroot: dep.sysroot,
+                    dev: dep.dev,
                 })
                 .collect::<Vec<_>>();
             let crate_data = BuiltCrateData {
@@ -968,17 +979,26 @@ mod tests {
         );
         assert!(
             graph
-                .add_dep(crate1, DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2,))
+                .add_dep(
+                    crate1,
+                    DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2, false)
+                )
                 .is_ok()
         );
         assert!(
             graph
-                .add_dep(crate2, DependencyBuilder::new(CrateName::new("crate3").unwrap(), crate3,))
+                .add_dep(
+                    crate2,
+                    DependencyBuilder::new(CrateName::new("crate3").unwrap(), crate3, false)
+                )
                 .is_ok()
         );
         assert!(
             graph
-                .add_dep(crate3, DependencyBuilder::new(CrateName::new("crate1").unwrap(), crate1,))
+                .add_dep(
+                    crate3,
+                    DependencyBuilder::new(CrateName::new("crate1").unwrap(), crate1, false)
+                )
                 .is_err()
         );
     }
@@ -1014,12 +1034,18 @@ mod tests {
         );
         assert!(
             graph
-                .add_dep(crate1, DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2,))
+                .add_dep(
+                    crate1,
+                    DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2, false)
+                )
                 .is_ok()
         );
         assert!(
             graph
-                .add_dep(crate2, DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2,))
+                .add_dep(
+                    crate2,
+                    DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2, false)
+                )
                 .is_err()
         );
     }
@@ -1068,12 +1094,18 @@ mod tests {
         );
         assert!(
             graph
-                .add_dep(crate1, DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2,))
+                .add_dep(
+                    crate1,
+                    DependencyBuilder::new(CrateName::new("crate2").unwrap(), crate2, false)
+                )
                 .is_ok()
         );
         assert!(
             graph
-                .add_dep(crate2, DependencyBuilder::new(CrateName::new("crate3").unwrap(), crate3,))
+                .add_dep(
+                    crate2,
+                    DependencyBuilder::new(CrateName::new("crate3").unwrap(), crate3, false)
+                )
                 .is_ok()
         );
     }
@@ -1114,15 +1146,18 @@ mod tests {
                     DependencyBuilder::new(
                         CrateName::normalize_dashes("crate-name-with-dashes"),
                         crate2,
+                        false,
                     )
                 )
                 .is_ok()
         );
         assert_eq!(
             graph.arena[crate1].basic.dependencies,
-            vec![
-                DependencyBuilder::new(CrateName::new("crate_name_with_dashes").unwrap(), crate2,)
-            ]
+            vec![DependencyBuilder::new(
+                CrateName::new("crate_name_with_dashes").unwrap(),
+                crate2,
+                false,
+            )]
         );
     }
 }

@@ -84,6 +84,10 @@ pub struct Fixture {
     ///
     /// Syntax: `deps:hir-def,ide-assists`
     pub deps: Vec<String>,
+    /// Specifies dev-dependencies of this crate. This must be used with `crate` meta.
+    ///
+    /// Syntax: `dev_deps:hir-def,ide-assists`
+    pub dev_deps: Vec<String>,
     /// Limits crates in the extern prelude. The set of crate names must be a
     /// subset of `deps`. This must be used with `crate` meta.
     ///
@@ -245,6 +249,7 @@ impl FixtureWithProjectMeta {
 
         let mut krate = None;
         let mut deps = Vec::new();
+        let mut dev_deps = Vec::new();
         let mut extern_prelude = None;
         let mut edition = None;
         let mut cfgs = Vec::new();
@@ -262,6 +267,7 @@ impl FixtureWithProjectMeta {
             match key {
                 "crate" => krate = Some(value.to_owned()),
                 "deps" => deps = value.split(',').map(|it| it.to_owned()).collect(),
+                "dev_deps" => dev_deps = value.split(',').map(|it| it.to_owned()).collect(),
                 "extern-prelude" => {
                     if value.is_empty() {
                         extern_prelude = Some(Vec::new());
@@ -303,6 +309,7 @@ impl FixtureWithProjectMeta {
             text: String::new(),
             krate,
             deps,
+            dev_deps,
             extern_prelude,
             cfgs,
             edition,

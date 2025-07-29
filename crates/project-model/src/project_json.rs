@@ -465,6 +465,9 @@ pub(crate) struct Dep {
     #[serde(serialize_with = "serialize_crate_name")]
     #[serde(deserialize_with = "deserialize_crate_name")]
     pub(crate) name: CrateName,
+    #[serde(rename = "isDevDependency")]
+    #[serde(default)]
+    pub(crate) is_dev_dependency: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
