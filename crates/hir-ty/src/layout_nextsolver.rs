@@ -343,7 +343,7 @@ fn field_ty<'a>(
     fd: LocalFieldId,
     args: &GenericArgs<'a>,
 ) -> Ty<'a> {
-    db.field_types_ns(def)[fd].instantiate(DbInterner::new(db), args)
+    db.field_types_ns(def)[fd].instantiate(DbInterner::new_with(db, None, None), args)
 }
 
 fn scalar_unit(dl: &TargetDataLayout, value: Primitive) -> Scalar {

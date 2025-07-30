@@ -276,10 +276,13 @@ pub fn next_trait_solve(
     match next_solver_res {
         Err(_) => NextTraitSolveResult::NoSolution,
         Ok((_, Certainty::Yes, args)) => NextTraitSolveResult::Certain(
-            convert_canonical_args_for_result(DbInterner::new(db), args),
+            convert_canonical_args_for_result(DbInterner::new_with(db, Some(krate), block), args),
         ),
         Ok((_, Certainty::Maybe(_), args)) => {
-            let subst = convert_canonical_args_for_result(DbInterner::new(db), args);
+            let subst = convert_canonical_args_for_result(
+                DbInterner::new_with(db, Some(krate), block),
+                args,
+            );
             NextTraitSolveResult::Uncertain(chalk_ir::Canonical {
                 binders: subst.binders,
                 value: subst.value.subst,

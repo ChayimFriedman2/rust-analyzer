@@ -41,7 +41,7 @@ pub(crate) fn path_to_const<'a, 'g>(
     args: impl FnOnce() -> &'g Generics,
     expected_ty: Ty<'a>,
 ) -> Option<Const<'a>> {
-    let interner = DbInterner::new(db);
+    let interner = DbInterner::new_with(db, Some(resolver.krate()), None);
     match resolver.resolve_path_in_value_ns_fully(db, path, HygieneId::ROOT) {
         Some(ValueNs::GenericParam(p)) => {
             let args = args();
@@ -128,13 +128,13 @@ pub fn usize_const<'db>(db: &'db dyn HirDatabase, value: Option<u128>, krate: Cr
     intern_const_ref(
         db,
         &value.map_or(LiteralConstRef::Unknown, LiteralConstRef::UInt),
-        Ty::new_uint(DbInterner::new(db), rustc_type_ir::UintTy::Usize),
+        Ty::new_uint(DbInterner::new_with(db, Some(krate), None), rustc_type_ir::UintTy::Usize),
         krate,
     )
 }
 
 pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<u128> {
-    let interner = DbInterner::new(db);
+    let interner = DbInterner::new_with(db, None, None);
     match (*c).kind() {
         ConstKind::Param(_) => None,
         ConstKind::Infer(_) => None,

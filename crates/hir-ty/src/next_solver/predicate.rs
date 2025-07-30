@@ -123,6 +123,8 @@ impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for BoundExistentialPre
         a: Self,
         b: Self,
     ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
+        let interner = relation.cx();
+
         // We need to perform this deduplication as we sometimes generate duplicate projections in `a`.
         let mut a_v: Vec<_> = a.into_iter().collect();
         let mut b_v: Vec<_> = b.into_iter().collect();
@@ -166,7 +168,7 @@ impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for BoundExistentialPre
         );
 
         CollectAndApply::collect_and_apply(v, |g| {
-            BoundExistentialPredicates::new_from_iter(DbInterner::conjure(), g.iter().cloned())
+            BoundExistentialPredicates::new_from_iter(interner, g.iter().cloned())
         })
     }
 }

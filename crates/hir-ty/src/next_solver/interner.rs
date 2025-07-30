@@ -292,10 +292,6 @@ impl<'db> DbInterner<'db> {
         .unwrap()
     }
 
-    pub fn new(db: &'db dyn HirDatabase) -> DbInterner<'db> {
-        DbInterner { db, krate: None, block: None }
-    }
-
     pub fn new_with(
         db: &'db dyn HirDatabase,
         krate: Option<Crate>,
