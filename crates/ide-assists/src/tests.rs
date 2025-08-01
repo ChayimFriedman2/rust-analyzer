@@ -1,7 +1,7 @@
 mod generated;
 
 use expect_test::expect;
-use hir::Semantics;
+use hir::{Semantics, setup_tracing};
 use ide_db::{
     EditionedFileId, FileRange, RootDatabase, SnippetCap,
     assists::ExprFillDefaultMode,
@@ -305,6 +305,7 @@ fn check_with_config(
     expected: ExpectedResult<'_>,
     assist_label: Option<&str>,
 ) {
+    let _tracing = setup_tracing();
     let (mut db, file_with_caret_id, range_or_offset) = RootDatabase::with_range_or_offset(before);
     db.enable_proc_attr_macros();
     let text_without_caret = db.file_text(file_with_caret_id.file_id(&db)).text(&db).to_string();

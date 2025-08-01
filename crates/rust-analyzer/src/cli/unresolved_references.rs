@@ -51,6 +51,7 @@ impl flags::UnresolvedReferences {
             load_workspace_at(&self.path, &cargo_config, &load_cargo_config, &|_| {})?;
         let host = AnalysisHost::with_database(db);
         let db = host.raw_database();
+        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
         let sema = Semantics::new(db);
 
         let mut visited_files = FxHashSet::default();

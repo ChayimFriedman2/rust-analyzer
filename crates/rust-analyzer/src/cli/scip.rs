@@ -62,6 +62,7 @@ impl flags::Scip {
         )?;
         let host = AnalysisHost::with_database(db);
         let db = host.raw_database();
+        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
         let analysis = host.analysis();
 
         let vendored_libs_config = if self.exclude_vendored_libraries {

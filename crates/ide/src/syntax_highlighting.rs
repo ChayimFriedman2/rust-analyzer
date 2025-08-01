@@ -15,7 +15,10 @@ mod tests;
 use std::ops::ControlFlow;
 
 use either::Either;
-use hir::{DefWithBody, EditionedFileId, InFile, InRealFile, MacroKind, Name, Semantics};
+use hir::{
+    DefWithBody, EditionedFileId, InFile, InRealFile, MacroKind, Name, Semantics,
+    next_solver::tls::ScopedDb,
+};
 use ide_db::{FxHashMap, FxHashSet, Ranker, RootDatabase, SymbolKind};
 use syntax::{
     AstNode, AstToken, NodeOrToken,
@@ -192,6 +195,7 @@ pub(crate) fn highlight(
     file_id: FileId,
     range_to_highlight: Option<TextRange>,
 ) -> Vec<HlRange> {
+    let _db_scope = ScopedDb::set_db(db);
     let _p = tracing::info_span!("highlight").entered();
     let sema = Semantics::new(db);
     let file_id = sema

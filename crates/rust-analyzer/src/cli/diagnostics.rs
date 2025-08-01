@@ -46,6 +46,7 @@ impl flags::Diagnostics {
             load_workspace_at(&self.path, &cargo_config, &load_cargo_config, &|_| {})?;
         let host = AnalysisHost::with_database(db);
         let db = host.raw_database();
+        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
         let analysis = host.analysis();
 
         let mut found_error = false;
