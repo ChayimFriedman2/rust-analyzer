@@ -1369,7 +1369,11 @@ fn convert_const_for_result<'db>(interner: DbInterner<'db>, const_: Const<'db>) 
             }
             .intern(Interner);
         }
-        rustc_type_ir::ConstKind::Error(_) => todo!(),
+        rustc_type_ir::ConstKind::Error(_) => {
+            chalk_ir::ConstValue::Concrete(chalk_ir::ConcreteConst {
+                interned: ConstScalar::Unknown,
+            })
+        }
         rustc_type_ir::ConstKind::Expr(_) => todo!(),
     };
     chalk_ir::ConstData { ty: crate::TyKind::Error.intern(Interner), value }.intern(Interner)
