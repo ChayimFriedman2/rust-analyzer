@@ -6,8 +6,8 @@ use chalk_ir::{
     interner::HasInterner,
 };
 use hir_def::{
-    CallableDefId, ConstParamId, FunctionId, LifetimeParamId, TypeAliasId, TypeOrConstParamId,
-    TypeParamId, signatures::TraitFlags,
+    CallableDefId, ConstParamId, FunctionId, GeneralConstId, LifetimeParamId, TypeAliasId,
+    TypeOrConstParamId, TypeParamId, signatures::TraitFlags,
 };
 use intern::sym;
 use rustc_type_ir::{
@@ -1355,8 +1355,14 @@ fn convert_const_for_result<'db>(interner: DbInterner<'db>, const_: Const<'db>) 
             })
         }
         rustc_type_ir::ConstKind::Unevaluated(unevaluated_const) => {
+            let id = match unevaluated_const.def {
+                SolverDefId::ConstId(id) => GeneralConstId::ConstId(id),
+                SolverDefId::StaticId(id) => GeneralConstId::StaticId(id),
+                _ => unreachable!(),
+            };
+            let subst = convert_args_for_result(interner, unevaluated_const.args.as_slice());
             chalk_ir::ConstValue::Concrete(chalk_ir::ConcreteConst {
-                interned: ConstScalar::Unknown,
+                interned: ConstScalar::UnevaluatedConst(id, subst),
             })
         }
         rustc_type_ir::ConstKind::Value(value_const) => {

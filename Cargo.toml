@@ -111,10 +111,14 @@ arrayvec = "0.7.6"
 bitflags = "2.9.1"
 cargo_metadata = "0.21.0"
 camino = "1.1.10"
-chalk-solve = { version = "0.103.0", default-features = false }
-chalk-ir = "0.103.0"
-chalk-recursive = { version = "0.103.0", default-features = false }
-chalk-derive = "0.103.0"
+# chalk-solve = { version = "0.103.0", default-features = false }
+# chalk-ir = "0.103.0"
+# chalk-recursive = { version = "0.103.0", default-features = false }
+# chalk-derive = "0.103.0"
+chalk-solve = { git = "https://github.com/jackh726/chalk.git", branch = "relate_error" }
+chalk-ir = { git = "https://github.com/jackh726/chalk.git", branch = "relate_error" }
+chalk-recursive = { git = "https://github.com/jackh726/chalk.git", branch = "relate_error" }
+chalk-derive = { git = "https://github.com/jackh726/chalk.git", branch = "relate_error" }
 crossbeam-channel = "0.5.15"
 dissimilar = "1.0.10"
 dot = "0.1.4"

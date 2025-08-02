@@ -1042,7 +1042,6 @@ pub(crate) struct DeclContext {
     pub(crate) origin: DeclOrigin,
 }
 
-#[cfg(test)]
 pub fn setup_tracing() -> Option<tracing::subscriber::DefaultGuard> {
     use std::env;
     use std::sync::LazyLock;
@@ -1063,9 +1062,4 @@ pub fn setup_tracing() -> Option<tracing::subscriber::DefaultGuard> {
         .with_writer(std::io::stderr);
     let subscriber = Registry::default().with(filter).with(layer);
     Some(tracing::subscriber::set_default(subscriber))
-}
-
-#[cfg(not(test))]
-pub fn setup_tracing() -> Option<tracing::subscriber::DefaultGuard> {
-    None
 }
