@@ -265,7 +265,7 @@ pub use crate::_interned_vec_db as interned_vec_db;
 
 #[derive(Debug, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct DbInterner<'db> {
-    pub(crate) db: &'db (),
+    pub(crate) db: std::marker::PhantomData<&'db ()>,
     pub(crate) krate: Option<Crate>,
     pub(crate) block: Option<BlockId>,
 }
@@ -273,7 +273,7 @@ pub struct DbInterner<'db> {
 impl<'db> DbInterner<'db> {
     // FIXME(next-solver): remove this method
     pub fn new() -> DbInterner<'db> {
-        DbInterner { db: &(), krate: None, block: None }
+        DbInterner { db: std::marker::PhantomData, krate: None, block: None }
     }
 
     pub fn new_with(
@@ -281,7 +281,7 @@ impl<'db> DbInterner<'db> {
         krate: Option<Crate>,
         block: Option<BlockId>,
     ) -> DbInterner<'db> {
-        DbInterner { db: &(), krate: krate, block: None }
+        DbInterner { db: std::marker::PhantomData, krate: krate, block: None }
     }
 
     pub fn db(&self) -> &'db dyn HirDatabase {

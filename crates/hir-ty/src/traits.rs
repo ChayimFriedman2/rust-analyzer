@@ -179,7 +179,7 @@ fn solve_nextsolver<'db>(
     crate::next_solver::tls::with_db(db, || {
         // FIXME: should use analysis_in_body, but that needs GenericDefId::Block
         let context = SolverContext(
-            DbInterner { db: &(), krate: Some(krate), block }
+            DbInterner { db: std::marker::PhantomData, krate: Some(krate), block }
                 .infer_ctxt()
                 .build(TypingMode::non_body_analysis()),
         );
