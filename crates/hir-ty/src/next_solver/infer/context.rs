@@ -1,3 +1,5 @@
+//! Infer context for the next-trait-solver.
+
 use rustc_type_ir::{
     ConstVid, FloatVarValue, FloatVid, GenericArgKind, InferConst, InferTy, IntTy, IntVarValue,
     IntVid, RegionVid, TyVid, TypeFoldable, TypingMode, UniverseIndex,
@@ -6,8 +8,8 @@ use rustc_type_ir::{
 };
 
 use crate::next_solver::{
-    Binder, Const, ConstKind, DbInterner, ErrorGuaranteed, GenericArgs, OpaqueTypeKey,
-    ParamEnv, Region, SolverDefId, Span, Ty, TyKind,
+    Binder, Const, ConstKind, DbInterner, ErrorGuaranteed, GenericArgs, OpaqueTypeKey, ParamEnv,
+    Region, SolverDefId, Span, Ty, TyKind,
     infer::opaque_types::{OpaqueHiddenType, table::OpaqueTypeStorageEntries},
 };
 

@@ -1,3 +1,4 @@
+//! ABI-related things in the next-trait-solver.
 use rustc_type_ir::{error::TypeError, relate::Relate};
 
 use crate::FnAbi;

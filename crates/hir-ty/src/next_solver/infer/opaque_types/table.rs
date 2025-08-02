@@ -1,3 +1,5 @@
+//! Things related to storage opaques in the infer context of the next-trait-solver.
+
 use std::ops::Deref;
 
 use ena::undo_log::UndoLogs;

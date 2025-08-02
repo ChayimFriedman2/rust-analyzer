@@ -1,3 +1,4 @@
+//! Things relevant to the next trait solver.
 #![allow(unused, unreachable_pub)]
 
 pub mod abi;

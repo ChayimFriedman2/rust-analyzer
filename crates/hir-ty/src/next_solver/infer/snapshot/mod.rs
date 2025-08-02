@@ -1,3 +1,5 @@
+//! Snapshotting in the infer ctxt of the next-trait-solver.
+
 use ena::undo_log::UndoLogs;
 use rustc_type_ir::UniverseIndex;
 use tracing::{debug, instrument};

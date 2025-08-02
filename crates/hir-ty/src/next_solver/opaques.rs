@@ -1,3 +1,5 @@
+//! Things related to opaques in the next-trait-solver.
+
 use intern::Interned;
 use rustc_ast_ir::try_visit;
 

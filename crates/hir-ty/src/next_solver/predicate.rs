@@ -1,3 +1,5 @@
+//! Things related to predicates.
+
 use std::cmp::Ordering;
 
 use intern::Interned;

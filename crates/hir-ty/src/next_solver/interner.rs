@@ -1,3 +1,4 @@
+//! Things related to the Interner in the next-trait-solver.
 #![allow(unused)]
 
 use base_db::Crate;

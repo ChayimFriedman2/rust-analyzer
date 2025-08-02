@@ -1,3 +1,5 @@
+//! Things useful for mapping to/from Chalk and next-trait-solver types.
+
 use base_db::Crate;
 use chalk_ir::{
     CanonicalVarKind, CanonicalVarKinds, InferenceVar, Substitution, TyVariableKind, fold::Shift,

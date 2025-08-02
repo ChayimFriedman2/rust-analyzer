@@ -1,3 +1,5 @@
+//! Things related to consts in the next-trait-solver.
+
 use intern::{Interned, Symbol};
 use rustc_ast_ir::try_visit;
 use rustc_ast_ir::visit::VisitorResult;

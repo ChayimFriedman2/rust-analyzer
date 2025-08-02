@@ -1,3 +1,5 @@
+//! Definition of `SolverDefId`
+
 use hir_def::{
     AdtId, ConstId, EnumId, EnumVariantId, FunctionId, GenericDefId, ImplId, StaticId, StructId,
     TraitAliasId, TraitId, TypeAliasId, UnionId,

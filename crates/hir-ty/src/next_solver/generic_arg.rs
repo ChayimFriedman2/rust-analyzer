@@ -1,3 +1,5 @@
+//! Things related to generic args in the next-trait-solver.
+
 use intern::{Interned, Symbol};
 use rustc_type_ir::{
     ClosureArgs, CollectAndApply, ConstVid, CoroutineArgs, CoroutineClosureArgs, FnSig, FnSigTys,
@@ -11,8 +13,7 @@ use smallvec::SmallVec;
 use crate::db::HirDatabase;
 
 use super::{
-    Const, DbInterner, EarlyParamRegion, ErrorGuaranteed, ParamConst, Region, SolverDefId,
-    Ty, Tys,
+    Const, DbInterner, EarlyParamRegion, ErrorGuaranteed, ParamConst, Region, SolverDefId, Ty, Tys,
     generics::{GenericParamDef, GenericParamDefKind, Generics},
     interned_vec_db,
 };

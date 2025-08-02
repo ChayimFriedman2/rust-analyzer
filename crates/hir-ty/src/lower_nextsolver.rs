@@ -1,5 +1,3 @@
-// FIXME(next-solver): this should get removed as things get moved to rustc_type_ir from chalk_ir
-#![allow(unused)]
 //! Methods for lowering the HIR to types. There are two main cases here:
 //!
 //!  - Lowering a type reference like `&usize` or `Option<foo::bar::Baz>` to a
@@ -7,6 +5,8 @@
 //!  - Building the type for an item: This happens through the `ty` query.
 //!
 //! This usually involves resolving names, collecting generic arguments etc.
+#![allow(unused)]
+// FIXME(next-solver): this should get removed as things get moved to rustc_type_ir from chalk_ir
 pub(crate) mod path;
 
 use std::{

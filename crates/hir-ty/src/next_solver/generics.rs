@@ -1,3 +1,5 @@
+//! Things related to generics in the next-trait-solver.
+
 use hir_def::{
     ConstParamId, GenericDefId, GenericParamId, ItemContainerId, LifetimeParamId, Lookup,
     TypeOrConstParamId, TypeParamId,

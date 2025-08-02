@@ -1,3 +1,5 @@
+//! Things related to tys in the next-trait-solver.
+
 use intern::{Interned, Symbol, sym};
 use rustc_abi::{Float, Integer, Size};
 use rustc_ast_ir::{try_visit, visit::VisitorResult};

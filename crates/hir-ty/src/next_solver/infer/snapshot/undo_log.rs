@@ -1,3 +1,5 @@
+//! Snapshotting in the infer ctxt of the next-trait-solver.
+
 use std::marker::PhantomData;
 
 use ena::snapshot_vec as sv;

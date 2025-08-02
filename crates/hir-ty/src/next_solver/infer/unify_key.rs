@@ -1,3 +1,5 @@
+//! Unification keyes for the infer context the next-trait-solver.
+
 use std::cmp;
 use std::marker::PhantomData;
 

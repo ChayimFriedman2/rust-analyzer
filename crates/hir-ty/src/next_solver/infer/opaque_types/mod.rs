@@ -1,3 +1,5 @@
+//! Things related to the infer context of the next-trait-solver.
+
 use std::sync::Arc;
 
 use tracing::{debug, instrument};
@@ -12,8 +14,8 @@ pub(crate) mod table;
 pub(crate) use table::{OpaqueTypeStorage, OpaqueTypeTable};
 
 use crate::next_solver::{
-    AliasTy, Binder, BoundRegion, BoundTy, Canonical, CanonicalVarValues, Const, DbInterner,
-    Goal, ParamEnv, Predicate, PredicateKind, Region, Ty, TyKind,
+    AliasTy, Binder, BoundRegion, BoundTy, Canonical, CanonicalVarValues, Const, DbInterner, Goal,
+    ParamEnv, Predicate, PredicateKind, Region, Ty, TyKind,
     fold::FnMutDelegate,
     infer::{
         DefineOpaqueTypes, InferCtxt, TypeTrace,

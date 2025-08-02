@@ -1,3 +1,5 @@
+//! Type generation code.
+
 use std::mem;
 
 use rustc_hash::FxHashMap;

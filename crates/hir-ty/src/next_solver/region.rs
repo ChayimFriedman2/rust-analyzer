@@ -1,3 +1,5 @@
+//! Things related to regions.
+
 use intern::{Interned, Symbol};
 use rustc_type_ir::{
     BoundVar, Flags, INNERMOST, RegionVid, TypeFlags, TypeFoldable, TypeVisitable, VisitorResult,
@@ -8,9 +10,8 @@ use rustc_type_ir::{
 use crate::next_solver::{GenericArg, OutlivesPredicate};
 
 use super::{
-    ErrorGuaranteed, SolverDefId,
+    ErrorGuaranteed, SolverDefId, interned_vec_db,
     interner::{BoundVarKind, DbInterner, Placeholder},
-    interned_vec_db,
 };
 
 type RegionKind<'db> = rustc_type_ir::RegionKind<DbInterner<'db>>;

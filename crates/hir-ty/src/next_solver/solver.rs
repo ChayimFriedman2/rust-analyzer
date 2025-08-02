@@ -1,3 +1,5 @@
+//! Defining `SolverContext` for next-trait-solver.
+
 use hir_def::{AssocItemId, TypeAliasId};
 use rustc_next_trait_solver::delegate::SolverDelegate;
 use rustc_type_ir::{
@@ -9,8 +11,8 @@ use rustc_type_ir::{
 use crate::{TraitRefExt, db::HirDatabase};
 
 use super::{
-    Canonical, CanonicalVarValues, Const, DbInterner, ErrorGuaranteed, GenericArg,
-    GenericArgs, ParamEnv, Predicate, SolverDefId, Span, Ty, UnevaluatedConst,
+    Canonical, CanonicalVarValues, Const, DbInterner, ErrorGuaranteed, GenericArg, GenericArgs,
+    ParamEnv, Predicate, SolverDefId, Span, Ty, UnevaluatedConst,
     infer::{DbInternerInferExt, InferCtxt, canonical::instantiate::CanonicalExt},
 };
 

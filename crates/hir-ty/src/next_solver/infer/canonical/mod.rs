@@ -22,9 +22,9 @@
 //! [c]: https://rust-lang.github.io/chalk/book/canonical_queries/canonicalization.html
 
 use crate::next_solver::{
-    AliasTy, Binder, Canonical, CanonicalVarValues, CanonicalVars, Const, DbInterner,
-    GenericArg, Goal, ParamEnv, PlaceholderConst, PlaceholderRegion, PlaceholderTy, Predicate,
-    PredicateKind, Region, Ty, TyKind,
+    AliasTy, Binder, Canonical, CanonicalVarValues, CanonicalVars, Const, DbInterner, GenericArg,
+    Goal, ParamEnv, PlaceholderConst, PlaceholderRegion, PlaceholderTy, Predicate, PredicateKind,
+    Region, Ty, TyKind,
     infer::{
         DefineOpaqueTypes, InferCtxt, TypeTrace,
         traits::{Obligation, PredicateObligations},

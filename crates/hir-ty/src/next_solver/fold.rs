@@ -1,3 +1,5 @@
+//! Fold impls for the next-trait-solver.
+
 use rustc_type_ir::{
     BoundVar, DebruijnIndex, RegionKind, TypeFoldable, TypeFolder, TypeSuperFoldable,
     TypeVisitableExt,

@@ -1,3 +1,5 @@
+//! Things for resolving vars in the infer context of the next-trait-solver.
+
 use rustc_type_ir::{
     ConstKind, FallibleTypeFolder, InferConst, InferTy, RegionKind, TyKind, TypeFoldable,
     TypeFolder, TypeSuperFoldable, TypeVisitableExt, data_structures::DelayedMap,

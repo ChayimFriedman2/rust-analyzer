@@ -41,7 +41,6 @@ pub(crate) type AssociatedTyValue = chalk_solve::rust_ir::AssociatedTyValue<Inte
 pub(crate) type FnDefDatum = chalk_solve::rust_ir::FnDefDatum<Interner>;
 pub(crate) type Variances = chalk_ir::Variances<Interner>;
 
-
 impl chalk_ir::UnificationDatabase<Interner> for &dyn HirDatabase {
     fn fn_def_variance(
         &self,

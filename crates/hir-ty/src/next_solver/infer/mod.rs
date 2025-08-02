@@ -1,3 +1,5 @@
+//! Infer context the next-trait-solver.
+
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::Arc;
@@ -39,11 +41,10 @@ use crate::next_solver::{BoundRegion, BoundTy, BoundVarKind};
 use super::generics::{GenericParamDef, GenericParamDefKind};
 use super::{
     AliasTerm, Binder, BoundRegionKind, CanonicalQueryInput, CanonicalVarValues, Const, ConstKind,
-    DbInterner, ErrorGuaranteed, FxIndexMap, GenericArg, GenericArgs, OpaqueTypeKey,
-    ParamEnv, PlaceholderRegion, PolyCoercePredicate, PolyExistentialProjection,
-    PolyExistentialTraitRef, PolyFnSig, PolyRegionOutlivesPredicate, PolySubtypePredicate,
-    Predicate, Region, SolverDefId, SubtypePredicate, Term, TraitPredicate, TraitRef, Ty, TyKind,
-    TypingMode,
+    DbInterner, ErrorGuaranteed, FxIndexMap, GenericArg, GenericArgs, OpaqueTypeKey, ParamEnv,
+    PlaceholderRegion, PolyCoercePredicate, PolyExistentialProjection, PolyExistentialTraitRef,
+    PolyFnSig, PolyRegionOutlivesPredicate, PolySubtypePredicate, Predicate, Region, SolverDefId,
+    SubtypePredicate, Term, TraitPredicate, TraitRef, Ty, TyKind, TypingMode,
 };
 
 pub mod at;
