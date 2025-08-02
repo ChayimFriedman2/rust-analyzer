@@ -1,4 +1,4 @@
-//! Various utilties for the next-trait-solver.
+//! Various utilities for the next-trait-solver.
 
 use std::iter;
 use std::ops::{self, ControlFlow};
