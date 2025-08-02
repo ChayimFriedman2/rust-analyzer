@@ -887,7 +887,7 @@ pub(crate) fn lower_mutability(m: hir_def::type_ref::Mutability) -> Mutability {
 }
 
 fn unknown_const(_ty: Ty<'_>) -> Const<'_> {
-    Const::new(DbInterner::new(), ConstKind::Error(ErrorGuaranteed))
+    Const::new(DbInterner::conjure(), ConstKind::Error(ErrorGuaranteed))
 }
 
 pub(crate) fn impl_trait_query<'db>(
@@ -987,7 +987,7 @@ pub(crate) fn type_for_type_alias_with_diagnostics_query<'db>(
     let type_alias_data = db.type_alias_signature(t);
     let mut diags = None;
     let inner = if type_alias_data.flags.contains(TypeAliasFlags::IS_EXTERN) {
-        EarlyBinder::bind(Ty::new_foreign(DbInterner::new(), t.into()))
+        EarlyBinder::bind(Ty::new_foreign(DbInterner::new(db), t.into()))
     } else {
         let resolver = t.resolver(db);
         let mut ctx = TyLoweringContext::new(
@@ -1002,7 +1002,7 @@ pub(crate) fn type_for_type_alias_with_diagnostics_query<'db>(
             type_alias_data
                 .ty
                 .map(|type_ref| ctx.lower_ty(type_ref))
-                .unwrap_or_else(|| Ty::new_error(DbInterner::new(), ErrorGuaranteed)),
+                .unwrap_or_else(|| Ty::new_error(DbInterner::new(db), ErrorGuaranteed)),
         );
         diags = create_diagnostics(ctx.diagnostics);
         res
@@ -1037,7 +1037,7 @@ pub(crate) fn impl_self_ty_with_diagnostics_query<'db>(
         REENTRANT_MAP.with_borrow_mut(|m| {
             m.remove(&impl_id);
         });
-        return (EarlyBinder::bind(Ty::new_error(DbInterner::new(), ErrorGuaranteed)), None);
+        return (EarlyBinder::bind(Ty::new_error(DbInterner::new(db), ErrorGuaranteed)), None);
     }
 
     let impl_data = db.impl_signature(impl_id);
@@ -1086,7 +1086,7 @@ pub(crate) fn const_param_ty_with_diagnostics_query<'db>(
     let ty = match data {
         TypeOrConstParamData::TypeParamData(_) => {
             never!();
-            Ty::new_error(DbInterner::new(), ErrorGuaranteed)
+            Ty::new_error(DbInterner::new(db), ErrorGuaranteed)
         }
         TypeOrConstParamData::ConstParamData(d) => ctx.lower_ty(d.ty),
     };
@@ -1364,7 +1364,7 @@ where
                         continue;
                     };
                     let idx = idx as u32 + generics.parent_count as u32;
-                    let param_ty = Ty::new_param(DbInterner::new(), idx, p.name.clone()).into();
+                    let param_ty = Ty::new_param(DbInterner::new(db), idx, p.name.clone()).into();
                     if explicitly_unsized_tys.contains(&param_ty) {
                         continue;
                     }
@@ -1496,10 +1496,10 @@ pub(crate) fn lower_generic_arg<'a, 'db, T>(
             for_lifetime(this, lifetime_ref).into()
         }
         (GenericArg::Const(_), ParamKind::Type) => {
-            Ty::new_error(DbInterner::new(), ErrorGuaranteed).into()
+            Ty::new_error(DbInterner::new(db), ErrorGuaranteed).into()
         }
         (GenericArg::Lifetime(_), ParamKind::Type) => {
-            Ty::new_error(DbInterner::new(), ErrorGuaranteed).into()
+            Ty::new_error(DbInterner::new(db), ErrorGuaranteed).into()
         }
         (GenericArg::Type(t), ParamKind::Const(c_ty)) => match &store[*t] {
             TypeRef::Path(p) => {
@@ -1558,7 +1558,7 @@ fn fn_sig_for_fn<'db>(
         None => Ty::new_tup(interner, &[]),
     };
 
-    let inputs_and_output = Tys::new_from_iter(DbInterner::new(), params.chain(Some(ret)));
+    let inputs_and_output = Tys::new_from_iter(DbInterner::new(db), params.chain(Some(ret)));
     // If/when we track late bound vars, we need to switch this to not be `dummy`
     EarlyBinder::bind(rustc_type_ir::Binder::dummy(FnSig {
         abi: data.abi.as_ref().map_or(FnAbi::Rust, FnAbi::from_symbol),
@@ -1571,7 +1571,7 @@ fn fn_sig_for_fn<'db>(
 fn type_for_adt<'db>(db: &'db dyn HirDatabase, adt: AdtId) -> EarlyBinder<'db, Ty<'db>> {
     let interner = DbInterner::new_with(db, None, None);
     let args = GenericArgs::identity_for_item(interner, adt.into());
-    let ty = Ty::new_adt(DbInterner::new(), AdtDef::new(adt.into(), interner), args);
+    let ty = Ty::new_adt(DbInterner::new(db), AdtDef::new(adt.into(), interner), args);
     EarlyBinder::bind(ty)
 }
 
@@ -1583,7 +1583,7 @@ fn fn_sig_for_struct_constructor<'db>(
     let params = field_tys.iter().map(|(_, ty)| ty.skip_binder().clone());
     let ret = type_for_adt(db, def.into()).skip_binder();
 
-    let inputs_and_output = Tys::new_from_iter(DbInterner::new(), params.chain(Some(ret)));
+    let inputs_and_output = Tys::new_from_iter(DbInterner::new(db), params.chain(Some(ret)));
     EarlyBinder::bind(Binder::dummy(FnSig {
         abi: FnAbi::RustCall,
         c_variadic: false,
@@ -1601,7 +1601,7 @@ fn fn_sig_for_enum_variant_constructor<'db>(
     let parent = def.lookup(db).parent;
     let ret = type_for_adt(db, parent.into()).skip_binder();
 
-    let inputs_and_output = Tys::new_from_iter(DbInterner::new(), params.chain(Some(ret)));
+    let inputs_and_output = Tys::new_from_iter(DbInterner::new(db), params.chain(Some(ret)));
     EarlyBinder::bind(Binder::dummy(FnSig {
         abi: FnAbi::RustCall,
         c_variadic: false,

@@ -307,6 +307,8 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     #[salsa::cycle(cycle_result = crate::drop::has_drop_glue_cycle_result)]
     fn has_drop_glue(&self, ty: Ty, env: Arc<TraitEnvironment>) -> DropGlue;
 
+    // next trait solver
+
     #[salsa::invoke(crate::layout_nextsolver::layout_of_adt_query)]
     #[salsa::cycle(cycle_result = crate::layout_nextsolver::layout_of_adt_cycle_result)]
     fn layout_of_adt_ns<'db>(

@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    BoundVarKind, DbInterner, GenericArgs, Placeholder, SolverDefId, interned_vec_db, tls,
+    BoundVarKind, DbInterner, GenericArgs, Placeholder, SolverDefId, interned_vec_db,
     util::{FloatExt, IntegerExt},
 };
 
@@ -50,11 +50,13 @@ impl<'db> Ty<'db> {
     }
 
     pub fn inner(&self) -> &WithCachedTypeInfo<TyKind<'db>> {
-        // SAFETY: ¯\_(ツ)_/¯
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+        salsa::with_attached_database(|db| {
             let inner = &self.kind_(db).0;
+            // SAFETY: The caller already has access to a `Ty<'db>`, so borrowchecking will
+            // make sure that our returned value is valid for the lifetime `'db`.
             unsafe { std::mem::transmute(inner) }
         })
+        .unwrap()
     }
 
     pub fn new_param(interner: DbInterner<'db>, index: u32, name: Symbol) -> Self {
@@ -653,7 +655,7 @@ interned_vec_db!(Tys, Ty);
 impl<'db> rustc_type_ir::inherent::Tys<DbInterner<'db>> for Tys<'db> {
     fn inputs(self) -> <DbInterner<'db> as rustc_type_ir::Interner>::FnInputTys {
         Tys::new_from_iter(
-            DbInterner::new(),
+            DbInterner::conjure(),
             self.as_slice().split_last().unwrap().1.into_iter().cloned(),
         )
     }

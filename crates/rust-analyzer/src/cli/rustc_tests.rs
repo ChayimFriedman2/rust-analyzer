@@ -115,7 +115,6 @@ impl Tester {
             load_workspace(workspace, &cargo_config.extra_env, &load_cargo_config)?;
         let host = AnalysisHost::with_database(db);
         let db = host.raw_database();
-        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
         let krates = Crate::all(db);
         let root_crate = krates.iter().cloned().find(|krate| krate.origin(db).is_local()).unwrap();
         let root_file = root_crate.root_file(db);

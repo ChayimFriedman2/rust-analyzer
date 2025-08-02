@@ -29,7 +29,6 @@ use smallvec::{SmallVec, smallvec};
 use std::fmt;
 use std::ops::ControlFlow;
 use syntax::ast::SelfParamKind;
-use tls::with_db_out_of_thin_air;
 use triomphe::Arc;
 
 use rustc_ast_ir::visit::VisitorResult;
@@ -122,10 +121,11 @@ macro_rules! _interned_vec_nolifetime_salsa {
 
             pub fn inner(&self) -> &smallvec::SmallVec<[$ty; 2]> {
                 // SAFETY: ¯\_(ツ)_/¯
-                crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+                salsa::with_attached_database(|db| {
                     let inner = self.inner_(db);
                     unsafe { std::mem::transmute(inner) }
                 })
+                .unwrap()
             }
         }
 
@@ -154,7 +154,7 @@ macro_rules! _interned_vec_nolifetime_salsa {
 
         impl Default for $name {
             fn default() -> Self {
-                $name::new_from_iter(DbInterner::new(), [])
+                $name::new_from_iter(DbInterner::conjure(), [])
             }
         }
     };
@@ -224,10 +224,11 @@ macro_rules! _interned_vec_db {
 
             pub fn inner(&self) -> &smallvec::SmallVec<[$ty<'db>; 2]> {
                 // SAFETY: ¯\_(ツ)_/¯
-                crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+                salsa::with_attached_database(|db| {
                     let inner = self.inner_(db);
                     unsafe { std::mem::transmute(inner) }
                 })
+                .unwrap()
             }
         }
 
@@ -256,7 +257,7 @@ macro_rules! _interned_vec_db {
 
         impl<'db> Default for $name<'db> {
             fn default() -> Self {
-                $name::new_from_iter(DbInterner::new(), [])
+                $name::new_from_iter(DbInterner::conjure(), [])
             }
         }
     };
@@ -264,30 +265,44 @@ macro_rules! _interned_vec_db {
 
 pub use crate::_interned_vec_db as interned_vec_db;
 
-#[derive(Debug, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone)]
 pub struct DbInterner<'db> {
-    pub(crate) db: std::marker::PhantomData<&'db ()>,
+    pub(crate) db: &'db dyn HirDatabase,
     pub(crate) krate: Option<Crate>,
     pub(crate) block: Option<BlockId>,
 }
 
+// FIXME: very wrong, see https://github.com/rust-lang/rust/pull/144808
+unsafe impl Send for DbInterner<'_> {}
+unsafe impl Sync for DbInterner<'_> {}
+
 impl<'db> DbInterner<'db> {
     // FIXME(next-solver): remove this method
-    pub fn new() -> DbInterner<'db> {
-        DbInterner { db: std::marker::PhantomData, krate: None, block: None }
+    pub fn conjure() -> DbInterner<'db> {
+        salsa::with_attached_database(|db| DbInterner {
+            db: unsafe {
+                std::mem::transmute::<&dyn HirDatabase, &'db dyn HirDatabase>(db.as_view())
+            },
+            krate: None,
+            block: None,
+        })
+        .unwrap()
+    }
+
+    pub fn new(db: &'db dyn HirDatabase) -> DbInterner<'db> {
+        DbInterner { db, krate: None, block: None }
     }
 
     pub fn new_with(
-        _db: &'db dyn HirDatabase,
+        db: &'db dyn HirDatabase,
         krate: Option<Crate>,
         block: Option<BlockId>,
     ) -> DbInterner<'db> {
-        DbInterner { db: std::marker::PhantomData, krate: krate, block: None }
+        DbInterner { db, krate, block: None }
     }
 
     pub fn db(&self) -> &'db dyn HirDatabase {
-        // SAFETY: ¯\_(ツ)_/¯
-        with_db_out_of_thin_air(|db| unsafe { std::mem::transmute(db) })
+        self.db
     }
 }
 
@@ -558,11 +573,12 @@ impl AdtDef {
     }
 
     pub fn inner(&self) -> &AdtDefInner {
-        // SAFETY: ¯\_(ツ)_/¯
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+        salsa::with_attached_database(|db| {
             let inner = self.data_(db);
+            // SAFETY: ¯\_(ツ)_/¯
             unsafe { std::mem::transmute(inner) }
         })
+        .unwrap()
     }
 
     pub fn is_enum(&self) -> bool {
@@ -692,23 +708,21 @@ impl<'db> inherent::AdtDef<DbInterner<'db>> for AdtDef {
 
 impl fmt::Debug for AdtDef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        crate::next_solver::tls::with_opt_db_out_of_thin_air(|db| match db {
-            Some(db) => match self.inner().id {
-                AdtId::StructId(struct_id) => {
-                    let data = db.struct_signature(struct_id);
-                    f.write_str(data.name.as_str())
-                }
-                AdtId::UnionId(union_id) => {
-                    let data = db.union_signature(union_id);
-                    f.write_str(data.name.as_str())
-                }
-                AdtId::EnumId(enum_id) => {
-                    let data = db.enum_signature(enum_id);
-                    f.write_str(data.name.as_str())
-                }
-            },
-            None => f.write_str(&format!("AdtDef({:?})", self.inner().id)),
+        salsa::with_attached_database(|db| match self.inner().id {
+            AdtId::StructId(struct_id) => {
+                let data = db.as_view::<dyn HirDatabase>().struct_signature(struct_id);
+                f.write_str(data.name.as_str())
+            }
+            AdtId::UnionId(union_id) => {
+                let data = db.as_view::<dyn HirDatabase>().union_signature(union_id);
+                f.write_str(data.name.as_str())
+            }
+            AdtId::EnumId(enum_id) => {
+                let data = db.as_view::<dyn HirDatabase>().enum_signature(enum_id);
+                f.write_str(data.name.as_str())
+            }
         })
+        .unwrap_or_else(|| f.write_str(&format!("AdtDef({:?})", self.inner().id)))
     }
 }
 
@@ -904,7 +918,17 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         self,
         f: impl FnOnce(&mut rustc_type_ir::search_graph::GlobalCache<Self>) -> R,
     ) -> R {
-        tls_cache::with_cache(f)
+        salsa::with_attached_database(|db| {
+            tls_cache::with_cache(
+                unsafe {
+                    std::mem::transmute::<&dyn HirDatabase, &'db dyn HirDatabase>(
+                        db.as_view::<dyn HirDatabase>(),
+                    )
+                },
+                f,
+            )
+        })
+        .unwrap()
     }
 
     fn canonical_param_env_cache_get_or_insert<R>(
@@ -2033,56 +2057,10 @@ TrivialTypeTraversalImpls! {
     Placeholder<BoundVar>,
 }
 
-pub mod tls {
-    thread_local! {
-        pub static DB: std::cell::RefCell<Option<*const dyn crate::db::HirDatabase>> = const { std::cell::RefCell::new(None) };
-    }
-
-    pub struct ScopedDb;
-
-    impl ScopedDb {
-        pub fn set_db(db: &dyn crate::db::HirDatabase) {
-            DB.replace(Some(unsafe {
-                std::mem::transmute::<_, &'static dyn crate::db::HirDatabase>(db)
-            } as *const dyn crate::db::HirDatabase));
-        }
-    }
-
-    impl Drop for ScopedDb {
-        fn drop(&mut self) {
-            DB.replace(None);
-        }
-    }
-
-    pub fn with_db<T>(db: &dyn crate::db::HirDatabase, f: impl FnOnce() -> T) -> T {
-        DB.replace(Some(
-            unsafe { std::mem::transmute::<_, &'static dyn crate::db::HirDatabase>(db) }
-                as *const dyn crate::db::HirDatabase,
-        ));
-        f()
-    }
-
-    pub fn with_db_out_of_thin_air<T>(f: impl FnOnce(&dyn crate::db::HirDatabase) -> T) -> T {
-        DB.with(move |slot| match *slot.borrow() {
-            None => {
-                panic!("Expected DB at {}", std::backtrace::Backtrace::force_capture());
-            }
-            Some(db) => f(unsafe { &*db }),
-        })
-    }
-
-    pub fn with_opt_db_out_of_thin_air<T>(
-        f: impl FnOnce(Option<&dyn crate::db::HirDatabase>) -> T,
-    ) -> T {
-        DB.with(move |slot| match *slot.borrow() {
-            None => f(None),
-            Some(db) => f(Some(unsafe { &*db })),
-        })
-    }
-}
-
 pub(crate) use tls_cache::with_new_cache;
 mod tls_cache {
+    use crate::db::HirDatabase;
+
     use super::DbInterner;
     use rustc_type_ir::search_graph::GlobalCache;
     use std::cell::RefCell;
@@ -2093,10 +2071,19 @@ mod tls_cache {
         GLOBAL_CACHE.set(&RefCell::new(GlobalCache::default()), f)
     }
 
-    pub(super) fn with_cache<'db, T>(f: impl FnOnce(&mut GlobalCache<DbInterner<'db>>) -> T) -> T {
+    pub(super) fn with_cache<'db, T>(
+        _db: &'db dyn HirDatabase,
+        f: impl FnOnce(&mut GlobalCache<DbInterner<'db>>) -> T,
+    ) -> T {
         // SAFETY: No idea
-        let call =
-            move |slot: &RefCell<_>| f(unsafe { std::mem::transmute(&mut *slot.borrow_mut()) });
+        let call = move |slot: &RefCell<_>| {
+            f(unsafe {
+                std::mem::transmute::<
+                    &mut GlobalCache<DbInterner<'static>>,
+                    &mut GlobalCache<DbInterner<'db>>,
+                >(&mut *slot.borrow_mut())
+            })
+        };
         if GLOBAL_CACHE.is_set() {
             GLOBAL_CACHE.with(call)
         } else {

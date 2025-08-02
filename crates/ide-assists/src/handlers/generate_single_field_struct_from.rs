@@ -216,13 +216,11 @@ fn from_impl_exists(
     use hir::next_solver::infer::DbInternerInferExt;
     let infcx = interner.infer_ctxt().build(TypingMode::PostAnalysis);
 
-    hir::next_solver::tls::with_db(db, || {
-        let strukt = strukt.instantiate_infer(&infcx);
-        let field_ty = strukt.fields(db).get(main_field_i)?.ty(db);
-        let struct_ty = strukt.ty(db);
-        tracing::debug!(?strukt, ?field_ty, ?struct_ty);
-        struct_ty.impls_trait(infcx, from_trait, &[field_ty]).then_some(())
-    })
+    let strukt = strukt.instantiate_infer(&infcx);
+    let field_ty = strukt.fields(db).get(main_field_i)?.ty(db);
+    let struct_ty = strukt.ty(db);
+    tracing::debug!(?strukt, ?field_ty, ?struct_ty);
+    struct_ty.impls_trait(infcx, from_trait, &[field_ty]).then_some(())
 }
 
 #[cfg(test)]

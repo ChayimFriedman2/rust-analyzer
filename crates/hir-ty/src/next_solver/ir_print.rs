@@ -5,6 +5,8 @@ use std::any::type_name_of_val;
 use rustc_type_ir::inherent::SliceLike;
 use rustc_type_ir::{self as ty, ir_print::IrPrint};
 
+use crate::db::HirDatabase;
+
 use super::SolverDefId;
 use super::interner::DbInterner;
 
@@ -14,20 +16,18 @@ impl<'db> IrPrint<ty::AliasTy<Self>> for DbInterner<'db> {
     }
 
     fn print_debug(t: &ty::AliasTy<Self>, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        crate::next_solver::tls::with_opt_db_out_of_thin_air(|db| match db {
-            Some(db) => match t.def_id {
-                SolverDefId::TypeAliasId(id) => fmt.write_str(&format!(
-                    "AliasTy({:?}[{:?}])",
-                    db.type_alias_signature(id).name.as_str(),
-                    t.args
-                )),
-                SolverDefId::InternedOpaqueTyId(id) => {
-                    fmt.write_str(&format!("AliasTy({:?}[{:?}])", id, t.args))
-                }
-                _ => panic!("Expected TypeAlias or OpaqueTy."),
-            },
-            None => fmt.write_str(&format!("AliasTy({:?}[{:?}])", t.def_id, t.args)),
+        salsa::with_attached_database(|db| match t.def_id {
+            SolverDefId::TypeAliasId(id) => fmt.write_str(&format!(
+                "AliasTy({:?}[{:?}])",
+                db.as_view::<dyn HirDatabase>().type_alias_signature(id).name.as_str(),
+                t.args
+            )),
+            SolverDefId::InternedOpaqueTyId(id) => {
+                fmt.write_str(&format!("AliasTy({:?}[{:?}])", id, t.args))
+            }
+            _ => panic!("Expected TypeAlias or OpaqueTy."),
         })
+        .unwrap_or_else(|| fmt.write_str(&format!("AliasTy({:?}[{:?}])", t.def_id, t.args)))
     }
 }
 
@@ -37,20 +37,18 @@ impl<'db> IrPrint<ty::AliasTerm<Self>> for DbInterner<'db> {
     }
 
     fn print_debug(t: &ty::AliasTerm<Self>, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        crate::next_solver::tls::with_opt_db_out_of_thin_air(|db| match db {
-            Some(db) => match t.def_id {
-                SolverDefId::TypeAliasId(id) => fmt.write_str(&format!(
-                    "AliasTerm({:?}[{:?}])",
-                    db.type_alias_signature(id).name.as_str(),
-                    t.args
-                )),
-                SolverDefId::InternedOpaqueTyId(id) => {
-                    fmt.write_str(&format!("AliasTerm({:?}[{:?}])", id, t.args))
-                }
-                _ => panic!("Expected TypeAlias or OpaqueTy."),
-            },
-            None => fmt.write_str(&format!("AliasTerm({:?}[{:?}])", t.def_id, t.args)),
+        salsa::with_attached_database(|db| match t.def_id {
+            SolverDefId::TypeAliasId(id) => fmt.write_str(&format!(
+                "AliasTerm({:?}[{:?}])",
+                db.as_view::<dyn HirDatabase>().type_alias_signature(id).name.as_str(),
+                t.args
+            )),
+            SolverDefId::InternedOpaqueTyId(id) => {
+                fmt.write_str(&format!("AliasTerm({:?}[{:?}])", id, t.args))
+            }
+            _ => panic!("Expected TypeAlias or OpaqueTy."),
         })
+        .unwrap_or_else(|| fmt.write_str(&format!("AliasTerm({:?}[{:?}])", t.def_id, t.args)))
     }
 }
 impl<'db> IrPrint<ty::TraitRef<Self>> for DbInterner<'db> {
@@ -59,31 +57,29 @@ impl<'db> IrPrint<ty::TraitRef<Self>> for DbInterner<'db> {
     }
 
     fn print_debug(t: &ty::TraitRef<Self>, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        crate::next_solver::tls::with_opt_db_out_of_thin_air(|db| match db {
-            Some(db) => {
-                let trait_ = match t.def_id {
-                    SolverDefId::TraitId(id) => id,
-                    _ => panic!("Expected trait."),
-                };
-                let self_ty = &t.args.as_slice()[0];
-                let trait_args = &t.args.as_slice()[1..];
-                if trait_args.len() == 0 {
-                    fmt.write_str(&format!(
-                        "{:?}: {}",
-                        self_ty,
-                        db.trait_signature(trait_).name.as_str()
-                    ))
-                } else {
-                    fmt.write_str(&format!(
-                        "{:?}: {}<{:?}>",
-                        self_ty,
-                        db.trait_signature(trait_).name.as_str(),
-                        trait_args
-                    ))
-                }
+        salsa::with_attached_database(|db| {
+            let trait_ = match t.def_id {
+                SolverDefId::TraitId(id) => id,
+                _ => panic!("Expected trait."),
+            };
+            let self_ty = &t.args.as_slice()[0];
+            let trait_args = &t.args.as_slice()[1..];
+            if trait_args.len() == 0 {
+                fmt.write_str(&format!(
+                    "{:?}: {}",
+                    self_ty,
+                    db.as_view::<dyn HirDatabase>().trait_signature(trait_).name.as_str()
+                ))
+            } else {
+                fmt.write_str(&format!(
+                    "{:?}: {}<{:?}>",
+                    self_ty,
+                    db.as_view::<dyn HirDatabase>().trait_signature(trait_).name.as_str(),
+                    trait_args
+                ))
             }
-            None => fmt.write_str(&format!("TraitRef({:?}[{:?}])", t.def_id, t.args)),
         })
+        .unwrap_or_else(|| fmt.write_str(&format!("TraitRef({:?}[{:?}])", t.def_id, t.args)))
     }
 }
 impl<'db> IrPrint<ty::TraitPredicate<Self>> for DbInterner<'db> {
@@ -125,19 +121,19 @@ impl<'db> IrPrint<ty::ExistentialTraitRef<Self>> for DbInterner<'db> {
         t: &ty::ExistentialTraitRef<Self>,
         fmt: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        crate::next_solver::tls::with_opt_db_out_of_thin_air(|db| match db {
-            Some(db) => {
-                let trait_ = match t.def_id {
-                    SolverDefId::TraitId(id) => id,
-                    _ => panic!("Expected trait."),
-                };
-                fmt.write_str(&format!(
-                    "ExistentialTraitRef({:?}[{:?}])",
-                    db.trait_signature(trait_).name.as_str(),
-                    t.args
-                ))
-            }
-            None => fmt.write_str(&format!("ExistentialTraitRef({:?}[{:?}])", t.def_id, t.args)),
+        salsa::with_attached_database(|db| {
+            let trait_ = match t.def_id {
+                SolverDefId::TraitId(id) => id,
+                _ => panic!("Expected trait."),
+            };
+            fmt.write_str(&format!(
+                "ExistentialTraitRef({:?}[{:?}])",
+                db.as_view::<dyn HirDatabase>().trait_signature(trait_).name.as_str(),
+                t.args
+            ))
+        })
+        .unwrap_or_else(|| {
+            fmt.write_str(&format!("ExistentialTraitRef({:?}[{:?}])", t.def_id, t.args))
         })
     }
 }
@@ -153,23 +149,23 @@ impl<'db> IrPrint<ty::ExistentialProjection<Self>> for DbInterner<'db> {
         t: &ty::ExistentialProjection<Self>,
         fmt: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        crate::next_solver::tls::with_opt_db_out_of_thin_air(|db| match db {
-            Some(db) => {
-                let id = match t.def_id {
-                    SolverDefId::TypeAliasId(id) => id,
-                    _ => panic!("Expected trait."),
-                };
-                fmt.write_str(&format!(
-                    "ExistentialProjection(({:?}[{:?}]) -> {:?})",
-                    db.type_alias_signature(id).name.as_str(),
-                    t.args,
-                    t.term
-                ))
-            }
-            None => fmt.write_str(&format!(
+        salsa::with_attached_database(|db| {
+            let id = match t.def_id {
+                SolverDefId::TypeAliasId(id) => id,
+                _ => panic!("Expected trait."),
+            };
+            fmt.write_str(&format!(
+                "ExistentialProjection(({:?}[{:?}]) -> {:?})",
+                db.as_view::<dyn HirDatabase>().type_alias_signature(id).name.as_str(),
+                t.args,
+                t.term
+            ))
+        })
+        .unwrap_or_else(|| {
+            fmt.write_str(&format!(
                 "ExistentialProjection(({:?}[{:?}]) -> {:?})",
                 t.def_id, t.args, t.term
-            )),
+            ))
         })
     }
 }
@@ -185,23 +181,23 @@ impl<'db> IrPrint<ty::ProjectionPredicate<Self>> for DbInterner<'db> {
         t: &ty::ProjectionPredicate<Self>,
         fmt: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        crate::next_solver::tls::with_opt_db_out_of_thin_air(|db| match db {
-            Some(db) => {
-                let id = match t.projection_term.def_id {
-                    SolverDefId::TypeAliasId(id) => id,
-                    _ => panic!("Expected trait."),
-                };
-                fmt.write_str(&format!(
-                    "ProjectionPredicate(({:?}[{:?}]) -> {:?})",
-                    db.type_alias_signature(id).name.as_str(),
-                    t.projection_term.args,
-                    t.term
-                ))
-            }
-            None => fmt.write_str(&format!(
+        salsa::with_attached_database(|db| {
+            let id = match t.projection_term.def_id {
+                SolverDefId::TypeAliasId(id) => id,
+                _ => panic!("Expected trait."),
+            };
+            fmt.write_str(&format!(
+                "ProjectionPredicate(({:?}[{:?}]) -> {:?})",
+                db.as_view::<dyn HirDatabase>().type_alias_signature(id).name.as_str(),
+                t.projection_term.args,
+                t.term
+            ))
+        })
+        .unwrap_or_else(|| {
+            fmt.write_str(&format!(
                 "ProjectionPredicate(({:?}[{:?}]) -> {:?})",
                 t.projection_term.def_id, t.projection_term.args, t.term
-            )),
+            ))
         })
     }
 }

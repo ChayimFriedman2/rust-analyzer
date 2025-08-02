@@ -270,41 +270,40 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
         self.inner()
             .get(i)
             .and_then(|g| g.as_type())
-            .unwrap_or_else(|| Ty::new_error(DbInterner::new(), ErrorGuaranteed))
+            .unwrap_or_else(|| Ty::new_error(DbInterner::conjure(), ErrorGuaranteed))
     }
 
     fn region_at(self, i: usize) -> <DbInterner<'db> as rustc_type_ir::Interner>::Region {
         self.inner()
             .get(i)
             .and_then(|g| g.as_region())
-            .unwrap_or_else(|| Region::error(DbInterner::new()))
+            .unwrap_or_else(|| Region::error(DbInterner::conjure()))
     }
 
     fn const_at(self, i: usize) -> <DbInterner<'db> as rustc_type_ir::Interner>::Const {
         self.inner()
             .get(i)
             .and_then(|g| g.as_const())
-            .unwrap_or_else(|| Const::error(DbInterner::new()))
+            .unwrap_or_else(|| Const::error(DbInterner::conjure()))
     }
 
     fn split_closure_args(self) -> rustc_type_ir::ClosureArgsParts<DbInterner<'db>> {
         // FIXME: should use `ClosureSubst` when possible
         match self.inner().as_slice() {
             [parent_args @ .., sig_ty] => {
+                let interner = DbInterner::conjure();
                 // This is stupid, but the next solver expects the first input to actually be a tuple
                 let sig_ty = match sig_ty.expect_ty().kind() {
                     TyKind::FnPtr(sig_tys, header) => Ty::new(
-                        DbInterner::new(),
+                        interner,
                         TyKind::FnPtr(
                             sig_tys.map_bound(|s| {
-                                let inputs = Ty::new_tup_from_iter(
-                                    DbInterner::new(),
-                                    s.clone().inputs().iter(),
-                                );
+                                let inputs =
+                                    Ty::new_tup_from_iter(interner, s.clone().inputs().iter());
                                 let output = s.output();
                                 FnSigTys {
                                     inputs_and_output: Tys::new_from_iter(
-                                        DbInterner::new(),
+                                        interner,
                                         [inputs, output],
                                     ),
                                 }
@@ -315,13 +314,10 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
                     _ => unreachable!("sig_ty should be last"),
                 };
                 rustc_type_ir::ClosureArgsParts {
-                    parent_args: GenericArgs::new_from_iter(
-                        DbInterner::new(),
-                        parent_args.iter().cloned(),
-                    ),
+                    parent_args: GenericArgs::new_from_iter(interner, parent_args.iter().cloned()),
                     closure_sig_as_fn_ptr_ty: sig_ty,
-                    closure_kind_ty: Ty::new(DbInterner::new(), TyKind::Int(IntTy::I8)),
-                    tupled_upvars_ty: Ty::new_unit(DbInterner::new()),
+                    closure_kind_ty: Ty::new(interner, TyKind::Int(IntTy::I8)),
+                    tupled_upvars_ty: Ty::new_unit(interner),
                 }
             }
             _ => {
@@ -343,7 +339,7 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
                 coroutine_witness_ty,
             ] => rustc_type_ir::CoroutineClosureArgsParts {
                 parent_args: GenericArgs::new_from_iter(
-                    DbInterner::new(),
+                    DbInterner::conjure(),
                     parent_args.iter().cloned(),
                 ),
                 closure_kind_ty: closure_kind_ty.expect_ty(),
@@ -357,19 +353,17 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
     }
 
     fn split_coroutine_args(self) -> rustc_type_ir::CoroutineArgsParts<DbInterner<'db>> {
+        let interner = DbInterner::conjure();
         match self.inner().as_slice() {
             [parent_args @ .., resume_ty, yield_ty, return_ty] => {
                 rustc_type_ir::CoroutineArgsParts {
-                    parent_args: GenericArgs::new_from_iter(
-                        DbInterner::new(),
-                        parent_args.iter().cloned(),
-                    ),
-                    kind_ty: Ty::new_unit(DbInterner::new()),
+                    parent_args: GenericArgs::new_from_iter(interner, parent_args.iter().cloned()),
+                    kind_ty: Ty::new_unit(interner),
                     resume_ty: resume_ty.expect_ty(),
                     yield_ty: yield_ty.expect_ty(),
                     return_ty: return_ty.expect_ty(),
-                    witness: Ty::new_unit(DbInterner::new()),
-                    tupled_upvars_ty: Ty::new_unit(DbInterner::new()),
+                    witness: Ty::new_unit(interner),
+                    tupled_upvars_ty: Ty::new_unit(interner),
                 }
             }
             _ => todo!(), // rustc has `bug!` here?, should we have error report
@@ -381,11 +375,11 @@ pub fn mk_param<'db>(index: u32, name: &Symbol, kind: GenericParamDefKind) -> Ge
     let name = name.clone();
     match kind {
         GenericParamDefKind::Lifetime => {
-            Region::new_early_param(DbInterner::new(), EarlyParamRegion { index }).into()
+            Region::new_early_param(DbInterner::conjure(), EarlyParamRegion { index }).into()
         }
-        GenericParamDefKind::Type => Ty::new_param(DbInterner::new(), index, name).into(),
+        GenericParamDefKind::Type => Ty::new_param(DbInterner::conjure(), index, name).into(),
         GenericParamDefKind::Const => {
-            Const::new_param(DbInterner::new(), ParamConst { index }).into()
+            Const::new_param(DbInterner::conjure(), ParamConst { index }).into()
         }
     }
 }

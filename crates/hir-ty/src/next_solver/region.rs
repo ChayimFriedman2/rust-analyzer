@@ -28,11 +28,13 @@ impl<'db> Region<'db> {
     }
 
     pub fn inner(&self) -> &RegionKind<'db> {
-        // SAFETY: ¯\_(ツ)_/¯
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+        salsa::with_attached_database(|db| {
             let inner = self.kind_(db);
-            unsafe { std::mem::transmute(inner) }
+            // SAFETY: The caller already has access to a `Region<'db>`, so borrowchecking will
+            // make sure that our returned value is valid for the lifetime `'db`.
+            unsafe { std::mem::transmute::<&RegionKind<'_>, &RegionKind<'db>>(inner) }
         })
+        .unwrap()
     }
 
     pub fn new_early_param(

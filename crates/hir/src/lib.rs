@@ -2019,7 +2019,6 @@ impl DefWithBody {
         acc: &mut Vec<AnyDiagnostic<'db>>,
         style_lints: bool,
     ) {
-        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
         let krate = self.module(db).id.krate();
 
         let (body, source_map) = db.body_with_source_map(self.into());
@@ -5986,7 +5985,7 @@ impl<'db> TypeNs<'db> {
             hir_ty::next_solver::ParamEnv::empty(),
             predicate,
         );
-        let res = hir_ty::traits::next_trait_solve_in_ctxt(infcx.interner.db(), &infcx, goal);
+        let res = hir_ty::traits::next_trait_solve_in_ctxt(&infcx, goal);
         res.map_or(false, |res| matches!(res.1, rustc_type_ir::solve::Certainty::Yes))
     }
 }

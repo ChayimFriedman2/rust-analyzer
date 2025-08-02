@@ -140,29 +140,37 @@ impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for BoundExistentialPre
             return Err(TypeError::ExistentialMismatch(ExpectedFound::new(a, b)));
         }
 
-        let v = std::iter::zip(a_v, b_v).map(|(ep_a, ep_b)| {
-            match (ep_a.clone().skip_binder(), ep_b.clone().skip_binder()) {
-                (ty::ExistentialPredicate::Trait(a), ty::ExistentialPredicate::Trait(b)) => {
-                    Ok(ep_a.rebind(ty::ExistentialPredicate::Trait(
+        let v = std::iter::zip(a_v, b_v).map(
+            |(ep_a, ep_b): (
+                Binder<'_, ty::ExistentialPredicate<_>>,
+                Binder<'_, ty::ExistentialPredicate<_>>,
+            )| {
+                match (ep_a.clone().skip_binder(), ep_b.clone().skip_binder()) {
+                    (ty::ExistentialPredicate::Trait(a), ty::ExistentialPredicate::Trait(b)) => {
+                        Ok(ep_a.rebind(ty::ExistentialPredicate::Trait(
+                            relation.relate(ep_a.rebind(a), ep_b.rebind(b))?.skip_binder(),
+                        )))
+                    }
+                    (
+                        ty::ExistentialPredicate::Projection(a),
+                        ty::ExistentialPredicate::Projection(b),
+                    ) => Ok(ep_a.rebind(ty::ExistentialPredicate::Projection(
                         relation.relate(ep_a.rebind(a), ep_b.rebind(b))?.skip_binder(),
-                    )))
+                    ))),
+                    (
+                        ty::ExistentialPredicate::AutoTrait(a),
+                        ty::ExistentialPredicate::AutoTrait(b),
+                    ) if a == b => Ok(ep_a.rebind(ty::ExistentialPredicate::AutoTrait(a))),
+                    _ => Err(TypeError::ExistentialMismatch(ExpectedFound::new(
+                        a.clone(),
+                        b.clone(),
+                    ))),
                 }
-                (
-                    ty::ExistentialPredicate::Projection(a),
-                    ty::ExistentialPredicate::Projection(b),
-                ) => Ok(ep_a.rebind(ty::ExistentialPredicate::Projection(
-                    relation.relate(ep_a.rebind(a), ep_b.rebind(b))?.skip_binder(),
-                ))),
-                (
-                    ty::ExistentialPredicate::AutoTrait(a),
-                    ty::ExistentialPredicate::AutoTrait(b),
-                ) if a == b => Ok(ep_a.rebind(ty::ExistentialPredicate::AutoTrait(a))),
-                _ => Err(TypeError::ExistentialMismatch(ExpectedFound::new(a.clone(), b.clone()))),
-            }
-        });
+            },
+        );
 
         CollectAndApply::collect_and_apply(v, |g| {
-            BoundExistentialPredicates::new_from_iter(DbInterner::new(), g.iter().cloned())
+            BoundExistentialPredicates::new_from_iter(DbInterner::conjure(), g.iter().cloned())
         })
     }
 }
@@ -226,11 +234,13 @@ impl<'db> Predicate<'db> {
     }
 
     pub fn inner(&self) -> &WithCachedTypeInfo<Binder<'db, PredicateKind<'db>>> {
-        // SAFETY: ¯\_(ツ)_/¯
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+        salsa::with_attached_database(|db| {
             let inner = &self.kind_(db).0;
+            // SAFETY: The caller already has access to a `Predicate<'db>`, so borrowchecking will
+            // make sure that our returned value is valid for the lifetime `'db`.
             unsafe { std::mem::transmute(inner) }
         })
+        .unwrap()
     }
 
     /// Flips the polarity of a Predicate.
@@ -252,7 +262,7 @@ impl<'db> Predicate<'db> {
             })
             .transpose()?;
 
-        Some(Predicate::new(DbInterner::new(), kind))
+        Some(Predicate::new(DbInterner::conjure(), kind))
     }
 }
 
@@ -295,11 +305,13 @@ impl<'db> Clauses<'db> {
     }
 
     pub fn inner(&self) -> &InternedClausesWrapper<'db> {
-        // SAFETY: ¯\_(ツ)_/¯
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+        salsa::with_attached_database(|db| {
             let inner = self.inner_(db);
+            // SAFETY: The caller already has access to a `Clauses<'db>`, so borrowchecking will
+            // make sure that our returned value is valid for the lifetime `'db`.
             unsafe { std::mem::transmute(inner) }
         })
+        .unwrap()
     }
 }
 
@@ -336,7 +348,7 @@ impl<'db> IntoIterator for Clauses<'db> {
 
 impl<'db> Default for Clauses<'db> {
     fn default() -> Self {
-        Clauses::new_from_iter(DbInterner::new(), [])
+        Clauses::new_from_iter(DbInterner::conjure(), [])
     }
 }
 
@@ -423,7 +435,7 @@ pub struct ParamEnv<'db> {
 
 impl<'db> ParamEnv<'db> {
     pub fn empty() -> Self {
-        ParamEnv { clauses: Clauses::new_from_iter(DbInterner::new(), []) }
+        ParamEnv { clauses: Clauses::new_from_iter(DbInterner::conjure(), []) }
     }
 }
 

@@ -5,7 +5,7 @@ use hir::{Semantics, setup_tracing};
 use ide_db::{
     EditionedFileId, FileRange, RootDatabase, SnippetCap,
     assists::ExprFillDefaultMode,
-    base_db::SourceDatabase,
+    base_db::{SourceDatabase, salsa},
     imports::insert_use::{ImportGranularity, InsertUseConfig},
     source_change::FileSystemEdit,
 };
@@ -319,7 +319,9 @@ fn check_with_config(
         _ => AssistResolveStrategy::All,
     };
     let mut acc = Assists::new(&ctx, resolve);
-    handler(&mut acc, &ctx);
+    salsa::attach(&db, || {
+        handler(&mut acc, &ctx);
+    });
     let mut res = acc.finish();
 
     let assist = match assist_label {

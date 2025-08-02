@@ -110,7 +110,6 @@ impl flags::AnalysisStats {
 
         let mut host = AnalysisHost::with_database(db);
         let db = host.raw_database();
-        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
 
         let mut analysis_sw = self.stop_watch();
 

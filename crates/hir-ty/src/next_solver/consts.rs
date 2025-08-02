@@ -35,11 +35,13 @@ impl<'db> Const<'db> {
     }
 
     pub fn inner(&self) -> &WithCachedTypeInfo<ConstKind<'db>> {
-        // SAFETY: ¯\_(ツ)_/¯
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+        salsa::with_attached_database(|db| {
             let inner = &self.kind_(db).0;
+            // SAFETY: The caller already has access to a `Const<'db>`, so borrowchecking will
+            // make sure that our returned value is valid for the lifetime `'db`.
             unsafe { std::mem::transmute(inner) }
         })
+        .unwrap()
     }
 
     pub fn error(interner: DbInterner<'db>) -> Self {
@@ -127,17 +129,21 @@ pub struct Valtree<'db> {
 
 impl<'db> Valtree<'db> {
     pub fn new(scalar: ConstScalar) -> Self {
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| unsafe {
+        salsa::with_attached_database(|db| unsafe {
+            // SAFETY: ¯\_(ツ)_/¯
             std::mem::transmute(Valtree::new_(db, scalar))
         })
+        .unwrap()
     }
 
     pub fn inner(&self) -> &ConstScalar {
-        // SAFETY: ¯\_(ツ)_/¯
-        crate::next_solver::tls::with_db_out_of_thin_air(|db| {
+        salsa::with_attached_database(|db| {
             let inner = self.scalar_(db);
+            // SAFETY: The caller already has access to a `Valtree<'db>`, so borrowchecking will
+            // make sure that our returned value is valid for the lifetime `'db`.
             unsafe { std::mem::transmute(inner) }
         })
+        .unwrap()
     }
 }
 

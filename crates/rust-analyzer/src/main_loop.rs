@@ -557,7 +557,6 @@ impl GlobalState {
 
     fn update_diagnostics(&mut self) {
         let db = self.analysis_host.raw_database();
-        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
         let generation = self.diagnostics.next_generation();
         let subscriptions = {
             let vfs = &self.vfs.read().0;
@@ -648,7 +647,6 @@ impl GlobalState {
             return;
         }
         let db = self.analysis_host.raw_database();
-        let _db_scope = hir_ty::next_solver::tls::ScopedDb::set_db(db);
         let subscriptions = self
             .mem_docs
             .iter()

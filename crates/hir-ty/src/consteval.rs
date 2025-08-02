@@ -248,19 +248,17 @@ pub(crate) fn const_eval_query(
     subst: Substitution,
     trait_env: Option<Arc<TraitEnvironment>>,
 ) -> Result<Const, ConstEvalError> {
-    crate::next_solver::tls::with_db(db, || {
-        let body = match def {
-            GeneralConstId::ConstId(c) => {
-                db.monomorphized_mir_body(c.into(), subst, db.trait_environment(c.into()))?
-            }
-            GeneralConstId::StaticId(s) => {
-                let krate = s.module(db).krate();
-                db.monomorphized_mir_body(s.into(), subst, TraitEnvironment::empty(krate))?
-            }
-        };
-        let c = interpret_mir(db, body, false, trait_env)?.0?;
-        Ok(c)
-    })
+    let body = match def {
+        GeneralConstId::ConstId(c) => {
+            db.monomorphized_mir_body(c.into(), subst, db.trait_environment(c.into()))?
+        }
+        GeneralConstId::StaticId(s) => {
+            let krate = s.module(db).krate();
+            db.monomorphized_mir_body(s.into(), subst, TraitEnvironment::empty(krate))?
+        }
+    };
+    let c = interpret_mir(db, body, false, trait_env)?.0?;
+    Ok(c)
 }
 
 pub(crate) fn const_eval_static_query(

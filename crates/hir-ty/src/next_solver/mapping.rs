@@ -484,7 +484,7 @@ impl<'db> ChalkToNextSolver<'db, rustc_type_ir::FnSigTys<DbInterner<'db>>>
     fn to_nextsolver(&self, interner: DbInterner<'db>) -> rustc_type_ir::FnSigTys<DbInterner<'db>> {
         rustc_type_ir::FnSigTys {
             inputs_and_output: Tys::new_from_iter(
-                DbInterner::new(),
+                interner,
                 self.0.iter(Interner).map(|g| g.assert_ty_ref(Interner).to_nextsolver(interner)),
             ),
         }
@@ -549,7 +549,7 @@ impl<'db> ChalkToNextSolver<'db, GenericArgs<'db>> for chalk_ir::Substitution<In
 impl<'db> ChalkToNextSolver<'db, Tys<'db>> for chalk_ir::Substitution<Interner> {
     fn to_nextsolver(&self, interner: DbInterner<'db>) -> Tys<'db> {
         Tys::new_from_iter(
-            DbInterner::new(),
+            interner,
             self.iter(Interner).map(|arg| -> Ty<'db> {
                 match arg.data(Interner) {
                     chalk_ir::GenericArgData::Ty(ty) => ty.to_nextsolver(interner),

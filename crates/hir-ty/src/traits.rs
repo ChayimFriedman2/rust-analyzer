@@ -176,40 +176,38 @@ fn solve_nextsolver<'db>(
     (HasChanged, Certainty, rustc_type_ir::Canonical<DbInterner<'db>, Vec<GenericArg<'db>>>),
     rustc_type_ir::solve::NoSolution,
 > {
-    crate::next_solver::tls::with_db(db, || {
-        // FIXME: should use analysis_in_body, but that needs GenericDefId::Block
-        let context = SolverContext(
-            DbInterner { db: std::marker::PhantomData, krate: Some(krate), block }
-                .infer_ctxt()
-                .build(TypingMode::non_body_analysis()),
-        );
+    // FIXME: should use analysis_in_body, but that needs GenericDefId::Block
+    let context = SolverContext(
+        DbInterner { db, krate: Some(krate), block }
+            .infer_ctxt()
+            .build(TypingMode::non_body_analysis()),
+    );
 
-        match goal.canonical.value.goal.data(Interner) {
-            // FIXME: args here should be...what? not empty
-            GoalData::All(goals) if goals.is_empty(Interner) => {
-                return Ok((HasChanged::No, Certainty::Yes, mini_canonicalize(context, vec![])));
-            }
-            _ => {}
+    match goal.canonical.value.goal.data(Interner) {
+        // FIXME: args here should be...what? not empty
+        GoalData::All(goals) if goals.is_empty(Interner) => {
+            return Ok((HasChanged::No, Certainty::Yes, mini_canonicalize(context, vec![])));
         }
+        _ => {}
+    }
 
-        let goal = goal.canonical.to_nextsolver(context.cx());
-        tracing::info!(?goal);
+    let goal = goal.canonical.to_nextsolver(context.cx());
+    tracing::info!(?goal);
 
-        let (goal, var_values) = context.instantiate_canonical(&goal);
-        tracing::info!(?var_values);
+    let (goal, var_values) = context.instantiate_canonical(&goal);
+    tracing::info!(?var_values);
 
-        let res = context.evaluate_root_goal(goal.clone(), Span::dummy(), None);
+    let res = context.evaluate_root_goal(goal.clone(), Span::dummy(), None);
 
-        let vars =
-            var_values.var_values.iter().map(|g| context.0.resolve_vars_if_possible(g)).collect();
-        let canonical_var_values = mini_canonicalize(context, vars);
+    let vars =
+        var_values.var_values.iter().map(|g| context.0.resolve_vars_if_possible(g)).collect();
+    let canonical_var_values = mini_canonicalize(context, vars);
 
-        let res = res.map(|r| (r.has_changed, r.certainty, canonical_var_values));
+    let res = res.map(|r| (r.has_changed, r.certainty, canonical_var_values));
 
-        tracing::debug!("solve_nextsolver({:?}) => {:?}", goal, res);
+    tracing::debug!("solve_nextsolver({:?}) => {:?}", goal, res);
 
-        res
-    })
+    res
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -275,40 +273,37 @@ pub fn next_trait_solve(
 
     let next_solver_res = solve_nextsolver(db, krate, block, &u_canonical);
 
-    crate::next_solver::tls::with_db(db, || match next_solver_res {
+    match next_solver_res {
         Err(_) => NextTraitSolveResult::NoSolution,
         Ok((_, Certainty::Yes, args)) => NextTraitSolveResult::Certain(
-            convert_canonical_args_for_result(DbInterner::new(), args),
+            convert_canonical_args_for_result(DbInterner::new(db), args),
         ),
         Ok((_, Certainty::Maybe(_), args)) => {
-            let subst = convert_canonical_args_for_result(DbInterner::new(), args);
+            let subst = convert_canonical_args_for_result(DbInterner::new(db), args);
             NextTraitSolveResult::Uncertain(chalk_ir::Canonical {
                 binders: subst.binders,
                 value: subst.value.subst,
             })
         }
-    })
+    }
 }
 
 /// Solve a trait goal using Chalk.
 pub fn next_trait_solve_in_ctxt<'db, 'a>(
-    db: &'db dyn HirDatabase,
     infer_ctxt: &'a InferCtxt<'db>,
     goal: crate::next_solver::Goal<'db, crate::next_solver::Predicate<'db>>,
 ) -> Result<(HasChanged, Certainty), rustc_type_ir::solve::NoSolution> {
-    crate::next_solver::tls::with_db(db, || {
-        tracing::info!(?goal);
+    tracing::info!(?goal);
 
-        let context = <&SolverContext<'db>>::from(infer_ctxt);
+    let context = <&SolverContext<'db>>::from(infer_ctxt);
 
-        let res = context.evaluate_root_goal(goal.clone(), Span::dummy(), None);
+    let res = context.evaluate_root_goal(goal.clone(), Span::dummy(), None);
 
-        let res = res.map(|r| (r.has_changed, r.certainty));
+    let res = res.map(|r| (r.has_changed, r.certainty));
 
-        tracing::debug!("solve_nextsolver({:?}) => {:?}", goal, res);
+    tracing::debug!("solve_nextsolver({:?}) => {:?}", goal, res);
 
-        res
-    })
+    res
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

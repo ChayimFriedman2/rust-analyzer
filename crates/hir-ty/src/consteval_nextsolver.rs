@@ -37,7 +37,7 @@ pub(crate) fn path_to_const<'a, 'g>(
     args: impl FnOnce() -> &'g Generics,
     expected_ty: Ty<'a>,
 ) -> Option<Const<'a>> {
-    let interner = DbInterner::new();
+    let interner = DbInterner::new(db);
     match resolver.resolve_path_in_value_ns_fully(db, path, HygieneId::ROOT) {
         Some(ValueNs::GenericParam(p)) => {
             let args = args();
@@ -69,7 +69,7 @@ pub(crate) fn path_to_const<'a, 'g>(
 
 pub fn unknown_const<'db>(ty: Ty<'db>) -> Const<'db> {
     Const::new(
-        DbInterner::new(),
+        DbInterner::conjure(),
         rustc_type_ir::ConstKind::Value(ValueConst::new(ty, ConstScalar::Unknown)),
     )
 }
@@ -80,7 +80,7 @@ pub fn unknown_const_as_generic<'db>(ty: Ty<'db>) -> GenericArg<'db> {
 
 /// Interns a constant scalar with the given type
 pub fn intern_const_scalar<'db>(value: ConstScalar, ty: Ty<'db>) -> Const<'db> {
-    Const::new(DbInterner::new(), rustc_type_ir::ConstKind::Value(ValueConst::new(ty, value)))
+    Const::new(DbInterner::conjure(), rustc_type_ir::ConstKind::Value(ValueConst::new(ty, value)))
 }
 
 /// Interns a constant scalar with the given type
@@ -115,13 +115,13 @@ pub fn usize_const<'db>(db: &'db dyn HirDatabase, value: Option<u128>, krate: Cr
     intern_const_ref(
         db,
         &value.map_or(LiteralConstRef::Unknown, LiteralConstRef::UInt),
-        Ty::new_uint(DbInterner::new(), rustc_type_ir::UintTy::Usize),
+        Ty::new_uint(DbInterner::new(db), rustc_type_ir::UintTy::Usize),
         krate,
     )
 }
 
 pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<u128> {
-    let interner = DbInterner::new_with(db, None, None);
+    let interner = DbInterner::new(db);
     match c.clone().kind() {
         ConstKind::Param(_) => None,
         ConstKind::Infer(_) => None,
