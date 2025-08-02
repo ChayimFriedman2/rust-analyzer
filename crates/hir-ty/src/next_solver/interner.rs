@@ -1381,9 +1381,6 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             (Tuple, Tuple) => true,
             (Unpin, Unpin) => true,
             (Unsize, Unsize) => true,
-            (AsyncFn, AsyncFn) => true,
-            (AsyncFnOnce, AsyncFnOnce) => true,
-            (AsyncFnMut, AsyncFnMut) => true,
             _ => false,
         })
     }
