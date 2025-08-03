@@ -2,7 +2,7 @@
 #![allow(unused)]
 
 use base_db::Crate;
-use chalk_ir::{ProgramClauseImplication, SeparatorTraitRef};
+use chalk_ir::{ProgramClauseImplication, SeparatorTraitRef, Variances};
 use hir_def::lang_item::LangItem;
 use hir_def::signatures::{FieldData, FnFlags, ImplFlags, StructFlags, TraitFlags};
 use hir_def::{AdtId, BlockId, TypeAliasId, VariantId};
@@ -1028,21 +1028,32 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
 
     fn variances_of(self, def_id: Self::DefId) -> Self::VariancesOf {
         match def_id {
-            SolverDefId::FunctionId(def_id) => {
-                HirDatabase::fn_def_variance(self.db(), CallableDefId::FunctionId(def_id))
-                    .to_nextsolver(self)
-            }
-            SolverDefId::AdtId(def_id) => {
-                HirDatabase::adt_variance(self.db(), def_id).to_nextsolver(self)
-            }
+            SolverDefId::FunctionId(def_id) => VariancesOf::new_from_iter(
+                self,
+                self.db()
+                    .variances_of(hir_def::GenericDefId::FunctionId(def_id))
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|v| v.to_nextsolver(self)),
+            ),
+            SolverDefId::AdtId(def_id) => VariancesOf::new_from_iter(
+                self,
+                self.db()
+                    .variances_of(hir_def::GenericDefId::AdtId(def_id))
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|v| v.to_nextsolver(self)),
+            ),
             SolverDefId::InternedOpaqueTyId(_def_id) => {
-                // FIXME: track variances
+                // FIXME(next-solver): track variances
                 VariancesOf::new_from_iter(
                     self,
                     (0..self.generics_of(def_id).count()).map(|_| Variance::Invariant),
                 )
             }
-            _ => todo!(),
+            _ => VariancesOf::new_from_iter(self, []),
         }
     }
 

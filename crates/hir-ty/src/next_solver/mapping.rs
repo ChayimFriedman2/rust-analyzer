@@ -611,22 +611,14 @@ impl<'db> ChalkToNextSolver<'db, rustc_ast_ir::Mutability> for chalk_ir::Mutabil
     }
 }
 
-impl<'db> ChalkToNextSolver<'db, rustc_type_ir::Variance> for chalk_ir::Variance {
+impl<'db> ChalkToNextSolver<'db, rustc_type_ir::Variance> for crate::Variance {
     fn to_nextsolver(&self, interner: DbInterner<'db>) -> rustc_type_ir::Variance {
         match self {
-            chalk_ir::Variance::Covariant => rustc_type_ir::Variance::Covariant,
-            chalk_ir::Variance::Invariant => rustc_type_ir::Variance::Invariant,
-            chalk_ir::Variance::Contravariant => rustc_type_ir::Variance::Contravariant,
+            crate::Variance::Covariant => rustc_type_ir::Variance::Covariant,
+            crate::Variance::Invariant => rustc_type_ir::Variance::Invariant,
+            crate::Variance::Contravariant => rustc_type_ir::Variance::Contravariant,
+            crate::Variance::Bivariant => rustc_type_ir::Variance::Bivariant,
         }
-    }
-}
-
-impl<'db> ChalkToNextSolver<'db, VariancesOf> for chalk_ir::Variances<Interner> {
-    fn to_nextsolver(&self, interner: DbInterner<'db>) -> VariancesOf {
-        VariancesOf::new_from_iter(
-            interner,
-            self.as_slice(Interner).iter().map(|v| v.to_nextsolver(interner)),
-        )
     }
 }
 
