@@ -280,15 +280,21 @@ pub fn layout_of_ty_query<'db>(
             let fields = fields.iter().collect::<IndexVec<_, _>>();
             cx.calc.univariant(&fields, &ReprOptions::default(), StructKind::AlwaysSized)?
         }
-        TyKind::Coroutine(_, _) | TyKind::CoroutineWitness(_, _) => {
+
+        TyKind::Coroutine(_, _)
+        | TyKind::CoroutineWitness(_, _)
+        | TyKind::CoroutineClosure(_, _) => {
             return Err(LayoutError::NotImplemented);
         }
+
+        TyKind::Pat(_, _) | TyKind::UnsafeBinder(_) => {
+            return Err(LayoutError::NotImplemented);
+        }
+
         TyKind::Error(_) => return Err(LayoutError::HasErrorType),
         TyKind::Placeholder(_) | TyKind::Bound(..) | TyKind::Infer(..) | TyKind::Param(..) => {
             return Err(LayoutError::HasPlaceholder);
         }
-        TyKind::Pat(..) | TyKind::CoroutineClosure(..) => todo!(),
-        TyKind::UnsafeBinder(..) => todo!(),
     };
     Ok(Arc::new(result))
 }

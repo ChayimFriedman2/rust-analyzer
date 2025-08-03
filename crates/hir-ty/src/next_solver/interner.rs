@@ -15,13 +15,14 @@ use rustc_abi::{Align, ReprFlags, ReprOptions};
 use rustc_hash::FxHashSet;
 use rustc_index::bit_set::DenseBitSet;
 use rustc_type_ir::elaborate::elaborate;
+use rustc_type_ir::error::TypeError;
 use rustc_type_ir::inherent::{
     AdtDef as _, GenericArgs as _, GenericsOf, IntoKind, SliceLike as _, Span as _,
 };
 use rustc_type_ir::lang_items::TraitSolverLangItem;
 use rustc_type_ir::solve::SizedTraitKind;
 use rustc_type_ir::{
-    AliasTerm, AliasTermKind, AliasTy, EarlyBinder, Flags, ImplPolarity, InferTy,
+    AliasTerm, AliasTermKind, AliasTy, EarlyBinder, FlagComputation, Flags, ImplPolarity, InferTy,
     ProjectionPredicate, TraitPredicate, TraitRef, Upcast,
 };
 use salsa::plumbing::AsId;
@@ -44,7 +45,9 @@ use rustc_type_ir::{
 use crate::lower_nextsolver::{self, TyLoweringContext};
 use crate::method_resolution::{ALL_FLOAT_FPS, ALL_INT_FPS, TyFingerprint};
 use crate::next_solver::util::{ContainsTypeErrors, explicit_item_bounds, for_trait_impls};
-use crate::next_solver::{CanonicalVarKind, FxIndexMap, RegionAssumptions, SolverDefIds};
+use crate::next_solver::{
+    CanonicalVarKind, FxIndexMap, InternedWrapperNoDebug, RegionAssumptions, SolverDefIds,
+};
 use crate::{ConstScalar, FnAbi, Interner, db::HirDatabase};
 
 use super::generics::generics;
@@ -698,7 +701,8 @@ impl<'db> inherent::AdtDef<DbInterner<'db>> for AdtDef {
         self,
         interner: DbInterner<'db>,
     ) -> Option<rustc_type_ir::solve::AdtDestructorKind> {
-        todo!()
+        // FIXME(next-solver)
+        None
     }
 
     fn is_manually_drop(self) -> bool {
@@ -758,23 +762,73 @@ impl std::ops::Deref for UnsizingParams {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Pattern<'db>(&'db ());
+pub type PatternKind<'db> = rustc_type_ir::PatternKind<DbInterner<'db>>;
+
+#[salsa::interned(constructor = new_, debug)]
+pub struct Pattern<'db> {
+    #[returns(ref)]
+    kind_: InternedWrapperNoDebug<PatternKind<'db>>,
+}
+
+impl<'db> std::fmt::Debug for InternedWrapperNoDebug<PatternKind<'db>> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'db> Pattern<'db> {
+    pub fn new(interner: DbInterner<'db>, kind: PatternKind<'db>) -> Self {
+        Pattern::new_(interner.db(), InternedWrapperNoDebug(kind))
+    }
+
+    pub fn inner(&self) -> &PatternKind<'db> {
+        salsa::with_attached_database(|db| {
+            let inner = &self.kind_(db).0;
+            // SAFETY: The caller already has access to a `Ty<'db>`, so borrowchecking will
+            // make sure that our returned value is valid for the lifetime `'db`.
+            unsafe { std::mem::transmute(inner) }
+        })
+        .unwrap()
+    }
+}
 
 impl<'db> Flags for Pattern<'db> {
     fn flags(&self) -> rustc_type_ir::TypeFlags {
-        rustc_type_ir::TypeFlags::empty()
+        match self.inner() {
+            PatternKind::Range { start, end } => {
+                FlagComputation::for_const_kind(&start.kind()).flags
+                    | FlagComputation::for_const_kind(&end.kind()).flags
+            }
+            PatternKind::Or(pats) => {
+                let mut flags = pats.as_slice()[0].flags();
+                for pat in pats.as_slice()[1..].iter() {
+                    flags |= pat.flags();
+                }
+                flags
+            }
+        }
     }
 
     fn outer_exclusive_binder(&self) -> rustc_type_ir::DebruijnIndex {
-        rustc_type_ir::DebruijnIndex::ZERO
+        match self.inner() {
+            PatternKind::Range { start, end } => {
+                start.outer_exclusive_binder().max(end.outer_exclusive_binder())
+            }
+            PatternKind::Or(pats) => {
+                let mut idx = pats.as_slice()[0].outer_exclusive_binder();
+                for pat in pats.as_slice()[1..].iter() {
+                    idx = idx.max(pat.outer_exclusive_binder());
+                }
+                idx
+            }
+        }
     }
 }
 
 impl<'db> rustc_type_ir::inherent::IntoKind for Pattern<'db> {
     type Kind = rustc_type_ir::PatternKind<DbInterner<'db>>;
     fn kind(self) -> Self::Kind {
-        todo!();
+        *self.inner()
     }
 }
 
@@ -784,8 +838,28 @@ impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for Pattern<'db> {
         a: Self,
         b: Self,
     ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
-        // FIXME implement this
-        Ok(a)
+        let tcx = relation.cx();
+        match (a.kind(), b.kind()) {
+            (
+                PatternKind::Range { start: start_a, end: end_a },
+                PatternKind::Range { start: start_b, end: end_b },
+            ) => {
+                let start = relation.relate(start_a, start_b)?;
+                let end = relation.relate(end_a, end_b)?;
+                Ok(Pattern::new(tcx, PatternKind::Range { start, end }))
+            }
+            (PatternKind::Or(a), PatternKind::Or(b)) => {
+                if a.len() != b.len() {
+                    return Err(TypeError::Mismatch);
+                }
+                let pats = CollectAndApply::collect_and_apply(
+                    std::iter::zip(a.iter(), b.iter()).map(|(a, b)| relation.relate(a, b)),
+                    |g| PatList::new_from_iter(tcx, g.iter().cloned()),
+                )?;
+                Ok(Pattern::new(tcx, PatternKind::Or(pats)))
+            }
+            (PatternKind::Range { .. } | PatternKind::Or(_), _) => Err(TypeError::Mismatch),
+        }
     }
 }
 
