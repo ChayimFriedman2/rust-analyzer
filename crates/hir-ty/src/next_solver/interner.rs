@@ -1348,7 +1348,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             self.krate.expect("Must have self.krate"),
             lang_item,
         )
-        .expect(&format!("Lang item {lang_item:?} required but not found."));
+        .unwrap_or_else(|| panic!("Lang item {lang_item:?} required but not found."));
         match target {
             hir_def::lang_item::LangItemTarget::EnumId(enum_id) => enum_id.into(),
             hir_def::lang_item::LangItemTarget::Function(function_id) => function_id.into(),

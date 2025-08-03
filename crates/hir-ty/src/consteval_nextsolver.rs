@@ -4,14 +4,17 @@
 
 use base_db::Crate;
 use hir_def::{
-    EnumVariantId,
+    EnumVariantId, GeneralConstId,
     expr_store::{Body, HygieneId, path::Path},
     hir::{Expr, ExprId},
     resolver::{Resolver, ValueNs},
     type_ref::LiteralConstRef,
 };
 use hir_expand::Lookup;
-use rustc_type_ir::inherent::IntoKind;
+use rustc_type_ir::{
+    UnevaluatedConst,
+    inherent::{IntoKind, SliceLike},
+};
 use stdx::never;
 use triomphe::Arc;
 
@@ -23,8 +26,9 @@ use crate::{
     infer::InferenceContext,
     layout_nextsolver::layout_of_ty_query,
     next_solver::{
-        Const, ConstKind, DbInterner, GenericArg, ParamConst, Ty, ValueConst,
-        mapping::ChalkToNextSolver,
+        Const, ConstBytes, ConstKind, DbInterner, ErrorGuaranteed, GenericArg, GenericArgs,
+        ParamConst, SolverDefId, Ty, ValueConst,
+        mapping::{ChalkToNextSolver, convert_args_for_result, convert_binder_to_early_binder},
     },
 };
 
@@ -59,28 +63,26 @@ pub(crate) fn path_to_const<'a, 'g>(
                 }
             }
         }
-        Some(ValueNs::ConstId(c)) => Some(intern_const_scalar(
-            ConstScalar::UnevaluatedConst(c.into(), Substitution::empty(crate::Interner)),
-            expected_ty,
-        )),
+        Some(ValueNs::ConstId(c)) => {
+            let args = GenericArgs::new_from_iter(interner, []);
+            Some(Const::new(
+                interner,
+                rustc_type_ir::ConstKind::Unevaluated(UnevaluatedConst::new(
+                    SolverDefId::ConstId(c),
+                    args,
+                )),
+            ))
+        }
         _ => None,
     }
 }
 
 pub fn unknown_const<'db>(ty: Ty<'db>) -> Const<'db> {
-    Const::new(
-        DbInterner::conjure(),
-        rustc_type_ir::ConstKind::Value(ValueConst::new(ty, ConstScalar::Unknown)),
-    )
+    Const::new(DbInterner::conjure(), rustc_type_ir::ConstKind::Error(ErrorGuaranteed))
 }
 
 pub fn unknown_const_as_generic<'db>(ty: Ty<'db>) -> GenericArg<'db> {
     unknown_const(ty).into()
-}
-
-/// Interns a constant scalar with the given type
-pub fn intern_const_scalar<'db>(value: ConstScalar, ty: Ty<'db>) -> Const<'db> {
-    Const::new(DbInterner::conjure(), rustc_type_ir::ConstKind::Value(ValueConst::new(ty, value)))
 }
 
 /// Interns a constant scalar with the given type
@@ -90,24 +92,35 @@ pub fn intern_const_ref<'a>(
     ty: Ty<'a>,
     krate: Crate,
 ) -> Const<'a> {
+    let interner = DbInterner::new_with(db, Some(krate), None);
     let layout = layout_of_ty_query(db, ty.clone(), TraitEnvironment::empty(krate));
-    let bytes = match value {
+    let kind = match value {
         LiteralConstRef::Int(i) => {
             // FIXME: We should handle failure of layout better.
             let size = layout.map(|it| it.size.bytes_usize()).unwrap_or(16);
-            ConstScalar::Bytes(i.to_le_bytes()[0..size].into(), MemoryMap::default())
+            rustc_type_ir::ConstKind::Value(ValueConst::new(
+                ty,
+                ConstBytes(i.to_le_bytes()[0..size].into(), MemoryMap::default()),
+            ))
         }
         LiteralConstRef::UInt(i) => {
             let size = layout.map(|it| it.size.bytes_usize()).unwrap_or(16);
-            ConstScalar::Bytes(i.to_le_bytes()[0..size].into(), MemoryMap::default())
+            rustc_type_ir::ConstKind::Value(ValueConst::new(
+                ty,
+                ConstBytes(i.to_le_bytes()[0..size].into(), MemoryMap::default()),
+            ))
         }
-        LiteralConstRef::Bool(b) => ConstScalar::Bytes(Box::new([*b as u8]), MemoryMap::default()),
-        LiteralConstRef::Char(c) => {
-            ConstScalar::Bytes((*c as u32).to_le_bytes().into(), MemoryMap::default())
-        }
-        LiteralConstRef::Unknown => ConstScalar::Unknown,
+        LiteralConstRef::Bool(b) => rustc_type_ir::ConstKind::Value(ValueConst::new(
+            ty,
+            ConstBytes(Box::new([*b as u8]), MemoryMap::default()),
+        )),
+        LiteralConstRef::Char(c) => rustc_type_ir::ConstKind::Value(ValueConst::new(
+            ty,
+            ConstBytes((*c as u32).to_le_bytes().into(), MemoryMap::default()),
+        )),
+        LiteralConstRef::Unknown => rustc_type_ir::ConstKind::Error(ErrorGuaranteed),
     };
-    intern_const_scalar(bytes, ty)
+    Const::new(interner, kind)
 }
 
 /// Interns a possibly-unknown target usize
@@ -127,17 +140,19 @@ pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<
         ConstKind::Infer(_) => None,
         ConstKind::Bound(_, _) => None,
         ConstKind::Placeholder(_) => None,
-        ConstKind::Unevaluated(_) => todo!(),
-        ConstKind::Value(val) => match val.value.inner() {
-            ConstScalar::Bytes(it, _) => Some(u128::from_le_bytes(pad16(&it, false))),
-            ConstScalar::UnevaluatedConst(c, subst) => {
-                let ec = db.const_eval(*c, subst.clone(), None).ok()?.to_nextsolver(interner);
-                try_const_usize(db, &ec)
-            }
-            ConstScalar::Unknown => None,
-        },
+        ConstKind::Unevaluated(unevaluated_const) => {
+            let c = match unevaluated_const.def {
+                SolverDefId::ConstId(id) => GeneralConstId::ConstId(id),
+                SolverDefId::StaticId(id) => GeneralConstId::StaticId(id),
+                _ => unreachable!(),
+            };
+            let subst = convert_args_for_result(interner, unevaluated_const.args.as_slice());
+            let ec = db.const_eval(c, subst, None).ok()?.to_nextsolver(interner);
+            try_const_usize(db, &ec)
+        }
+        ConstKind::Value(val) => Some(u128::from_le_bytes(pad16(&val.value.inner().0, false))),
         ConstKind::Error(_) => None,
-        ConstKind::Expr(_) => todo!(),
+        ConstKind::Expr(_) => None,
     }
 }
 
@@ -148,17 +163,19 @@ pub fn try_const_isize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<
         ConstKind::Infer(_) => None,
         ConstKind::Bound(_, _) => None,
         ConstKind::Placeholder(_) => None,
-        ConstKind::Unevaluated(_) => todo!(),
-        ConstKind::Value(val) => match val.value.inner() {
-            ConstScalar::Bytes(it, _) => Some(i128::from_le_bytes(pad16(&it, false))),
-            ConstScalar::UnevaluatedConst(c, subst) => {
-                let ec = db.const_eval(*c, subst.clone(), None).ok()?.to_nextsolver(interner);
-                try_const_isize(db, &ec)
-            }
-            ConstScalar::Unknown => None,
-        },
+        ConstKind::Unevaluated(unevaluated_const) => {
+            let c = match unevaluated_const.def {
+                SolverDefId::ConstId(id) => GeneralConstId::ConstId(id),
+                SolverDefId::StaticId(id) => GeneralConstId::StaticId(id),
+                _ => unreachable!(),
+            };
+            let subst = convert_args_for_result(interner, unevaluated_const.args.as_slice());
+            let ec = db.const_eval(c, subst, None).ok()?.to_nextsolver(interner);
+            try_const_isize(db, &ec)
+        }
+        ConstKind::Value(val) => Some(i128::from_le_bytes(pad16(&val.value.inner().0, true))),
         ConstKind::Error(_) => None,
-        ConstKind::Expr(_) => todo!(),
+        ConstKind::Expr(_) => None,
     }
 }
 

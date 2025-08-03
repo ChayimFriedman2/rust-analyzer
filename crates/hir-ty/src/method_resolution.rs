@@ -199,8 +199,8 @@ impl TyFingerprint {
             | TyKind::Bound(..)
             | TyKind::Infer(_)
             | TyKind::Error(_)
-            | TyKind::Param(..) => return None,
-            TyKind::UnsafeBinder(..) => todo!(),
+            | TyKind::Param(..)
+            | TyKind::UnsafeBinder(..) => return None,
         };
         Some(fp)
     }

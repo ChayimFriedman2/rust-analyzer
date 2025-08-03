@@ -1,5 +1,7 @@
 //! Things related to consts in the next-trait-solver.
 
+use std::hash::Hash;
+
 use intern::{Interned, Symbol};
 use rustc_ast_ir::try_visit;
 use rustc_ast_ir::visit::VisitorResult;
@@ -10,7 +12,7 @@ use rustc_type_ir::{
     relate::Relate,
 };
 
-use crate::{ConstScalar, interner::InternedWrapperNoDebug};
+use crate::{ConstScalar, MemoryMap, interner::InternedWrapperNoDebug};
 
 use super::{BoundVarKind, DbInterner, ErrorGuaranteed, GenericArgs, Placeholder, Ty};
 
@@ -84,8 +86,8 @@ pub struct ValueConst<'db> {
 }
 
 impl<'db> ValueConst<'db> {
-    pub fn new(ty: Ty<'db>, scalar: ConstScalar) -> Self {
-        let value = Valtree::new(scalar);
+    pub fn new(ty: Ty<'db>, bytes: ConstBytes) -> Self {
+        let value = Valtree::new(bytes);
         ValueConst { ty, value }
     }
 }
@@ -121,24 +123,33 @@ impl<'db> rustc_type_ir::TypeFoldable<DbInterner<'db>> for ValueConst<'db> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstBytes(pub Box<[u8]>, pub MemoryMap);
+
+impl Hash for ConstBytes {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+
 #[salsa::interned(constructor = new_, debug)]
 pub struct Valtree<'db> {
     #[returns(ref)]
-    scalar_: ConstScalar,
+    bytes_: ConstBytes,
 }
 
 impl<'db> Valtree<'db> {
-    pub fn new(scalar: ConstScalar) -> Self {
+    pub fn new(bytes: ConstBytes) -> Self {
         salsa::with_attached_database(|db| unsafe {
             // SAFETY: ¯\_(ツ)_/¯
-            std::mem::transmute(Valtree::new_(db, scalar))
+            std::mem::transmute(Valtree::new_(db, bytes))
         })
         .unwrap()
     }
 
-    pub fn inner(&self) -> &ConstScalar {
+    pub fn inner(&self) -> &ConstBytes {
         salsa::with_attached_database(|db| {
-            let inner = self.scalar_(db);
+            let inner = self.bytes_(db);
             // SAFETY: The caller already has access to a `Valtree<'db>`, so borrowchecking will
             // make sure that our returned value is valid for the lifetime `'db`.
             unsafe { std::mem::transmute(inner) }

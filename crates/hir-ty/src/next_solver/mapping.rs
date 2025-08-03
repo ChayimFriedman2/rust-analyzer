@@ -21,7 +21,7 @@ use rustc_type_ir::{
 use salsa::plumbing::AsId;
 
 use crate::{
-    ConstScalar, ImplTraitId, Interner,
+    ConcreteConst, ConstScalar, ImplTraitId, Interner,
     db::{
         HirDatabase, InternedClosureId, InternedCoroutineId, InternedOpaqueTyId,
         InternedTypeOrConstParamId,
@@ -29,7 +29,7 @@ use crate::{
     from_assoc_type_id, from_chalk_trait_id,
     mapping::ToChalk,
     next_solver::{
-        Binder, ClauseKind, TraitPredicate,
+        Binder, ClauseKind, ConstBytes, TraitPredicate, UnevaluatedConst,
         interner::{AdtDef, BoundVarKind, BoundVarKinds, DbInterner},
     },
     to_assoc_type_id, to_chalk_trait_id,
@@ -467,12 +467,23 @@ impl<'db> ChalkToNextSolver<'db, Const<'db>> for chalk_ir::Const<Interner> {
                         rustc_type_ir::BoundVar::from_usize(placeholder_index.idx),
                     ))
                 }
-                chalk_ir::ConstValue::Concrete(concrete_const) => {
-                    rustc_type_ir::ConstKind::Value(ValueConst::new(
-                        data.ty.to_nextsolver(interner),
-                        concrete_const.interned.clone(),
-                    ))
-                }
+                chalk_ir::ConstValue::Concrete(concrete_const) => match &concrete_const.interned {
+                    ConstScalar::Bytes(bytes, memory) => {
+                        rustc_type_ir::ConstKind::Value(ValueConst::new(
+                            data.ty.to_nextsolver(interner),
+                            ConstBytes(bytes.clone(), memory.clone()),
+                        ))
+                    }
+                    ConstScalar::UnevaluatedConst(c, subst) => {
+                        let def = match *c {
+                            GeneralConstId::ConstId(id) => SolverDefId::ConstId(id),
+                            GeneralConstId::StaticId(id) => SolverDefId::StaticId(id),
+                        };
+                        let args = subst.to_nextsolver(interner);
+                        rustc_type_ir::ConstKind::Unevaluated(UnevaluatedConst::new(def, args))
+                    }
+                    ConstScalar::Unknown => rustc_type_ir::ConstKind::Error(ErrorGuaranteed),
+                },
             },
         )
     }
@@ -995,7 +1006,7 @@ pub fn convert_canonical_args_for_result<'db>(
     }
 }
 
-fn convert_args_for_result<'db>(
+pub fn convert_args_for_result<'db>(
     interner: DbInterner<'db>,
     args: &[GenericArg<'db>],
 ) -> crate::Substitution {
@@ -1366,8 +1377,9 @@ fn convert_const_for_result<'db>(interner: DbInterner<'db>, const_: Const<'db>) 
             })
         }
         rustc_type_ir::ConstKind::Value(value_const) => {
+            let bytes = value_const.value.inner();
             let value = chalk_ir::ConstValue::Concrete(chalk_ir::ConcreteConst {
-                interned: value_const.value.inner().clone(),
+                interned: ConstScalar::Bytes(bytes.0.clone(), bytes.1.clone()),
             });
             return chalk_ir::ConstData {
                 ty: convert_ty_for_result(interner, value_const.ty),
