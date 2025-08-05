@@ -1067,7 +1067,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
                 };
                 crate::TyDefId::TypeAliasId(id)
             }
-            _ => todo!(),
+            SolverDefId::AdtId(id) => crate::TyDefId::AdtId(id),
+            _ => panic!("Unexpected def_id `{def_id:?}` provided for `type_of`"),
         };
         self.db().ty_ns(def_id)
     }
@@ -1092,7 +1093,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         match alias.def_id {
             SolverDefId::InternedOpaqueTyId(_) => AliasTermKind::OpaqueTy,
             SolverDefId::TypeAliasId(_) => AliasTermKind::ProjectionTy,
-            _ => todo!(),
+            _ => unreachable!(),
         }
     }
 
@@ -1162,13 +1163,13 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
                     .unwrap()
                     .into();
             }
-            SolverDefId::InternedOpaqueTyId(it) => todo!(),
             SolverDefId::StaticId(_)
             | SolverDefId::AdtId(_)
             | SolverDefId::TraitId(_)
             | SolverDefId::ImplId(_)
             | SolverDefId::TraitAliasId(_)
-            | SolverDefId::Ctor(..) => panic!(),
+            | SolverDefId::Ctor(..)
+            | SolverDefId::InternedOpaqueTyId(..) => panic!(),
         };
 
         match container {
@@ -1193,10 +1194,6 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
     {
         let id = match def_id {
             SolverDefId::FunctionId(id) => CallableDefId::FunctionId(id),
-            SolverDefId::AdtId(id) => match id {
-                AdtId::StructId(id) => CallableDefId::StructId(id),
-                _ => todo!(),
-            },
             SolverDefId::Ctor(ctor) => match ctor {
                 super::Ctor::Struct(struct_id) => CallableDefId::StructId(struct_id),
                 super::Ctor::Enum(enum_variant_id) => CallableDefId::EnumVariantId(enum_variant_id),
@@ -1207,11 +1204,11 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
     }
 
     fn coroutine_movability(self, def_id: Self::DefId) -> rustc_ast_ir::Movability {
-        todo!()
+        unimplemented!()
     }
 
     fn coroutine_for_closure(self, def_id: Self::DefId) -> Self::DefId {
-        todo!()
+        unimplemented!()
     }
 
     fn generics_require_sized_self(self, def_id: Self::DefId) -> bool {
@@ -1369,7 +1366,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         Self,
         impl IntoIterator<Item = rustc_type_ir::Binder<Self, rustc_type_ir::TraitRef<Self>>>,
     > {
-        rustc_type_ir::EarlyBinder::bind([todo!()])
+        rustc_type_ir::EarlyBinder::bind([unimplemented!()])
     }
 
     fn has_target_features(self, def_id: Self::DefId) -> bool {
@@ -1381,15 +1378,21 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         lang_item: rustc_type_ir::lang_items::TraitSolverLangItem,
     ) -> Self::DefId {
         let lang_item = match lang_item {
-            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFn => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnKindHelper => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnKindUpvars => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnMut => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnOnce => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnOnceOutput => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncIterator => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::CallOnceFuture => todo!(),
-            rustc_type_ir::lang_items::TraitSolverLangItem::CallRefFuture => todo!(),
+            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFn => LangItem::AsyncFn,
+            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnKindHelper => unimplemented!(),
+            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnKindUpvars => unimplemented!(),
+            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnMut => LangItem::AsyncFnMut,
+            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnOnce => LangItem::AsyncFnOnce,
+            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnOnceOutput => {
+                LangItem::AsyncFnOnceOutput
+            }
+            rustc_type_ir::lang_items::TraitSolverLangItem::AsyncIterator => unimplemented!(),
+            rustc_type_ir::lang_items::TraitSolverLangItem::CallOnceFuture => {
+                LangItem::CallOnceFuture
+            }
+            rustc_type_ir::lang_items::TraitSolverLangItem::CallRefFuture => {
+                LangItem::CallRefFuture
+            }
             rustc_type_ir::lang_items::TraitSolverLangItem::Clone => LangItem::Clone,
             rustc_type_ir::lang_items::TraitSolverLangItem::Copy => LangItem::Copy,
             rustc_type_ir::lang_items::TraitSolverLangItem::Coroutine => LangItem::Coroutine,
@@ -1409,7 +1412,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             rustc_type_ir::lang_items::TraitSolverLangItem::FnMut => LangItem::FnMut,
             rustc_type_ir::lang_items::TraitSolverLangItem::FnOnce => LangItem::FnOnce,
             rustc_type_ir::lang_items::TraitSolverLangItem::FnPtrTrait => LangItem::FnPtrTrait,
-            rustc_type_ir::lang_items::TraitSolverLangItem::FusedIterator => todo!(),
+            rustc_type_ir::lang_items::TraitSolverLangItem::FusedIterator => unimplemented!(),
             rustc_type_ir::lang_items::TraitSolverLangItem::Future => LangItem::Future,
             rustc_type_ir::lang_items::TraitSolverLangItem::FutureOutput => LangItem::FutureOutput,
             rustc_type_ir::lang_items::TraitSolverLangItem::Iterator => LangItem::Iterator,
@@ -1426,7 +1429,9 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             rustc_type_ir::lang_items::TraitSolverLangItem::Tuple => LangItem::Tuple,
             rustc_type_ir::lang_items::TraitSolverLangItem::Unpin => LangItem::Unpin,
             rustc_type_ir::lang_items::TraitSolverLangItem::Unsize => LangItem::Unsize,
-            rustc_type_ir::lang_items::TraitSolverLangItem::BikeshedGuaranteedNoDrop => todo!(),
+            rustc_type_ir::lang_items::TraitSolverLangItem::BikeshedGuaranteedNoDrop => {
+                unimplemented!()
+            }
         };
         let target = hir_def::lang_item::lang_item(
             self.db(),
@@ -1438,12 +1443,12 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             hir_def::lang_item::LangItemTarget::EnumId(enum_id) => enum_id.into(),
             hir_def::lang_item::LangItemTarget::Function(function_id) => function_id.into(),
             hir_def::lang_item::LangItemTarget::ImplDef(impl_id) => impl_id.into(),
-            hir_def::lang_item::LangItemTarget::Static(static_id) => todo!(),
+            hir_def::lang_item::LangItemTarget::Static(static_id) => static_id.into(),
             hir_def::lang_item::LangItemTarget::Struct(struct_id) => struct_id.into(),
             hir_def::lang_item::LangItemTarget::Union(union_id) => union_id.into(),
             hir_def::lang_item::LangItemTarget::TypeAlias(type_alias_id) => type_alias_id.into(),
             hir_def::lang_item::LangItemTarget::Trait(trait_id) => trait_id.into(),
-            hir_def::lang_item::LangItemTarget::EnumVariant(enum_variant_id) => todo!(),
+            hir_def::lang_item::LangItemTarget::EnumVariant(enum_variant_id) => unimplemented!(),
         }
     }
 
@@ -1499,6 +1504,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         self,
         def_id: Self::DefId,
     ) -> Option<rustc_type_ir::lang_items::TraitSolverLangItem> {
+        use rustc_type_ir::lang_items::TraitSolverLangItem;
+
         let def_id: AttrDefId = match def_id {
             SolverDefId::TraitId(id) => id.into(),
             SolverDefId::TypeAliasId(id) => id.into(),
@@ -1506,33 +1513,29 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         };
         let lang_item = self.db().lang_attr(def_id)?;
         Some(match lang_item {
-            LangItem::Sized => rustc_type_ir::lang_items::TraitSolverLangItem::Sized,
-            LangItem::MetaSized => rustc_type_ir::lang_items::TraitSolverLangItem::MetaSized,
-            LangItem::PointeeSized => rustc_type_ir::lang_items::TraitSolverLangItem::PointeeSized,
-            LangItem::Unsize => rustc_type_ir::lang_items::TraitSolverLangItem::Unsize,
+            LangItem::Sized => TraitSolverLangItem::Sized,
+            LangItem::MetaSized => TraitSolverLangItem::MetaSized,
+            LangItem::PointeeSized => TraitSolverLangItem::PointeeSized,
+            LangItem::Unsize => TraitSolverLangItem::Unsize,
             LangItem::StructuralPeq => return None,
             LangItem::StructuralTeq => return None,
-            LangItem::Copy => rustc_type_ir::lang_items::TraitSolverLangItem::Copy,
-            LangItem::Clone => rustc_type_ir::lang_items::TraitSolverLangItem::Clone,
+            LangItem::Copy => TraitSolverLangItem::Copy,
+            LangItem::Clone => TraitSolverLangItem::Clone,
             LangItem::Sync => return None,
-            LangItem::DiscriminantKind => {
-                rustc_type_ir::lang_items::TraitSolverLangItem::DiscriminantKind
-            }
+            LangItem::DiscriminantKind => TraitSolverLangItem::DiscriminantKind,
             LangItem::Discriminant => return None,
-            LangItem::PointeeTrait => rustc_type_ir::lang_items::TraitSolverLangItem::PointeeTrait,
-            LangItem::Metadata => rustc_type_ir::lang_items::TraitSolverLangItem::Metadata,
-            LangItem::DynMetadata => rustc_type_ir::lang_items::TraitSolverLangItem::DynMetadata,
+            LangItem::PointeeTrait => TraitSolverLangItem::PointeeTrait,
+            LangItem::Metadata => TraitSolverLangItem::Metadata,
+            LangItem::DynMetadata => TraitSolverLangItem::DynMetadata,
             LangItem::Freeze => return None,
-            LangItem::FnPtrTrait => rustc_type_ir::lang_items::TraitSolverLangItem::FnPtrTrait,
+            LangItem::FnPtrTrait => TraitSolverLangItem::FnPtrTrait,
             LangItem::FnPtrAddr => return None,
-            LangItem::Drop => rustc_type_ir::lang_items::TraitSolverLangItem::Drop,
-            LangItem::Destruct => rustc_type_ir::lang_items::TraitSolverLangItem::Destruct,
+            LangItem::Drop => TraitSolverLangItem::Drop,
+            LangItem::Destruct => TraitSolverLangItem::Destruct,
             LangItem::CoerceUnsized => return None,
             LangItem::DispatchFromDyn => return None,
             LangItem::TransmuteOpts => return None,
-            LangItem::TransmuteTrait => {
-                rustc_type_ir::lang_items::TraitSolverLangItem::TransmuteTrait
-            }
+            LangItem::TransmuteTrait => TraitSolverLangItem::TransmuteTrait,
             LangItem::Add => return None,
             LangItem::Sub => return None,
             LangItem::Mul => return None,
@@ -1563,20 +1566,16 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             LangItem::DerefMut => return None,
             LangItem::DerefTarget => return None,
             LangItem::Receiver => return None,
-            LangItem::Fn => rustc_type_ir::lang_items::TraitSolverLangItem::Fn,
-            LangItem::FnMut => rustc_type_ir::lang_items::TraitSolverLangItem::FnMut,
-            LangItem::FnOnce => rustc_type_ir::lang_items::TraitSolverLangItem::FnOnce,
+            LangItem::Fn => TraitSolverLangItem::Fn,
+            LangItem::FnMut => TraitSolverLangItem::FnMut,
+            LangItem::FnOnce => TraitSolverLangItem::FnOnce,
             LangItem::FnOnceOutput => return None,
-            LangItem::Future => rustc_type_ir::lang_items::TraitSolverLangItem::Future,
+            LangItem::Future => TraitSolverLangItem::Future,
             LangItem::CoroutineState => return None,
-            LangItem::Coroutine => rustc_type_ir::lang_items::TraitSolverLangItem::Coroutine,
-            LangItem::CoroutineReturn => {
-                rustc_type_ir::lang_items::TraitSolverLangItem::CoroutineReturn
-            }
-            LangItem::CoroutineYield => {
-                rustc_type_ir::lang_items::TraitSolverLangItem::CoroutineYield
-            }
-            LangItem::Unpin => rustc_type_ir::lang_items::TraitSolverLangItem::Unpin,
+            LangItem::Coroutine => TraitSolverLangItem::Coroutine,
+            LangItem::CoroutineReturn => TraitSolverLangItem::CoroutineReturn,
+            LangItem::CoroutineYield => TraitSolverLangItem::CoroutineYield,
+            LangItem::Unpin => TraitSolverLangItem::Unpin,
             LangItem::Pin => return None,
             LangItem::PartialEq => return None,
             LangItem::PartialOrd => return None,
@@ -1613,7 +1612,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             LangItem::AlignOffset => return None,
             LangItem::Termination => return None,
             LangItem::Try => return None,
-            LangItem::Tuple => rustc_type_ir::lang_items::TraitSolverLangItem::Tuple,
+            LangItem::Tuple => TraitSolverLangItem::Tuple,
             LangItem::SliceLen => return None,
             LangItem::TryTraitFromResidual => return None,
             LangItem::TryTraitFromOutput => return None,
@@ -1621,15 +1620,15 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             LangItem::TryTraitFromYeet => return None,
             LangItem::PointerLike => return None,
             LangItem::ConstParamTy => return None,
-            LangItem::Poll => rustc_type_ir::lang_items::TraitSolverLangItem::Poll,
+            LangItem::Poll => TraitSolverLangItem::Poll,
             LangItem::PollReady => return None,
             LangItem::PollPending => return None,
             LangItem::ResumeTy => return None,
             LangItem::GetContext => return None,
             LangItem::Context => return None,
             LangItem::FuturePoll => return None,
-            LangItem::FutureOutput => rustc_type_ir::lang_items::TraitSolverLangItem::FutureOutput,
-            LangItem::Option => rustc_type_ir::lang_items::TraitSolverLangItem::Option,
+            LangItem::FutureOutput => TraitSolverLangItem::FutureOutput,
+            LangItem::Option => TraitSolverLangItem::Option,
             LangItem::OptionSome => return None,
             LangItem::OptionNone => return None,
             LangItem::ResultOk => return None,
@@ -1639,7 +1638,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             LangItem::IntoFutureIntoFuture => return None,
             LangItem::IntoIterIntoIter => return None,
             LangItem::IteratorNext => return None,
-            LangItem::Iterator => rustc_type_ir::lang_items::TraitSolverLangItem::Iterator,
+            LangItem::Iterator => TraitSolverLangItem::Iterator,
             LangItem::PinNewUnchecked => return None,
             LangItem::RangeFrom => return None,
             LangItem::RangeFull => return None,
@@ -1650,23 +1649,17 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             LangItem::RangeTo => return None,
             LangItem::String => return None,
             LangItem::CStr => return None,
-            LangItem::AsyncFn => rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFn,
-            LangItem::AsyncFnMut => rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnMut,
-            LangItem::AsyncFnOnce => rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnOnce,
-            LangItem::CallRefFuture => {
-                rustc_type_ir::lang_items::TraitSolverLangItem::CallRefFuture
-            }
-            LangItem::CallOnceFuture => {
-                rustc_type_ir::lang_items::TraitSolverLangItem::CallOnceFuture
-            }
-            LangItem::AsyncFnOnceOutput => {
-                rustc_type_ir::lang_items::TraitSolverLangItem::AsyncFnOnceOutput
-            }
+            LangItem::AsyncFn => TraitSolverLangItem::AsyncFn,
+            LangItem::AsyncFnMut => TraitSolverLangItem::AsyncFnMut,
+            LangItem::AsyncFnOnce => TraitSolverLangItem::AsyncFnOnce,
+            LangItem::AsyncFnOnceOutput => TraitSolverLangItem::AsyncFnOnceOutput,
+            LangItem::CallRefFuture => TraitSolverLangItem::CallRefFuture,
+            LangItem::CallOnceFuture => TraitSolverLangItem::CallOnceFuture,
             LangItem::Ordering => return None,
             LangItem::PanicNullPointerDereference => return None,
             LangItem::ReceiverTarget => return None,
-            LangItem::UnsafePinned => todo!(),
-            LangItem::AsyncFnOnceOutput => todo!(),
+            LangItem::UnsafePinned => return None,
+            LangItem::AsyncFnOnceOutput => TraitSolverLangItem::AsyncFnOnceOutput,
         })
     }
 
@@ -1818,36 +1811,36 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
     }
 
     fn trait_may_be_implemented_via_object(self, trait_def_id: Self::DefId) -> bool {
-        // FIXME
+        // FIXME(next-solver)
         true
     }
 
     fn is_impl_trait_in_trait(self, def_id: Self::DefId) -> bool {
-        // FIXME
+        // FIXME(next-solver)
         false
     }
 
     fn delay_bug(self, msg: impl ToString) -> Self::ErrorGuaranteed {
-        todo!()
+        panic!("Bug encountered in next-trait-solver.")
     }
 
     fn is_general_coroutine(self, coroutine_def_id: Self::DefId) -> bool {
-        // FIXME
+        // FIXME(next-solver)
         true
     }
 
     fn coroutine_is_async(self, coroutine_def_id: Self::DefId) -> bool {
-        // FIXME
+        // FIXME(next-solver)
         true
     }
 
     fn coroutine_is_gen(self, coroutine_def_id: Self::DefId) -> bool {
-        // FIXME
+        // FIXME(next-solver)
         false
     }
 
     fn coroutine_is_async_gen(self, coroutine_def_id: Self::DefId) -> bool {
-        // FIXME
+        // FIXME(next-solver)
         false
     }
 
@@ -1949,11 +1942,13 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
     }
 
     fn opaque_types_defined_by(self, defining_anchor: Self::LocalDefId) -> Self::LocalDefIds {
-        todo!()
+        // FIXME(next-solver)
+        SolverDefIds::new_from_iter(self, [])
     }
 
     fn alias_has_const_conditions(self, def_id: Self::DefId) -> bool {
-        todo!()
+        // FIXME(next-solver)
+        false
     }
 
     fn explicit_implied_const_bounds(
@@ -1963,7 +1958,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         Self,
         impl IntoIterator<Item = rustc_type_ir::Binder<Self, rustc_type_ir::TraitRef<Self>>>,
     > {
-        rustc_type_ir::EarlyBinder::bind([todo!()])
+        // FIXME(next-solver)
+        rustc_type_ir::EarlyBinder::bind([])
     }
 
     fn fn_is_const(self, def_id: Self::DefId) -> bool {
@@ -1990,7 +1986,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         self,
         def_id: Self::LocalDefId,
     ) -> rustc_type_ir::EarlyBinder<Self, Self::Ty> {
-        todo!()
+        // FIXME(next-solver)
+        unimplemented!()
     }
 
     fn coroutine_hidden_types(
@@ -2000,7 +1997,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         Self,
         rustc_type_ir::Binder<Self, rustc_type_ir::CoroutineWitnessTypes<Self>>,
     > {
-        todo!()
+        // FIXME(next-solver)
+        unimplemented!()
     }
 
     fn is_default_trait(self, def_id: Self::DefId) -> bool {
@@ -2039,7 +2037,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         self,
         defining_anchor: Self::LocalDefId,
     ) -> Self::LocalDefIds {
-        todo!()
+        // FIXME(next-solver)
+        unimplemented!()
     }
 }
 
