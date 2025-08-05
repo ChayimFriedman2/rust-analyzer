@@ -2,8 +2,8 @@
 
 use base_db::Crate;
 use chalk_ir::{
-    CanonicalVarKind, CanonicalVarKinds, InferenceVar, Substitution, TyVariableKind, fold::Shift,
-    interner::HasInterner,
+    CanonicalVarKind, CanonicalVarKinds, InferenceVar, Substitution, TyVariableKind, WellFormed,
+    fold::Shift, interner::HasInterner,
 };
 use hir_def::{
     CallableDefId, ConstParamId, FunctionId, GeneralConstId, LifetimeParamId, TypeAliasId,
@@ -306,20 +306,11 @@ impl<'db> ChalkToNextSolver<'db, Ty<'db>> for chalk_ir::Ty<Interner> {
                                             let def_id = SolverDefId::TypeAliasId(id);
                                             let generics = interner.generics_of(def_id);
                                             let parent_len = generics.parent_count;
-                                            let trait_substs = projection
-                                                .substitution
-                                                .iter(Interner)
-                                                .skip(1)
-                                                .take(parent_len - 1);
-                                            let alias_substs = projection
-                                                .substitution
-                                                .iter(Interner)
-                                                .skip(parent_len);
+                                            let substs = projection.substitution.iter(Interner).skip(1);
 
                                             let args = GenericArgs::new_from_iter(
                                                 interner,
-                                                trait_substs
-                                                    .chain(alias_substs)
+                                                substs
                                                     .map(|a| {
                                                         a.clone().shifted_out(Interner).unwrap()
                                                     })
@@ -327,7 +318,9 @@ impl<'db> ChalkToNextSolver<'db, Ty<'db>> for chalk_ir::Ty<Interner> {
                                             );
                                             (def_id, args)
                                         }
-                                        chalk_ir::AliasTy::Opaque(_) => todo!(),
+                                        chalk_ir::AliasTy::Opaque(opaque_ty) => {
+                                            panic!("Invalid ExistentialPredicate (opaques can't be named).");
+                                        }
                                     };
                                     let term = alias_eq
                                         .ty
@@ -668,15 +661,17 @@ impl<'db> ChalkToNextSolver<'db, Predicate<'db>> for chalk_ir::Goal<Interner> {
         match self.data(Interner) {
             chalk_ir::GoalData::Quantified(quantifier_kind, binders) => {
                 if !binders.binders.is_empty(Interner) {
-                    todo!()
+                    panic!("Should not be constructed.");
                 }
                 let (val, _) = binders.clone().into_value_and_skipped_binders();
                 val.shifted_out(Interner).unwrap().to_nextsolver(interner)
             }
-            chalk_ir::GoalData::Implies(program_clauses, goal) => todo!(),
-            chalk_ir::GoalData::All(goals) => todo!(),
-            chalk_ir::GoalData::Not(goal) => todo!(),
-            chalk_ir::GoalData::EqGoal(eq_goal) => todo!(),
+            chalk_ir::GoalData::Implies(program_clauses, goal) => {
+                panic!("Should not be constructed.")
+            }
+            chalk_ir::GoalData::All(goals) => panic!("Should not be constructed."),
+            chalk_ir::GoalData::Not(goal) => panic!("Should not be constructed."),
+            chalk_ir::GoalData::EqGoal(eq_goal) => panic!("Should not be constructed."),
             chalk_ir::GoalData::SubtypeGoal(subtype_goal) => {
                 let subtype_predicate = SubtypePredicate {
                     a: subtype_goal.a.to_nextsolver(interner),
@@ -690,133 +685,15 @@ impl<'db> ChalkToNextSolver<'db, Predicate<'db>> for chalk_ir::Goal<Interner> {
                 );
                 Predicate::new(interner, pred_kind)
             }
-            chalk_ir::GoalData::DomainGoal(domain_goal) => match domain_goal {
-                chalk_ir::DomainGoal::Holds(where_clause) => match where_clause {
-                    chalk_ir::WhereClause::Implemented(trait_ref) => {
-                        let predicate = TraitPredicate {
-                            trait_ref: trait_ref.to_nextsolver(interner),
-                            polarity: rustc_type_ir::PredicatePolarity::Positive,
-                        };
-                        let pred_kind = Binder::bind_with_vars(
-                            shift_vars(
-                                interner,
-                                PredicateKind::Clause(ClauseKind::Trait(predicate)),
-                                1,
-                            ),
-                            BoundVarKinds::new_from_iter(interner, []),
-                        );
-                        Predicate::new(interner, pred_kind)
-                    }
-                    chalk_ir::WhereClause::AliasEq(alias_eq) => match &alias_eq.alias {
-                        chalk_ir::AliasTy::Projection(p) => {
-                            let def_id =
-                                SolverDefId::TypeAliasId(from_assoc_type_id(p.associated_ty_id));
-                            let args = p.substitution.to_nextsolver(interner);
-                            let term: Ty<'db> = alias_eq.ty.to_nextsolver(interner);
-                            let term: Term<'db> = term.into();
-                            let predicate = ProjectionPredicate {
-                                projection_term: AliasTerm::new_from_args(interner, def_id, args),
-                                term,
-                            };
-                            let pred_kind = Binder::bind_with_vars(
-                                shift_vars(
-                                    interner,
-                                    PredicateKind::Clause(ClauseKind::Projection(predicate)),
-                                    1,
-                                ),
-                                BoundVarKinds::new_from_iter(interner, []),
-                            );
-                            Predicate::new(interner, pred_kind)
-                        }
-                        chalk_ir::AliasTy::Opaque(opaque) => {
-                            let id: InternedOpaqueTyId = opaque.opaque_ty_id.into();
-                            let def_id = SolverDefId::InternedOpaqueTyId(id);
-                            let args = opaque.substitution.to_nextsolver(interner);
-                            let term: Ty<'db> = alias_eq.ty.to_nextsolver(interner);
-                            let term: Term<'db> = term.into();
-                            let opaque_ty = Ty::new(
-                                interner,
-                                rustc_type_ir::TyKind::Alias(
-                                    rustc_type_ir::AliasTyKind::Opaque,
-                                    rustc_type_ir::AliasTy::new_from_args(interner, def_id, args),
-                                ),
-                            )
-                            .into();
-                            let pred_kind = PredicateKind::AliasRelate(
-                                opaque_ty,
-                                term,
-                                rustc_type_ir::AliasRelationDirection::Equate,
-                            );
-                            let pred_kind = Binder::bind_with_vars(
-                                shift_vars(interner, pred_kind, 1),
-                                BoundVarKinds::new_from_iter(interner, []),
-                            );
-                            Predicate::new(interner, pred_kind)
-                        }
-                    },
-                    chalk_ir::WhereClause::LifetimeOutlives(lifetime_outlives) => {
-                        let predicate = OutlivesPredicate(
-                            lifetime_outlives.a.to_nextsolver(interner),
-                            lifetime_outlives.b.to_nextsolver(interner),
-                        );
-                        let pred_kind = Binder::bind_with_vars(
-                            shift_vars(
-                                interner,
-                                PredicateKind::Clause(ClauseKind::RegionOutlives(predicate)),
-                                1,
-                            ),
-                            BoundVarKinds::new_from_iter(interner, []),
-                        );
-                        Predicate::new(interner, pred_kind)
-                    }
-                    chalk_ir::WhereClause::TypeOutlives(type_outlives) => {
-                        let predicate = OutlivesPredicate(
-                            type_outlives.ty.to_nextsolver(interner),
-                            type_outlives.lifetime.to_nextsolver(interner),
-                        );
-                        let pred_kind = Binder::bind_with_vars(
-                            shift_vars(
-                                interner,
-                                PredicateKind::Clause(ClauseKind::TypeOutlives(predicate)),
-                                1,
-                            ),
-                            BoundVarKinds::new_from_iter(interner, []),
-                        );
-                        Predicate::new(interner, pred_kind)
-                    }
-                },
-                chalk_ir::DomainGoal::Normalize(normalize) => {
-                    let proj_ty = match &normalize.alias {
-                        chalk_ir::AliasTy::Projection(proj) => proj,
-                        _ => todo!(),
-                    };
-                    let args: GenericArgs<'db> = proj_ty.substitution.to_nextsolver(interner);
-                    let alias = rustc_type_ir::AliasTerm::new(
-                        interner,
-                        from_assoc_type_id(proj_ty.associated_ty_id).into(),
-                        args,
-                    );
-                    let term = normalize.ty.to_nextsolver(interner).into();
-                    let normalizes_to = rustc_type_ir::NormalizesTo { alias, term };
-                    let pred_kind = PredicateKind::NormalizesTo(normalizes_to);
-                    let pred_kind = Binder::bind_with_vars(
-                        shift_vars(interner, pred_kind, 1),
-                        BoundVarKinds::new_from_iter(interner, []),
-                    );
-                    Predicate::new(interner, pred_kind)
-                }
-                chalk_ir::DomainGoal::WellFormed(well_formed) => todo!(),
-                chalk_ir::DomainGoal::FromEnv(_) => todo!(),
-                chalk_ir::DomainGoal::IsLocal(ty) => todo!(),
-                chalk_ir::DomainGoal::IsUpstream(ty) => todo!(),
-                chalk_ir::DomainGoal::IsFullyVisible(ty) => todo!(),
-                chalk_ir::DomainGoal::LocalImplAllowed(trait_ref) => todo!(),
-                chalk_ir::DomainGoal::Compatible => todo!(),
-                chalk_ir::DomainGoal::DownstreamType(ty) => todo!(),
-                chalk_ir::DomainGoal::Reveal => todo!(),
-                chalk_ir::DomainGoal::ObjectSafe(trait_id) => todo!(),
-            },
-            chalk_ir::GoalData::CannotProve => todo!(),
+            chalk_ir::GoalData::DomainGoal(domain_goal) => {
+                let pred_kind = domain_goal.to_nextsolver(interner);
+                let pred_kind = Binder::bind_with_vars(
+                    shift_vars(interner, pred_kind, 1),
+                    BoundVarKinds::new_from_iter(interner, []),
+                );
+                Predicate::new(interner, pred_kind)
+            }
+            chalk_ir::GoalData::CannotProve => panic!("Should not be constructed."),
         }
     }
 }
@@ -845,7 +722,13 @@ impl<'db> ChalkToNextSolver<'db, PredicateKind<'db>>
     fn to_nextsolver(&self, interner: DbInterner<'db>) -> PredicateKind<'db> {
         assert!(self.conditions.is_empty(Interner));
         assert!(self.constraints.is_empty(Interner));
-        match &self.consequence {
+        self.consequence.to_nextsolver(interner)
+    }
+}
+
+impl<'db> ChalkToNextSolver<'db, PredicateKind<'db>> for chalk_ir::DomainGoal<Interner> {
+    fn to_nextsolver(&self, interner: DbInterner<'db>) -> PredicateKind<'db> {
+        match self {
             chalk_ir::DomainGoal::Holds(where_clause) => match where_clause {
                 chalk_ir::WhereClause::Implemented(trait_ref) => {
                     let predicate = TraitPredicate {
@@ -854,34 +737,77 @@ impl<'db> ChalkToNextSolver<'db, PredicateKind<'db>>
                     };
                     PredicateKind::Clause(ClauseKind::Trait(predicate))
                 }
-                chalk_ir::WhereClause::AliasEq(alias_eq) => {
-                    let projection = match &alias_eq.alias {
-                        chalk_ir::AliasTy::Projection(p) => p,
-                        _ => todo!(),
-                    };
-                    let def_id =
-                        SolverDefId::TypeAliasId(from_assoc_type_id(projection.associated_ty_id));
-                    let args = projection.substitution.to_nextsolver(interner);
-                    let term: Ty<'db> = alias_eq.ty.to_nextsolver(interner);
-                    let term: Term<'db> = term.into();
-                    let predicate = ProjectionPredicate {
-                        projection_term: AliasTerm::new_from_args(interner, def_id, args),
-                        term,
-                    };
-                    PredicateKind::Clause(ClauseKind::Projection(predicate))
+                chalk_ir::WhereClause::AliasEq(alias_eq) => match &alias_eq.alias {
+                    chalk_ir::AliasTy::Projection(p) => {
+                        let def_id =
+                            SolverDefId::TypeAliasId(from_assoc_type_id(p.associated_ty_id));
+                        let args = p.substitution.to_nextsolver(interner);
+                        let term: Ty<'db> = alias_eq.ty.to_nextsolver(interner);
+                        let term: Term<'db> = term.into();
+                        let predicate = ProjectionPredicate {
+                            projection_term: AliasTerm::new_from_args(interner, def_id, args),
+                            term,
+                        };
+                        PredicateKind::Clause(ClauseKind::Projection(predicate))
+                    }
+                    chalk_ir::AliasTy::Opaque(opaque) => {
+                        let id: InternedOpaqueTyId = opaque.opaque_ty_id.into();
+                        let def_id = SolverDefId::InternedOpaqueTyId(id);
+                        let args = opaque.substitution.to_nextsolver(interner);
+                        let term: Ty<'db> = alias_eq.ty.to_nextsolver(interner);
+                        let term: Term<'db> = term.into();
+                        let opaque_ty = Ty::new(
+                            interner,
+                            rustc_type_ir::TyKind::Alias(
+                                rustc_type_ir::AliasTyKind::Opaque,
+                                rustc_type_ir::AliasTy::new_from_args(interner, def_id, args),
+                            ),
+                        )
+                        .into();
+                        PredicateKind::AliasRelate(
+                            opaque_ty,
+                            term,
+                            rustc_type_ir::AliasRelationDirection::Equate,
+                        )
+                    }
+                },
+                chalk_ir::WhereClause::LifetimeOutlives(lifetime_outlives) => {
+                    let predicate = OutlivesPredicate(
+                        lifetime_outlives.a.to_nextsolver(interner),
+                        lifetime_outlives.b.to_nextsolver(interner),
+                    );
+                    PredicateKind::Clause(ClauseKind::RegionOutlives(predicate))
                 }
                 chalk_ir::WhereClause::TypeOutlives(type_outlives) => {
-                    let ty = type_outlives.ty.to_nextsolver(interner);
-                    let r = type_outlives.lifetime.to_nextsolver(interner);
-                    PredicateKind::Clause(ClauseKind::TypeOutlives(OutlivesPredicate(ty, r)))
-                }
-                chalk_ir::WhereClause::LifetimeOutlives(lifetime_outlives) => {
-                    let a = lifetime_outlives.a.to_nextsolver(interner);
-                    let b = lifetime_outlives.b.to_nextsolver(interner);
-                    PredicateKind::Clause(ClauseKind::RegionOutlives(OutlivesPredicate(a, b)))
+                    let predicate = OutlivesPredicate(
+                        type_outlives.ty.to_nextsolver(interner),
+                        type_outlives.lifetime.to_nextsolver(interner),
+                    );
+                    PredicateKind::Clause(ClauseKind::TypeOutlives(predicate))
                 }
             },
-            chalk_ir::DomainGoal::WellFormed(well_formed) => todo!(),
+            chalk_ir::DomainGoal::Normalize(normalize) => {
+                let proj_ty = match &normalize.alias {
+                    chalk_ir::AliasTy::Projection(proj) => proj,
+                    _ => unimplemented!(),
+                };
+                let args: GenericArgs<'db> = proj_ty.substitution.to_nextsolver(interner);
+                let alias = rustc_type_ir::AliasTerm::new(
+                    interner,
+                    from_assoc_type_id(proj_ty.associated_ty_id).into(),
+                    args,
+                );
+                let term = normalize.ty.to_nextsolver(interner).into();
+                let normalizes_to = rustc_type_ir::NormalizesTo { alias, term };
+                PredicateKind::NormalizesTo(normalizes_to)
+            }
+            chalk_ir::DomainGoal::WellFormed(well_formed) => {
+                let term = match well_formed {
+                    WellFormed::Trait(_) => panic!("Should not be constructed."),
+                    WellFormed::Ty(ty) => Term::Ty(ty.to_nextsolver(interner)),
+                };
+                PredicateKind::Clause(rustc_type_ir::ClauseKind::WellFormed(term))
+            }
             chalk_ir::DomainGoal::FromEnv(from_env) => match from_env {
                 chalk_ir::FromEnv::Trait(trait_ref) => {
                     let predicate = TraitPredicate {
@@ -894,15 +820,16 @@ impl<'db> ChalkToNextSolver<'db, PredicateKind<'db>>
                     Term::Ty(ty.to_nextsolver(interner)),
                 )),
             },
-            chalk_ir::DomainGoal::Normalize(normalize) => todo!(),
-            chalk_ir::DomainGoal::IsLocal(ty) => todo!(),
-            chalk_ir::DomainGoal::IsUpstream(ty) => todo!(),
-            chalk_ir::DomainGoal::IsFullyVisible(ty) => todo!(),
-            chalk_ir::DomainGoal::LocalImplAllowed(trait_ref) => todo!(),
-            chalk_ir::DomainGoal::Compatible => todo!(),
-            chalk_ir::DomainGoal::DownstreamType(ty) => todo!(),
-            chalk_ir::DomainGoal::Reveal => todo!(),
-            chalk_ir::DomainGoal::ObjectSafe(trait_id) => todo!(),
+            chalk_ir::DomainGoal::IsLocal(ty) => panic!("Should not be constructed."),
+            chalk_ir::DomainGoal::IsUpstream(ty) => panic!("Should not be constructed."),
+            chalk_ir::DomainGoal::IsFullyVisible(ty) => panic!("Should not be constructed."),
+            chalk_ir::DomainGoal::LocalImplAllowed(trait_ref) => {
+                panic!("Should not be constructed.")
+            }
+            chalk_ir::DomainGoal::Compatible => panic!("Should not be constructed."),
+            chalk_ir::DomainGoal::DownstreamType(ty) => panic!("Should not be constructed."),
+            chalk_ir::DomainGoal::Reveal => panic!("Should not be constructed."),
+            chalk_ir::DomainGoal::ObjectSafe(trait_id) => panic!("Should not be constructed."),
         }
     }
 }
@@ -922,30 +849,38 @@ impl<'db> ChalkToNextSolver<'db, PredicateKind<'db>> for chalk_ir::WhereClause<I
     fn to_nextsolver(&self, interner: DbInterner<'db>) -> PredicateKind<'db> {
         match self {
             chalk_ir::WhereClause::Implemented(trait_ref) => {
-                PredicateKind::Clause(rustc_type_ir::ClauseKind::Trait(TraitPredicate {
+                let predicate = TraitPredicate {
                     trait_ref: trait_ref.to_nextsolver(interner),
                     polarity: rustc_type_ir::PredicatePolarity::Positive,
-                }))
+                };
+                PredicateKind::Clause(ClauseKind::Trait(predicate))
             }
             chalk_ir::WhereClause::AliasEq(alias_eq) => {
-                let alias_ty =
-                    chalk_ir::Ty::new(Interner, chalk_ir::TyKind::Alias(alias_eq.alias.clone()));
-                let alias_ty: Ty<'db> = alias_ty.to_nextsolver(interner);
-                let (def_id, args) = match &alias_eq.alias {
-                    chalk_ir::AliasTy::Projection(p) => {
-                        let args: GenericArgs<'db> = p.substitution.to_nextsolver(interner);
-                        (SolverDefId::TypeAliasId(from_assoc_type_id(p.associated_ty_id)), args)
-                    }
-                    _ => todo!(),
+                let projection = match &alias_eq.alias {
+                    chalk_ir::AliasTy::Projection(p) => p,
+                    _ => unimplemented!(),
                 };
-                let to_ty: Ty<'db> = alias_eq.ty.to_nextsolver(interner);
-                PredicateKind::Clause(rustc_type_ir::ClauseKind::Projection(ProjectionPredicate {
-                    projection_term: AliasTerm::new(interner, def_id, args),
-                    term: to_ty.into(),
-                }))
+                let def_id =
+                    SolverDefId::TypeAliasId(from_assoc_type_id(projection.associated_ty_id));
+                let args = projection.substitution.to_nextsolver(interner);
+                let term: Ty<'db> = alias_eq.ty.to_nextsolver(interner);
+                let term: Term<'db> = term.into();
+                let predicate = ProjectionPredicate {
+                    projection_term: AliasTerm::new_from_args(interner, def_id, args),
+                    term,
+                };
+                PredicateKind::Clause(ClauseKind::Projection(predicate))
             }
-            chalk_ir::WhereClause::LifetimeOutlives(lifetime_outlives) => todo!(),
-            chalk_ir::WhereClause::TypeOutlives(type_outlives) => todo!(),
+            chalk_ir::WhereClause::TypeOutlives(type_outlives) => {
+                let ty = type_outlives.ty.to_nextsolver(interner);
+                let r = type_outlives.lifetime.to_nextsolver(interner);
+                PredicateKind::Clause(ClauseKind::TypeOutlives(OutlivesPredicate(ty, r)))
+            }
+            chalk_ir::WhereClause::LifetimeOutlives(lifetime_outlives) => {
+                let a = lifetime_outlives.a.to_nextsolver(interner);
+                let b = lifetime_outlives.b.to_nextsolver(interner);
+                PredicateKind::Clause(ClauseKind::RegionOutlives(OutlivesPredicate(a, b)))
+            }
         }
     }
 }
