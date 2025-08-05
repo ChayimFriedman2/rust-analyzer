@@ -169,7 +169,7 @@ impl<'db> SolverDelegate for SolverContext<'db> {
                     _ => None,
                 }
             });
-        Ok(id.map(|id| SolverDefId::TypeAliasId(id)))
+        Ok(id.map(SolverDefId::TypeAliasId))
     }
 
     fn is_transmutable(

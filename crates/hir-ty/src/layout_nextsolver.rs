@@ -61,7 +61,7 @@ fn layout_of_simd_ty<'db>(
     let Some(TyKind::Array(e_ty, e_len)) = fields
         .next()
         .filter(|_| fields.next().is_none())
-        .map(|f| f.1.clone().instantiate(DbInterner::new_with(db, None, None), args).kind())
+        .map(|f| (*f.1).instantiate(DbInterner::new_with(db, None, None), args).kind())
     else {
         return Err(LayoutError::InvalidSimdType);
     };
@@ -86,7 +86,7 @@ pub fn layout_of_ty_query<'db>(
     let dl = &*target;
     let cx = LayoutCx::new(dl);
     //let ty = normalize(db, trait_env.clone(), ty);
-    let result = match ty.clone().kind() {
+    let result = match ty.kind() {
         TyKind::Adt(def, args) => {
             match def.inner().id {
                 hir_def::AdtId::StructId(s) => {
@@ -188,7 +188,7 @@ pub fn layout_of_ty_query<'db>(
         // Potentially-wide pointers.
         TyKind::Ref(_, pointee, _) | TyKind::RawPtr(pointee, _) => {
             let mut data_ptr = scalar_unit(dl, Primitive::Pointer(AddressSpace::ZERO));
-            if matches!(ty.clone().kind(), TyKind::Ref(..)) {
+            if matches!(ty.kind(), TyKind::Ref(..)) {
                 data_ptr.valid_range_mut().start = 1;
             }
 
@@ -198,7 +198,7 @@ pub fn layout_of_ty_query<'db>(
             //     return Ok(tcx.mk_layout(LayoutS::scalar(cx, data_ptr)));
             // }
 
-            let unsized_part = struct_tail_erasing_lifetimes(db, pointee.clone());
+            let unsized_part = struct_tail_erasing_lifetimes(db, pointee);
             // FIXME(next-solver)
             /*
             if let TyKind::AssociatedType(id, subst) = unsized_part.kind(Interner) {
@@ -268,11 +268,9 @@ pub fn layout_of_ty_query<'db>(
             let fields = captures
                 .iter()
                 .map(|it| {
-                    let ty = convert_binder_to_early_binder(
-                        interner,
-                        it.ty.to_nextsolver(interner).clone(),
-                    )
-                    .instantiate(interner, args.clone());
+                    let ty =
+                        convert_binder_to_early_binder(interner, it.ty.to_nextsolver(interner))
+                            .instantiate(interner, args);
                     db.layout_of_ty_ns(ty, trait_env.clone())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -308,7 +306,7 @@ pub(crate) fn layout_of_ty_cycle_result<'db>(
 }
 
 fn struct_tail_erasing_lifetimes<'a>(db: &'a dyn HirDatabase, pointee: Ty<'a>) -> Ty<'a> {
-    match pointee.clone().kind() {
+    match pointee.kind() {
         TyKind::Adt(def, args) => {
             let struct_id = match def.inner().id {
                 AdtId::StructId(id) => id,
@@ -326,7 +324,7 @@ fn struct_tail_erasing_lifetimes<'a>(db: &'a dyn HirDatabase, pointee: Ty<'a>) -
         }
         TyKind::Tuple(tys) => {
             if let Some(last_field_ty) = tys.iter().last() {
-                struct_tail_erasing_lifetimes(db, last_field_ty.clone())
+                struct_tail_erasing_lifetimes(db, last_field_ty)
             } else {
                 pointee
             }
@@ -341,7 +339,7 @@ fn field_ty<'a>(
     fd: LocalFieldId,
     args: &GenericArgs<'a>,
 ) -> Ty<'a> {
-    db.field_types_ns(def)[fd].clone().instantiate(DbInterner::new(db), args)
+    db.field_types_ns(def)[fd].instantiate(DbInterner::new(db), args)
 }
 
 fn scalar_unit(dl: &TargetDataLayout, value: Primitive) -> Scalar {

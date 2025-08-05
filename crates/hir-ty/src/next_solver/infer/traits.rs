@@ -89,7 +89,7 @@ impl<'db, T: PartialEq> PartialEq<Obligation<'db, T>> for Obligation<'db, T> {
 impl<'db, T: Eq> Eq for Obligation<'db, T> {}
 
 impl<'db, T: Hash> Hash for Obligation<'db, T> {
-    fn hash<H: Hasher>(&self, state: &mut H) -> () {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         // See the comment on `Obligation::eq`.
         self.param_env.hash(state);
         self.predicate.hash(state);
@@ -114,8 +114,8 @@ impl<'db> PredicateObligation<'db> {
     pub fn flip_polarity(&self, tcx: DbInterner<'db>) -> Option<PredicateObligation<'db>> {
         Some(PredicateObligation {
             cause: self.cause.clone(),
-            param_env: self.param_env.clone(),
-            predicate: self.predicate.clone().flip_polarity()?,
+            param_env: self.param_env,
+            predicate: self.predicate.flip_polarity()?,
             recursion_depth: self.recursion_depth,
         })
     }
@@ -164,12 +164,6 @@ impl<'db, O> Obligation<'db, O> {
         tcx: DbInterner<'db>,
         value: impl Upcast<DbInterner<'db>, P>,
     ) -> Obligation<'db, P> {
-        Obligation::with_depth(
-            tcx,
-            self.cause.clone(),
-            self.recursion_depth,
-            self.param_env.clone(),
-            value,
-        )
+        Obligation::with_depth(tcx, self.cause.clone(), self.recursion_depth, self.param_env, value)
     }
 }

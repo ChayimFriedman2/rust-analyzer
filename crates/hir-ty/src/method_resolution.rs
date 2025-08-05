@@ -120,7 +120,7 @@ impl TyFingerprint {
     /// Creates a TyFingerprint for looking up a trait impl.
     pub fn for_trait_impl_ns<'db>(ty: &crate::next_solver::Ty<'db>) -> Option<TyFingerprint> {
         use rustc_type_ir::TyKind;
-        let fp = match ty.clone().kind() {
+        let fp = match (*ty).kind() {
             TyKind::Str => TyFingerprint::Str,
             TyKind::Never => TyFingerprint::Never,
             TyKind::Slice(..) => TyFingerprint::Slice,
@@ -162,7 +162,7 @@ impl TyFingerprint {
                 let trait_ref = bounds
                     .as_slice()
                     .iter()
-                    .map(|b| b.clone().skip_binder())
+                    .map(|b| (*b).skip_binder())
                     .filter_map(|b| match b {
                         rustc_type_ir::ExistentialPredicate::Trait(t) => Some(t.def_id),
                         _ => None,

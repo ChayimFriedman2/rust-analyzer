@@ -353,7 +353,7 @@ impl<'db> InferCtxtBuilder<'db> {
     where
         T: TypeFoldable<DbInterner<'db>>,
     {
-        let infcx = self.build(input.typing_mode.clone());
+        let infcx = self.build(input.typing_mode);
         let (value, args) = infcx.instantiate_canonical(&input.canonical);
         (infcx, value, args)
     }
@@ -379,12 +379,12 @@ impl<'db> InferOk<'db, ()> {
 impl<'db> InferCtxt<'db> {
     #[inline(always)]
     pub fn typing_mode(&self) -> TypingMode<'db> {
-        self.typing_mode.clone()
+        self.typing_mode
     }
 
     #[inline(always)]
     pub fn typing_mode_unchecked(&self) -> TypingMode<'db> {
-        self.typing_mode.clone()
+        self.typing_mode
     }
 
     pub fn unresolved_variables(&self) -> Vec<Ty<'db>> {
@@ -397,13 +397,13 @@ impl<'db> InferCtxt<'db> {
             .collect();
         vars.extend(
             (0..inner.int_unification_table().len())
-                .map(|i| IntVid::from_usize(i))
+                .map(IntVid::from_usize)
                 .filter(|&vid| inner.int_unification_table().probe_value(vid).is_unknown())
                 .map(|v| Ty::new_int_var(self.interner, v)),
         );
         vars.extend(
             (0..inner.float_unification_table().len())
-                .map(|i| FloatVid::from_usize(i))
+                .map(FloatVid::from_usize)
                 .filter(|&vid| inner.float_unification_table().probe_value(vid).is_unknown())
                 .map(|v| Ty::new_float_var(self.interner, v)),
         );
@@ -463,8 +463,8 @@ impl<'db> InferCtxt<'db> {
         //
         // Note that this sub here is not just for diagnostics - it has semantic
         // effects as well.
-        let r_a = self.shallow_resolve(predicate.clone().skip_binder().a);
-        let r_b = self.shallow_resolve(predicate.clone().skip_binder().b);
+        let r_a = self.shallow_resolve(predicate.skip_binder().a);
+        let r_b = self.shallow_resolve(predicate.skip_binder().b);
         match (r_a.kind(), r_b.kind()) {
             (TyKind::Infer(InferTy::TyVar(a_vid)), TyKind::Infer(InferTy::TyVar(b_vid))) => {
                 return Err((a_vid, b_vid));
@@ -601,7 +601,7 @@ impl<'db> InferCtxt<'db> {
                 // region parameter definition.
                 self.next_region_var().into()
             }
-            GenericParamDefKind::Type { .. } => {
+            GenericParamDefKind::Type => {
                 // Create a type inference variable for the given
                 // type parameter definition. The generic parameters are
                 // for actual parameters that may be referred to by
@@ -618,7 +618,7 @@ impl<'db> InferCtxt<'db> {
 
                 Ty::new_var(self.interner, ty_var_id).into()
             }
-            GenericParamDefKind::Const { .. } => {
+            GenericParamDefKind::Const => {
                 let origin = ConstVariableOrigin { param_def_id: None };
                 let const_var_id = self
                     .inner
@@ -690,7 +690,7 @@ impl<'db> InferCtxt<'db> {
     }
 
     pub fn shallow_resolve(&self, ty: Ty<'db>) -> Ty<'db> {
-        if let TyKind::Infer(v) = ty.clone().kind() {
+        if let TyKind::Infer(v) = ty.kind() {
             match v {
                 InferTy::TyVar(v) => {
                     // Not entirely obvious: if `typ` is a type variable,
@@ -732,7 +732,7 @@ impl<'db> InferCtxt<'db> {
     }
 
     pub fn shallow_resolve_const(&self, ct: Const<'db>) -> Const<'db> {
-        match ct.clone().kind() {
+        match ct.kind() {
             ConstKind::Infer(infer_ct) => match infer_ct {
                 InferConst::Var(vid) => self
                     .inner
@@ -869,7 +869,7 @@ impl<'db> InferCtxt<'db> {
     /// closure in the current function, in which case its
     /// `ClosureKind` may not yet be known.
     pub fn closure_kind(&self, closure_ty: Ty<'db>) -> Option<ClosureKind> {
-        let unresolved_kind_ty = match closure_ty.clone().kind() {
+        let unresolved_kind_ty = match closure_ty.kind() {
             TyKind::Closure(_, args) => args.as_closure().kind_ty(),
             TyKind::CoroutineClosure(_, args) => args.as_coroutine_closure().kind_ty(),
             _ => panic!("unexpected type {closure_ty:?}"),

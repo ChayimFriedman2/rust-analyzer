@@ -77,7 +77,7 @@ where
     }
 
     fn fold_ty(&mut self, t: Ty<'db>) -> Ty<'db> {
-        match t.clone().kind() {
+        match t.kind() {
             TyKind::Bound(debruijn, bound_ty) if debruijn == self.current_index => {
                 let ty = self.delegate.replace_ty(bound_ty);
                 debug_assert!(!ty.has_vars_bound_above(DebruijnIndex::ZERO));
@@ -94,10 +94,10 @@ where
     }
 
     fn fold_region(&mut self, r: Region<'db>) -> Region<'db> {
-        match r.clone().kind() {
+        match r.kind() {
             RegionKind::ReBound(debruijn, br) if debruijn == self.current_index => {
                 let region = self.delegate.replace_region(br);
-                if let RegionKind::ReBound(debruijn1, br) = region.clone().kind() {
+                if let RegionKind::ReBound(debruijn1, br) = region.kind() {
                     // If the callback returns a bound region,
                     // that region should always use the INNERMOST
                     // debruijn index. Then we adjust it to the
@@ -113,7 +113,7 @@ where
     }
 
     fn fold_const(&mut self, ct: Const<'db>) -> Const<'db> {
-        match ct.clone().kind() {
+        match ct.kind() {
             ConstKind::Bound(debruijn, bound_const) if debruijn == self.current_index => {
                 let ct = self.delegate.replace_const(bound_const);
                 debug_assert!(!ct.has_vars_bound_above(DebruijnIndex::ZERO));

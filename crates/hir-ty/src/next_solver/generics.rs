@@ -55,7 +55,7 @@ pub(crate) fn generics(db: &dyn HirDatabase, def: SolverDefId) -> Generics {
                 }
             }
         }
-        _ => panic!("No generics for {:?}", def),
+        _ => panic!("No generics for {def:?}"),
     };
     let parent_generics = parent.map(|def| Box::new(generics(db, def.into())));
 

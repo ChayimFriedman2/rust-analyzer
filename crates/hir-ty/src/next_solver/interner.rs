@@ -655,7 +655,7 @@ impl<'db> inherent::AdtDef<DbInterner<'db>> for AdtDef {
                     .fields()
                     .iter()
                     .map(|(idx, _)| {
-                        let ty = field_types[idx].clone();
+                        let ty = field_types[idx];
                         ty.skip_binder()
                     })
                     .collect()
@@ -1023,7 +1023,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
     }
 
     fn generics_of(self, def_id: Self::DefId) -> Self::GenericsOf {
-        generics(self.db(), def_id.try_into().unwrap())
+        generics(self.db(), def_id)
     }
 
     fn variances_of(self, def_id: Self::DefId) -> Self::VariancesOf {
@@ -1108,10 +1108,8 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             self,
             args.as_slice()[0..trait_generics.own_params.len()].iter().cloned(),
         );
-        let alias_args = GenericArgs::new_from_iter(
-            self,
-            args.clone().iter().skip(trait_generics.own_params.len()),
-        );
+        let alias_args =
+            GenericArgs::new_from_iter(self, args.iter().skip(trait_generics.own_params.len()));
         (TraitRef::new_from_args(self, trait_def_id, trait_args), alias_args)
     }
 
@@ -1227,7 +1225,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
             ClauseKind::Trait(ref trait_pred) => {
                 trait_pred.def_id() == sized_def_id
                     && matches!(
-                        trait_pred.self_ty().clone().kind(),
+                        trait_pred.self_ty().kind(),
                         TyKind::Param(ParamTy { index: 0, .. })
                     )
             }
@@ -1247,10 +1245,9 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         self,
         def_id: Self::DefId,
     ) -> rustc_type_ir::EarlyBinder<Self, impl IntoIterator<Item = Self::Clause>> {
-        let clauses = explicit_item_bounds(self, def_id).map_bound(|bounds| {
+        explicit_item_bounds(self, def_id).map_bound(|bounds| {
             Clauses::new_from_iter(self, elaborate(self, bounds).collect::<Vec<_>>())
-        });
-        clauses
+        })
     }
 
     #[tracing::instrument(skip(self), ret)]
@@ -1258,13 +1255,12 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         self,
         def_id: Self::DefId,
     ) -> rustc_type_ir::EarlyBinder<Self, impl IntoIterator<Item = Self::Clause>> {
-        let clauses = explicit_item_bounds(self, def_id).map_bound(|bounds| {
+        explicit_item_bounds(self, def_id).map_bound(|bounds| {
             Clauses::new_from_iter(
                 self,
                 elaborate(self, bounds).filter_only_self().collect::<Vec<_>>(),
             )
-        });
-        clauses
+        })
     }
 
     fn item_non_self_bounds(
@@ -1452,6 +1448,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         }
     }
 
+    #[allow(clippy::match_like_matches_macro)]
     fn is_lang_item(
         self,
         def_id: Self::DefId,
@@ -1683,10 +1680,10 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         };
 
         let self_ty_fp = TyFingerprint::for_trait_impl_ns(&self_ty);
-        let fps: &[TyFingerprint] = match self_ty.clone().kind() {
+        let fps: &[TyFingerprint] = match self_ty.kind() {
             TyKind::Infer(InferTy::IntVar(..)) => &ALL_INT_FPS,
             TyKind::Infer(InferTy::FloatVar(..)) => &ALL_FLOAT_FPS,
-            _ => self_ty_fp.as_ref().map(std::slice::from_ref).unwrap_or(&[]),
+            _ => self_ty_fp.as_slice(),
         };
 
         if fps.is_empty() {
@@ -1760,11 +1757,9 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
 
         let db = self.db();
 
-        let trait_ref = db
-            .impl_trait_ns(impl_id)
+        db.impl_trait_ns(impl_id)
             // ImplIds for impls where the trait ref can't be resolved should never reach trait solving
-            .expect("invalid impl passed to trait solver");
-        trait_ref
+            .expect("invalid impl passed to trait solver")
     }
 
     fn impl_polarity(self, impl_def_id: Self::DefId) -> rustc_type_ir::ImplPolarity {
@@ -1873,7 +1868,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
 
         let field_types = self.db().field_types_ns(variant.id());
         let mut unsizing_params = DenseBitSet::new_empty(num_params);
-        let ty = field_types[tail_field.0].clone();
+        let ty = field_types[tail_field.0];
         for arg in ty.instantiate_identity().walk() {
             if let Some(i) = maybe_unsizing_param_idx(arg) {
                 unsizing_params.insert(i);
@@ -1883,7 +1878,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
         // Ensure none of the other fields mention the parameters used
         // in unsizing.
         for field in prefix_fields {
-            for arg in field_types[field.0].clone().instantiate_identity().walk() {
+            for arg in field_types[field.0].instantiate_identity().walk() {
                 if let Some(i) = maybe_unsizing_param_idx(arg) {
                     unsizing_params.remove(i);
                 }
@@ -1906,9 +1901,7 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
                 let entry = self.map.entry(br.var);
                 let index = entry.index();
                 let var = BoundVar::from_usize(index);
-                let kind = entry
-                    .or_insert_with(|| BoundVarKind::Region(BoundRegionKind::Anon))
-                    .clone()
+                let kind = (*entry.or_insert_with(|| BoundVarKind::Region(BoundRegionKind::Anon)))
                     .expect_region();
                 let br = BoundRegion { var, kind };
                 Region::new_bound(self.interner, DebruijnIndex::ZERO, br)
@@ -1917,17 +1910,15 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
                 let entry = self.map.entry(bt.var);
                 let index = entry.index();
                 let var = BoundVar::from_usize(index);
-                let kind = entry
-                    .or_insert_with(|| BoundVarKind::Ty(BoundTyKind::Anon))
-                    .clone()
-                    .expect_ty();
+                let kind =
+                    (*entry.or_insert_with(|| BoundVarKind::Ty(BoundTyKind::Anon))).expect_ty();
                 Ty::new_bound(self.interner, DebruijnIndex::ZERO, BoundTy { var, kind })
             }
             fn replace_const(&mut self, bv: BoundVar) -> Const<'db> {
                 let entry = self.map.entry(bv);
                 let index = entry.index();
                 let var = BoundVar::from_usize(index);
-                let () = entry.or_insert_with(|| BoundVarKind::Const).clone().expect_const();
+                let () = (*entry.or_insert_with(|| BoundVarKind::Const)).expect_const();
                 Const::new_bound(self.interner, DebruijnIndex::ZERO, var)
             }
         }

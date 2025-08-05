@@ -144,7 +144,7 @@ impl<'db> IntoKind for Ty<'db> {
     type Kind = TyKind<'db>;
 
     fn kind(self) -> Self::Kind {
-        self.inner().internee.clone()
+        self.inner().internee
     }
 }
 
@@ -153,7 +153,7 @@ impl<'db> TypeVisitable<DbInterner<'db>> for Ty<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        visitor.visit_ty(self.clone())
+        visitor.visit_ty(*self)
     }
 }
 
@@ -162,7 +162,7 @@ impl<'db> TypeSuperVisitable<DbInterner<'db>> for Ty<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        match self.clone().kind() {
+        match (*self).kind() {
             TyKind::RawPtr(ty, _mutbl) => ty.visit_with(visitor),
             TyKind::Array(typ, sz) => {
                 try_visit!(typ.visit_with(visitor));
@@ -228,7 +228,7 @@ impl<'db> TypeSuperFoldable<DbInterner<'db>> for Ty<'db> {
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        let kind = match self.clone().kind() {
+        let kind = match self.kind() {
             TyKind::RawPtr(ty, mutbl) => TyKind::RawPtr(ty.try_fold_with(folder)?, mutbl),
             TyKind::Array(typ, sz) => {
                 TyKind::Array(typ.try_fold_with(folder)?, sz.try_fold_with(folder)?)
@@ -275,13 +275,13 @@ impl<'db> TypeSuperFoldable<DbInterner<'db>> for Ty<'db> {
             | TyKind::Foreign(..) => return Ok(self),
         };
 
-        Ok(if self.clone().kind() == kind { self } else { Ty::new(folder.cx(), kind) })
+        Ok(if self.kind() == kind { self } else { Ty::new(folder.cx(), kind) })
     }
     fn super_fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(
         self,
         folder: &mut F,
     ) -> Self {
-        let kind = match self.clone().kind() {
+        let kind = match self.kind() {
             TyKind::RawPtr(ty, mutbl) => TyKind::RawPtr(ty.fold_with(folder), mutbl),
             TyKind::Array(typ, sz) => TyKind::Array(typ.fold_with(folder), sz.fold_with(folder)),
             TyKind::Slice(typ) => TyKind::Slice(typ.fold_with(folder)),
@@ -324,7 +324,7 @@ impl<'db> TypeSuperFoldable<DbInterner<'db>> for Ty<'db> {
             | TyKind::Foreign(..) => return self,
         };
 
-        if self.clone().kind() == kind { self } else { Ty::new(folder.cx(), kind) }
+        if self.kind() == kind { self } else { Ty::new(folder.cx(), kind) }
     }
 }
 
@@ -530,14 +530,14 @@ impl<'db> rustc_type_ir::inherent::Ty<DbInterner<'db>> for Ty<'db> {
     }
 
     fn tuple_fields(self) -> <DbInterner<'db> as rustc_type_ir::Interner>::Tys {
-        match self.clone().kind() {
+        match self.kind() {
             TyKind::Tuple(args) => args,
             _ => panic!("tuple_fields called on non-tuple: {self:?}"),
         }
     }
 
     fn to_opt_closure_kind(self) -> Option<rustc_type_ir::ClosureKind> {
-        match self.clone().kind() {
+        match self.kind() {
             TyKind::Int(int_ty) => match int_ty {
                 IntTy::I8 => Some(ClosureKind::Fn),
                 IntTy::I16 => Some(ClosureKind::FnMut),
@@ -580,7 +580,7 @@ impl<'db> rustc_type_ir::inherent::Ty<DbInterner<'db>> for Ty<'db> {
         self,
         interner: DbInterner<'db>,
     ) -> <DbInterner<'db> as rustc_type_ir::Interner>::Ty {
-        match self.clone().kind() {
+        match self.kind() {
             TyKind::Adt(adt, _) if adt.is_enum() => adt.repr().discr_type().to_ty(interner),
             TyKind::Coroutine(_, args) => args.as_coroutine().discr_ty(interner),
 
@@ -627,8 +627,7 @@ impl<'db> rustc_type_ir::inherent::Ty<DbInterner<'db>> for Ty<'db> {
                 InferTy::FreshTy(_) | InferTy::FreshIntTy(_) | InferTy::FreshFloatTy(_),
             ) => {
                 panic!(
-                    "`dself.iter().map(|v| v.try_fold_with(folder)).collect::<Result<_, _>>()?iscriminant_ty` applied to unexpected type: {:?}",
-                    self
+                    "`dself.iter().map(|v| v.try_fold_with(folder)).collect::<Result<_, _>>()?iscriminant_ty` applied to unexpected type: {self:?}"
                 )
             }
             TyKind::UnsafeBinder(..) => unimplemented!(),
@@ -656,12 +655,12 @@ impl<'db> rustc_type_ir::inherent::Tys<DbInterner<'db>> for Tys<'db> {
     fn inputs(self) -> <DbInterner<'db> as rustc_type_ir::Interner>::FnInputTys {
         Tys::new_from_iter(
             DbInterner::conjure(),
-            self.as_slice().split_last().unwrap().1.into_iter().cloned(),
+            self.as_slice().split_last().unwrap().1.iter().cloned(),
         )
     }
 
     fn output(self) -> <DbInterner<'db> as rustc_type_ir::Interner>::Ty {
-        self.as_slice().split_last().unwrap().0.clone()
+        *self.as_slice().split_last().unwrap().0
     }
 }
 
@@ -742,7 +741,7 @@ impl<'db> PlaceholderLike<DbInterner<'db>> for PlaceholderTy {
     }
 
     fn with_updated_universe(self, ui: rustc_type_ir::UniverseIndex) -> Self {
-        Placeholder { universe: ui, bound: self.bound.clone() }
+        Placeholder { universe: ui, bound: self.bound }
     }
 
     fn new(ui: rustc_type_ir::UniverseIndex, bound: BoundTy) -> Self {

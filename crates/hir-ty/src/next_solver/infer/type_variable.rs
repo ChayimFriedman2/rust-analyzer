@@ -64,7 +64,7 @@ impl<'db> TypeVariableValue<'db> {
     pub(crate) fn known(&self) -> Option<Ty<'db>> {
         match self {
             TypeVariableValue::Unknown { .. } => None,
-            TypeVariableValue::Known { value } => Some(value.clone()),
+            TypeVariableValue::Known { value } => Some(*value),
         }
     }
 

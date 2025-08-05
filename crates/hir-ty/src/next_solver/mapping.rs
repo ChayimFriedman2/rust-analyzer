@@ -87,7 +87,7 @@ impl<'db> rustc_type_ir::TypeFolder<DbInterner<'db>> for BinderToEarlyBinder<'db
     }
 
     fn fold_ty(&mut self, t: Ty<'db>) -> Ty<'db> {
-        match t.clone().kind() {
+        match t.kind() {
             rustc_type_ir::TyKind::Bound(debruijn, bound_ty) if self.debruijn == debruijn => {
                 let var: rustc_type_ir::BoundVar = bound_ty.var();
                 Ty::new(self.cx(), rustc_type_ir::TyKind::Param(ParamTy { index: var.as_u32() }))
@@ -97,7 +97,7 @@ impl<'db> rustc_type_ir::TypeFolder<DbInterner<'db>> for BinderToEarlyBinder<'db
     }
 
     fn fold_region(&mut self, r: Region<'db>) -> Region<'db> {
-        match r.clone().kind() {
+        match r.kind() {
             rustc_type_ir::ReBound(debruijn, bound_region) if self.debruijn == debruijn => {
                 let var: rustc_type_ir::BoundVar = bound_region.var();
                 Region::new(
@@ -112,7 +112,7 @@ impl<'db> rustc_type_ir::TypeFolder<DbInterner<'db>> for BinderToEarlyBinder<'db
     }
 
     fn fold_const(&mut self, c: Const<'db>) -> Const<'db> {
-        match c.clone().kind() {
+        match c.kind() {
             rustc_type_ir::ConstKind::Bound(debruijn, var) if self.debruijn == debruijn => {
                 Const::new(
                     self.cx(),
@@ -332,7 +332,7 @@ impl<'db> ChalkToNextSolver<'db, Ty<'db>> for chalk_ir::Ty<Interner> {
                                     let projection = ExistentialProjection::new_from_args(
                                         interner, def_id, args, term,
                                     );
-                                    ExistentialPredicate::Projection((projection))
+                                    ExistentialPredicate::Projection(projection)
                                 }
                                 chalk_ir::WhereClause::LifetimeOutlives(lifetime_outlives) => {
                                     return None;
@@ -395,7 +395,7 @@ impl<'db> ChalkToNextSolver<'db, Ty<'db>> for chalk_ir::Ty<Interner> {
                 ),
                 chalk_ir::TyKind::InferenceVar(inference_var, ty_variable_kind) => {
                     rustc_type_ir::TyKind::Infer(
-                        (inference_var.clone(), ty_variable_kind.clone()).to_nextsolver(interner),
+                        (*inference_var, *ty_variable_kind).to_nextsolver(interner),
                     )
                 }
             },
@@ -626,20 +626,17 @@ impl<'db> ChalkToNextSolver<'db, Canonical<'db, Goal<DbInterner<'db>, Predicate<
         let variables = CanonicalVars::new_from_iter(
             interner,
             self.binders.iter(Interner).map(|k| match &k.kind {
-                chalk_ir::VariableKind::Ty(ty_variable_kind) => {
-                    let kind = match ty_variable_kind {
-                        TyVariableKind::General => rustc_type_ir::CanonicalVarKind::Ty(
-                            rustc_type_ir::CanonicalTyVarKind::General(UniverseIndex::ROOT),
-                        ),
-                        TyVariableKind::Integer => rustc_type_ir::CanonicalVarKind::Ty(
-                            rustc_type_ir::CanonicalTyVarKind::Int,
-                        ),
-                        TyVariableKind::Float => rustc_type_ir::CanonicalVarKind::Ty(
-                            rustc_type_ir::CanonicalTyVarKind::Float,
-                        ),
-                    };
-                    kind
-                }
+                chalk_ir::VariableKind::Ty(ty_variable_kind) => match ty_variable_kind {
+                    TyVariableKind::General => rustc_type_ir::CanonicalVarKind::Ty(
+                        rustc_type_ir::CanonicalTyVarKind::General(UniverseIndex::ROOT),
+                    ),
+                    TyVariableKind::Integer => {
+                        rustc_type_ir::CanonicalVarKind::Ty(rustc_type_ir::CanonicalTyVarKind::Int)
+                    }
+                    TyVariableKind::Float => rustc_type_ir::CanonicalVarKind::Ty(
+                        rustc_type_ir::CanonicalTyVarKind::Float,
+                    ),
+                },
                 chalk_ir::VariableKind::Lifetime => {
                     rustc_type_ir::CanonicalVarKind::Region(UniverseIndex::ROOT)
                 }
@@ -939,7 +936,7 @@ pub fn convert_args_for_result<'db>(
 ) -> crate::Substitution {
     let mut substs = Vec::with_capacity(args.len());
     for arg in args {
-        match arg.clone().kind() {
+        match (*arg).kind() {
             rustc_type_ir::GenericArgKind::Type(ty) => {
                 let ty = convert_ty_for_result(interner, ty);
                 substs.push(chalk_ir::GenericArgData::Ty(ty).intern(Interner));
@@ -1155,7 +1152,7 @@ pub(crate) fn convert_ty_for_result<'db>(interner: DbInterner<'db>, ty: Ty<'db>)
                             let trait_ref = TraitRef::new(
                                 interner,
                                 trait_ref.def_id,
-                                [self_ty.clone().into()].into_iter().chain(trait_ref.args.iter()),
+                                [self_ty.into()].into_iter().chain(trait_ref.args.iter()),
                             );
                             let trait_id = match trait_ref.def_id {
                                 SolverDefId::TraitId(id) => to_chalk_trait_id(id),
@@ -1180,11 +1177,11 @@ pub(crate) fn convert_ty_for_result<'db>(interner: DbInterner<'db>, ty: Ty<'db>)
                                 projection_term: AliasTerm::new(
                                     interner,
                                     existential_projection.def_id,
-                                    [self_ty.clone().into()]
+                                    [self_ty.into()]
                                         .iter()
-                                        .chain(existential_projection.args.clone().iter()),
+                                        .chain(existential_projection.args.iter()),
                                 ),
-                                term: existential_projection.term.clone(),
+                                term: existential_projection.term,
                             };
                             let associated_ty_id = match projection.projection_term.def_id {
                                 SolverDefId::TypeAliasId(id) => to_assoc_type_id(id),

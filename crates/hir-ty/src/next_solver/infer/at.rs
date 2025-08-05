@@ -72,7 +72,7 @@ impl<'db> InferCtxt<'db> {
     pub fn fork(&self) -> Self {
         Self {
             interner: self.interner,
-            typing_mode: self.typing_mode.clone(),
+            typing_mode: self.typing_mode,
             inner: self.inner.clone(),
             tainted_by_errors: self.tainted_by_errors.clone(),
             universe: self.universe.clone(),
@@ -85,14 +85,14 @@ impl<'db> InferCtxt<'db> {
     pub fn fork_with_typing_mode(&self, typing_mode: TypingMode<DbInterner<'db>>) -> Self {
         // Unlike `fork`, this invalidates all cache entries as they may depend on the
         // typing mode.
-        let forked = Self {
+
+        Self {
             interner: self.interner,
             typing_mode,
             inner: self.inner.clone(),
             tainted_by_errors: self.tainted_by_errors.clone(),
             universe: self.universe.clone(),
-        };
-        forked
+        }
     }
 }
 
@@ -116,7 +116,7 @@ impl<'a, 'db> At<'a, 'db> {
     {
         RelateExt::relate(
             self.infcx,
-            self.param_env.clone(),
+            self.param_env,
             expected,
             Variance::Contravariant,
             actual,
@@ -137,7 +137,7 @@ impl<'a, 'db> At<'a, 'db> {
     {
         RelateExt::relate(
             self.infcx,
-            self.param_env.clone(),
+            self.param_env,
             expected,
             Variance::Covariant,
             actual,
@@ -158,7 +158,7 @@ impl<'a, 'db> At<'a, 'db> {
     {
         self.clone().eq_trace(
             define_opaque_types,
-            ToTrace::to_trace(self.cause, expected.clone(), actual.clone()),
+            ToTrace::to_trace(self.cause, expected, actual),
             expected,
             actual,
         )
@@ -177,7 +177,7 @@ impl<'a, 'db> At<'a, 'db> {
     {
         RelateExt::relate(
             self.infcx,
-            self.param_env.clone(),
+            self.param_env,
             expected,
             Variance::Invariant,
             actual,
@@ -256,7 +256,7 @@ impl<'db> ToTrace<'db> for GenericArg<'db> {
     fn to_trace(cause: &ObligationCause, a: Self, b: Self) -> TypeTrace<'db> {
         TypeTrace {
             cause: cause.clone(),
-            values: match (a.clone().kind(), b.clone().kind()) {
+            values: match (a.kind(), b.kind()) {
                 (GenericArgKind::Lifetime(a), GenericArgKind::Lifetime(b)) => {
                     ValuePairs::Regions(ExpectedFound::new(a, b))
                 }

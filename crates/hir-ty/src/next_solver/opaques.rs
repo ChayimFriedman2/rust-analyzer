@@ -78,7 +78,7 @@ impl<'db> std::ops::Deref for PredefinedOpaques<'db> {
     type Target = PredefinedOpaquesData<'db>;
 
     fn deref(&self) -> &Self::Target {
-        &self.inner()
+        self.inner()
     }
 }
 
@@ -109,7 +109,7 @@ impl<'db> std::ops::Deref for ExternalConstraints<'db> {
     type Target = ExternalConstraintsData<'db>;
 
     fn deref(&self) -> &Self::Target {
-        &self.inner()
+        self.inner()
     }
 }
 

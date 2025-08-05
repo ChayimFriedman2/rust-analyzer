@@ -64,7 +64,7 @@ impl<'db> IrPrint<ty::TraitRef<Self>> for DbInterner<'db> {
             };
             let self_ty = &t.args.as_slice()[0];
             let trait_args = &t.args.as_slice()[1..];
-            if trait_args.len() == 0 {
+            if trait_args.is_empty() {
                 fmt.write_str(&format!(
                     "{:?}: {}",
                     self_ty,

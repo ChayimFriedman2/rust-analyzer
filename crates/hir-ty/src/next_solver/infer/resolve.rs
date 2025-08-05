@@ -42,11 +42,11 @@ impl<'a, 'db> TypeFolder<DbInterner<'db>> for OpportunisticVarResolver<'a, 'db> 
         if !t.has_non_region_infer() {
             t // micro-optimize -- if there is nothing in this type that this fold affects...
         } else if let Some(ty) = self.cache.get(&t) {
-            ty.clone()
+            *ty
         } else {
-            let shallow = self.infcx.shallow_resolve(t.clone());
+            let shallow = self.infcx.shallow_resolve(t);
             let res = shallow.super_fold_with(self);
-            assert!(self.cache.insert(t.clone(), res.clone()));
+            assert!(self.cache.insert(t, res));
             res
         }
     }

@@ -59,7 +59,7 @@ pub(crate) fn path_to_const<'a, 'g>(
                         path,
                         p
                     );
-                    return None;
+                    None
                 }
             }
         }
@@ -93,7 +93,7 @@ pub fn intern_const_ref<'a>(
     krate: Crate,
 ) -> Const<'a> {
     let interner = DbInterner::new_with(db, Some(krate), None);
-    let layout = layout_of_ty_query(db, ty.clone(), TraitEnvironment::empty(krate));
+    let layout = layout_of_ty_query(db, ty, TraitEnvironment::empty(krate));
     let kind = match value {
         LiteralConstRef::Int(i) => {
             // FIXME: We should handle failure of layout better.
@@ -135,7 +135,7 @@ pub fn usize_const<'db>(db: &'db dyn HirDatabase, value: Option<u128>, krate: Cr
 
 pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<u128> {
     let interner = DbInterner::new(db);
-    match c.clone().kind() {
+    match (*c).kind() {
         ConstKind::Param(_) => None,
         ConstKind::Infer(_) => None,
         ConstKind::Bound(_, _) => None,
@@ -158,7 +158,7 @@ pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<
 
 pub fn try_const_isize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<i128> {
     let interner = DbInterner::new_with(db, None, None);
-    match c.clone().kind() {
+    match (*c).kind() {
         ConstKind::Param(_) => None,
         ConstKind::Infer(_) => None,
         ConstKind::Bound(_, _) => None,

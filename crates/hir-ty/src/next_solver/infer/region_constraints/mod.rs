@@ -397,10 +397,10 @@ impl<'db> RegionConstraintCollector<'db, '_> {
         if a != b {
             // Eventually, it would be nice to add direct support for
             // equating regions.
-            self.make_subregion(a.clone(), b.clone());
-            self.make_subregion(b.clone(), a.clone());
+            self.make_subregion(a, b);
+            self.make_subregion(b, a);
 
-            match (a.clone().kind(), b.clone().kind()) {
+            match (a.kind(), b.kind()) {
                 (RegionKind::ReVar(a), RegionKind::ReVar(b)) => {
                     debug!("make_eqregion: unifying {:?} with {:?}", a, b);
                     if self.unification_table_mut().unify_var_var(a, b).is_ok() {
@@ -436,9 +436,9 @@ impl<'db> RegionConstraintCollector<'db, '_> {
     pub(super) fn make_subregion(&mut self, sub: Region<'db>, sup: Region<'db>) {
         // cannot add constraints once regions are resolved
 
-        match (sub.clone().kind(), sup.clone().kind()) {
+        match (sub.kind(), sup.kind()) {
             (RegionKind::ReBound(..), _) | (_, RegionKind::ReBound(..)) => {
-                panic!("cannot relate bound region: {:?} <= {:?}", sub, sup);
+                panic!("cannot relate bound region: {sub:?} <= {sup:?}");
             }
             (_, RegionKind::ReStatic) => {
                 // all regions are subregions of static, so we can ignore this
@@ -494,12 +494,12 @@ impl<'db> RegionConstraintCollector<'db, '_> {
         a: Region<'db>,
         b: Region<'db>,
     ) -> Region<'db> {
-        let vars = TwoRegions { a: a.clone(), b: b.clone() };
+        let vars = TwoRegions { a, b };
         if let Some(c) = self.combine_map(t.clone()).get(&vars) {
             return Region::new_var(cx, *c);
         }
-        let a_universe = self.universe(a.clone());
-        let b_universe = self.universe(b.clone());
+        let a_universe = self.universe(a);
+        let b_universe = self.universe(b);
         let c_universe = cmp::max(a_universe, b_universe);
         let c = self.new_region_var(c_universe);
         self.combine_map(t.clone()).insert(vars.clone(), c);
@@ -507,8 +507,8 @@ impl<'db> RegionConstraintCollector<'db, '_> {
         let new_r = Region::new_var(cx, c);
         for old_r in [a, b] {
             match t {
-                Glb => self.make_subregion(new_r.clone(), old_r.clone()),
-                Lub => self.make_subregion(old_r, new_r.clone()),
+                Glb => self.make_subregion(new_r, old_r),
+                Lub => self.make_subregion(old_r, new_r),
             }
         }
         debug!("combine_vars() c={:?}", c);
@@ -516,7 +516,7 @@ impl<'db> RegionConstraintCollector<'db, '_> {
     }
 
     pub fn universe(&mut self, region: Region<'db>) -> UniverseIndex {
-        match region.clone().kind() {
+        match region.kind() {
             RegionKind::ReStatic
             | RegionKind::ReErased
             | RegionKind::ReLateParam(..)
@@ -527,7 +527,7 @@ impl<'db> RegionConstraintCollector<'db, '_> {
                 Ok(value) => self.universe(value),
                 Err(universe) => universe,
             },
-            RegionKind::ReBound(..) => panic!("universe(): encountered bound region {:?}", region),
+            RegionKind::ReBound(..) => panic!("universe(): encountered bound region {region:?}"),
         }
     }
 
@@ -566,9 +566,9 @@ impl<'db> fmt::Display for GenericKind<'db> {
 impl<'db> GenericKind<'db> {
     pub fn to_ty(&self, interner: DbInterner<'db>) -> Ty<'db> {
         match *self {
-            GenericKind::Param(ref p) => p.clone().to_ty(interner),
-            GenericKind::Placeholder(ref p) => Ty::new_placeholder(interner, p.clone()),
-            GenericKind::Alias(ref p) => p.clone().to_ty(interner),
+            GenericKind::Param(ref p) => (*p).to_ty(interner),
+            GenericKind::Placeholder(ref p) => Ty::new_placeholder(interner, *p),
+            GenericKind::Alias(ref p) => (*p).to_ty(interner),
         }
     }
 }

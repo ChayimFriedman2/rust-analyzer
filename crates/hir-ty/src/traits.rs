@@ -197,7 +197,7 @@ fn solve_nextsolver<'db>(
     let (goal, var_values) = context.instantiate_canonical(&goal);
     tracing::info!(?var_values);
 
-    let res = context.evaluate_root_goal(goal.clone(), Span::dummy(), None);
+    let res = context.evaluate_root_goal(goal, Span::dummy(), None);
 
     let vars =
         var_values.var_values.iter().map(|g| context.0.resolve_vars_if_possible(g)).collect();
@@ -297,7 +297,7 @@ pub fn next_trait_solve_in_ctxt<'db, 'a>(
 
     let context = <&SolverContext<'db>>::from(infer_ctxt);
 
-    let res = context.evaluate_root_goal(goal.clone(), Span::dummy(), None);
+    let res = context.evaluate_root_goal(goal, Span::dummy(), None);
 
     let res = res.map(|r| (r.has_changed, r.certainty));
 

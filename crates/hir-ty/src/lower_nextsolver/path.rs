@@ -295,7 +295,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                     self.ctx.interner,
                     adt.into(),
                 );
-                Ty::new_adt(self.ctx.interner, AdtDef::new(adt.into(), self.ctx.interner), args)
+                Ty::new_adt(self.ctx.interner, AdtDef::new(adt, self.ctx.interner), args)
             }
 
             TypeNs::AdtId(it) => self.lower_path_inner(it.into(), infer_args),
@@ -623,7 +623,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                 );
                 predicates
                     .iter()
-                    .find_map(|pred| match pred.clone().kind().skip_binder() {
+                    .find_map(|pred| match (*pred).kind().skip_binder() {
                         rustc_type_ir::ClauseKind::Trait(trait_predicate) => Some(trait_predicate),
                         _ => None,
                     })
@@ -980,7 +980,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             args_and_bindings.bindings.iter().enumerate().flat_map(move |(binding_idx, binding)| {
                 let found = associated_type_by_name_including_super_traits(
                     self.ctx.db,
-                    trait_ref.clone(),
+                    trait_ref,
                     &binding.name,
                 );
                 let (super_trait_ref, associated_ty) = match found {
@@ -1011,7 +1011,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                     super_trait_ref.args.iter().chain(args.iter().skip(super_trait_ref.args.len())),
                 );
                 let projection_term =
-                    AliasTerm::new_from_args(interner, associated_ty.into(), args.clone());
+                    AliasTerm::new_from_args(interner, associated_ty.into(), args);
                 let mut predicates: SmallVec<[_; 1]> = SmallVec::with_capacity(
                     binding.type_ref.as_ref().map_or(0, |_| 1) + binding.bounds.len(),
                 );
@@ -1039,11 +1039,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                         Ty::new_alias(
                             self.ctx.interner,
                             AliasTyKind::Projection,
-                            AliasTy::new_from_args(
-                                self.ctx.interner,
-                                associated_ty.into(),
-                                args.clone(),
-                            ),
+                            AliasTy::new_from_args(self.ctx.interner, associated_ty.into(), args),
                         ),
                         false,
                     ));
@@ -1416,7 +1412,7 @@ fn unknown_subst<'db>(
         params.iter_id().map(|id| match id {
             GenericParamId::TypeParamId(_) => Ty::new_error(interner, ErrorGuaranteed).into(),
             GenericParamId::ConstParamId(id) => {
-                unknown_const_as_generic(const_param_ty_query(interner.db(), id)).into()
+                unknown_const_as_generic(const_param_ty_query(interner.db(), id))
             }
             GenericParamId::LifetimeParamId(_) => {
                 crate::next_solver::Region::error(interner).into()

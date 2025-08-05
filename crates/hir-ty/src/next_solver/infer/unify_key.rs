@@ -53,7 +53,7 @@ impl<'db> UnifyValue for RegionVariableValue<'db> {
 
             (RegionVariableValue::Known { value }, RegionVariableValue::Unknown { universe })
             | (RegionVariableValue::Unknown { universe }, RegionVariableValue::Known { value }) => {
-                let universe_of_value = match value.clone().kind() {
+                let universe_of_value = match (*value).kind() {
                     RegionKind::ReStatic
                     | RegionKind::ReErased
                     | RegionKind::ReLateParam(..)
@@ -66,7 +66,7 @@ impl<'db> UnifyValue for RegionVariableValue<'db> {
                 };
 
                 if universe.can_name(universe_of_value) {
-                    Ok(RegionVariableValue::Known { value: value.clone() })
+                    Ok(RegionVariableValue::Known { value: *value })
                 } else {
                     Err(RegionUnificationError)
                 }
@@ -109,7 +109,7 @@ impl<'db> ConstVariableValue<'db> {
     pub fn known(&self) -> Option<Const<'db>> {
         match self {
             ConstVariableValue::Unknown { .. } => None,
-            ConstVariableValue::Known { value } => Some(value.clone()),
+            ConstVariableValue::Known { value } => Some(*value),
         }
     }
 }
@@ -169,7 +169,7 @@ impl<'db> UnifyValue for ConstVariableValue<'db> {
                 // universe is the minimum of the two universes, because that is
                 // the one which contains the fewest names in scope.
                 let universe = cmp::min(*universe1, *universe2);
-                Ok(ConstVariableValue::Unknown { origin: origin.clone(), universe })
+                Ok(ConstVariableValue::Unknown { origin: *origin, universe })
             }
         }
     }

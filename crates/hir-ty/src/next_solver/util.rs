@@ -49,7 +49,7 @@ impl<'db> Discr<'db> {
         self.checked_add(interner, 1).0
     }
     pub fn checked_add(self, interner: DbInterner<'db>, n: u128) -> (Self, bool) {
-        let (size, signed) = self.ty.clone().int_size_and_signed(interner);
+        let (size, signed) = self.ty.int_size_and_signed(interner);
         let (val, oflo) = if signed {
             let min = size.signed_int_min();
             let max = size.signed_int_max();
@@ -189,8 +189,7 @@ impl IntegerExt for Integer {
             if discr < fit {
                 panic!(
                     "Integer::repr_discr: `#[repr]` hint too small for \
-                      discriminant range of enum `{:?}`",
-                    ty
+                      discriminant range of enum `{ty:?}`"
                 )
             }
             return (discr, ity.is_signed());
@@ -303,6 +302,12 @@ pub struct MaxUniverse<'_self> {
     max_universe: UniverseIndex,
 }
 
+impl Default for MaxUniverse<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MaxUniverse<'_> {
     pub fn new() -> Self {
         MaxUniverse { _self: &(), max_universe: UniverseIndex::ROOT }
@@ -317,7 +322,7 @@ impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse<'db> {
     type Result = ();
 
     fn visit_ty(&mut self, t: Ty<'db>) {
-        if let TyKind::Placeholder(placeholder) = t.clone().kind() {
+        if let TyKind::Placeholder(placeholder) = t.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
             );
@@ -327,7 +332,7 @@ impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse<'db> {
     }
 
     fn visit_const(&mut self, c: Const<'db>) {
-        if let ConstKind::Placeholder(placeholder) = c.clone().kind() {
+        if let ConstKind::Placeholder(placeholder) = c.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
             );
@@ -442,7 +447,7 @@ pub fn sizedness_constraint_for_ty<'db>(
 ) -> Option<Ty<'db>> {
     use rustc_type_ir::TyKind::*;
 
-    match ty.clone().kind() {
+    match ty.kind() {
         // these are always sized
         Bool | Char | Int(..) | Uint(..) | Float(..) | RawPtr(..) | Ref(..) | FnDef(..)
         | FnPtr(..) | Array(..) | Closure(..) | CoroutineClosure(..) | Coroutine(..)
@@ -518,27 +523,24 @@ pub(crate) fn mini_canonicalize<'db, T: TypeFoldable<DbInterner<'db>>>(
         max_universe: UniverseIndex::from_u32(1),
         variables: CanonicalVars::new_from_iter(
             context.cx(),
-            vars.iter().map(|(k, v)| {
-                let kind = match k.clone().kind() {
-                    GenericArgKind::Type(ty) => match ty.kind() {
-                        TyKind::Int(..) | TyKind::Uint(..) => rustc_type_ir::CanonicalVarKind::Ty(
-                            rustc_type_ir::CanonicalTyVarKind::Int,
-                        ),
-                        TyKind::Float(..) => rustc_type_ir::CanonicalVarKind::Ty(
-                            rustc_type_ir::CanonicalTyVarKind::Float,
-                        ),
-                        _ => rustc_type_ir::CanonicalVarKind::Ty(
-                            rustc_type_ir::CanonicalTyVarKind::General(UniverseIndex::ZERO),
-                        ),
-                    },
-                    GenericArgKind::Lifetime(_) => {
-                        rustc_type_ir::CanonicalVarKind::Region(UniverseIndex::ZERO)
+            vars.iter().map(|(k, v)| match (*k).kind() {
+                GenericArgKind::Type(ty) => match ty.kind() {
+                    TyKind::Int(..) | TyKind::Uint(..) => {
+                        rustc_type_ir::CanonicalVarKind::Ty(rustc_type_ir::CanonicalTyVarKind::Int)
                     }
-                    GenericArgKind::Const(_) => {
-                        rustc_type_ir::CanonicalVarKind::Const(UniverseIndex::ZERO)
-                    }
-                };
-                kind
+                    TyKind::Float(..) => rustc_type_ir::CanonicalVarKind::Ty(
+                        rustc_type_ir::CanonicalTyVarKind::Float,
+                    ),
+                    _ => rustc_type_ir::CanonicalVarKind::Ty(
+                        rustc_type_ir::CanonicalTyVarKind::General(UniverseIndex::ZERO),
+                    ),
+                },
+                GenericArgKind::Lifetime(_) => {
+                    rustc_type_ir::CanonicalVarKind::Region(UniverseIndex::ZERO)
+                }
+                GenericArgKind::Const(_) => {
+                    rustc_type_ir::CanonicalVarKind::Const(UniverseIndex::ZERO)
+                }
             }),
         ),
     }
@@ -566,7 +568,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for MiniCanonicalizer<'_, 'db> {
     }
 
     fn fold_ty(&mut self, t: Ty<'db>) -> Ty<'db> {
-        match t.clone().kind() {
+        match t.kind() {
             rustc_type_ir::TyKind::Bound(db, _) => {
                 if db >= self.db {
                     panic!("Unexpected bound var");
@@ -604,7 +606,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for MiniCanonicalizer<'_, 'db> {
         &mut self,
         r: <DbInterner<'db> as rustc_type_ir::Interner>::Region,
     ) -> <DbInterner<'db> as rustc_type_ir::Interner>::Region {
-        match r.clone().kind() {
+        match r.kind() {
             RegionKind::ReBound(db, _) => {
                 if db >= self.db {
                     panic!("Unexpected bound var");
@@ -633,7 +635,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for MiniCanonicalizer<'_, 'db> {
         &mut self,
         c: <DbInterner<'db> as rustc_type_ir::Interner>::Const,
     ) -> <DbInterner<'db> as rustc_type_ir::Interner>::Const {
-        match c.clone().kind() {
+        match c.kind() {
             ConstKind::Bound(db, _) => {
                 if db >= self.db {
                     panic!("Unexpected bound var");
@@ -680,7 +682,7 @@ pub fn explicit_item_bounds<'db>(
 
             let mut bounds = Vec::new();
             for bound in &type_alias_data.bounds {
-                ctx.lower_type_bound(bound, interner_ty.clone(), false).for_each(|pred| {
+                ctx.lower_type_bound(bound, interner_ty, false).for_each(|pred| {
                     bounds.push(pred);
                 });
             }
@@ -692,7 +694,7 @@ pub fn explicit_item_bounds<'db>(
                     let trait_ref = TraitRef::new_from_args(
                         interner,
                         trait_id.into(),
-                        GenericArgs::new_from_iter(interner, [interner_ty.clone().into()]),
+                        GenericArgs::new_from_iter(interner, [interner_ty.into()]),
                     );
                     Clause(Predicate::new(
                         interner,
@@ -740,7 +742,7 @@ pub fn explicit_item_bounds<'db>(
                         })
                     {
                         let args = GenericArgs::identity_for_item(interner, def_id);
-                        let out = args.as_slice()[0].clone();
+                        let out = args.as_slice()[0];
                         let mut predicates = vec![];
 
                         let item_ty = Ty::new_alias(
@@ -754,7 +756,7 @@ pub fn explicit_item_bounds<'db>(
                             trait_ref: TraitRef::new_from_args(
                                 interner,
                                 future_trait.into(),
-                                GenericArgs::new_from_iter(interner, [item_ty.clone().into()]),
+                                GenericArgs::new_from_iter(interner, [item_ty.into()]),
                             ),
                         }));
                         predicates.push(Clause(Predicate::new(
@@ -775,7 +777,7 @@ pub fn explicit_item_bounds<'db>(
                                 trait_ref: TraitRef::new_from_args(
                                     interner,
                                     sized_trait_.into(),
-                                    GenericArgs::new_from_iter(interner, [item_ty.clone().into()]),
+                                    GenericArgs::new_from_iter(interner, [item_ty.into()]),
                                 ),
                             }));
                             predicates.push(Clause(Predicate::new(
@@ -794,7 +796,7 @@ pub fn explicit_item_bounds<'db>(
                                 projection_term: AliasTerm::new_from_args(
                                     interner,
                                     future_output.into(),
-                                    GenericArgs::new_from_iter(interner, [item_ty.clone().into()]),
+                                    GenericArgs::new_from_iter(interner, [item_ty.into()]),
                                 ),
                                 term: match out.kind() {
                                     GenericArgKind::Lifetime(lt) => panic!(),
@@ -830,8 +832,8 @@ impl<'db> TypeVisitor<DbInterner<'db>> for ContainsTypeErrors {
     type Result = ControlFlow<()>;
 
     fn visit_ty(&mut self, t: Ty<'db>) -> Self::Result {
-        match t.clone().kind() {
-            rustc_type_ir::TyKind::Error(_) => return ControlFlow::Break(()),
+        match t.kind() {
+            rustc_type_ir::TyKind::Error(_) => ControlFlow::Break(()),
             _ => t.super_visit_with(self),
         }
     }

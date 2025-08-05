@@ -83,21 +83,21 @@ pub(super) fn instantiate_value<'db, T>(
 where
     T: TypeFoldable<DbInterner<'db>>,
 {
-    if var_values.var_values.clone().is_empty() {
+    if var_values.var_values.is_empty() {
         value
     } else {
         let delegate = FnMutDelegate {
-            regions: &mut |br: BoundRegion| match var_values[br.var].clone().kind() {
+            regions: &mut |br: BoundRegion| match var_values[br.var].kind() {
                 GenericArgKind::Lifetime(l) => l,
-                r => panic!("{:?} is a region but value is {:?}", br, r),
+                r => panic!("{br:?} is a region but value is {r:?}"),
             },
-            types: &mut |bound_ty: BoundTy| match var_values[bound_ty.var].clone().kind() {
+            types: &mut |bound_ty: BoundTy| match var_values[bound_ty.var].kind() {
                 GenericArgKind::Type(ty) => ty,
-                r => panic!("{:?} is a type but value is {:?}", bound_ty, r),
+                r => panic!("{bound_ty:?} is a type but value is {r:?}"),
             },
-            consts: &mut |bound_ct: BoundVar| match var_values[bound_ct].clone().kind() {
+            consts: &mut |bound_ct: BoundVar| match var_values[bound_ct].kind() {
                 GenericArgKind::Const(ct) => ct,
-                c => panic!("{:?} is a const but value is {:?}", bound_ct, c),
+                c => panic!("{bound_ct:?} is a const but value is {c:?}"),
             },
         };
 

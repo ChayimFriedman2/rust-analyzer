@@ -82,7 +82,6 @@ impl<'db> rustc_type_ir::inherent::BoundExistentialPredicates<DbInterner<'db>>
         rustc_type_ir::Binder<DbInterner<'db>, rustc_type_ir::ExistentialTraitRef<DbInterner<'db>>>,
     > {
         self.inner()[0]
-            .clone()
             .map_bound(|this| match this {
                 ExistentialPredicate::Trait(tr) => Some(tr),
                 _ => None,
@@ -125,8 +124,8 @@ impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for BoundExistentialPre
         b: Self,
     ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
         // We need to perform this deduplication as we sometimes generate duplicate projections in `a`.
-        let mut a_v: Vec<_> = a.clone().into_iter().collect();
-        let mut b_v: Vec<_> = b.clone().into_iter().collect();
+        let mut a_v: Vec<_> = a.into_iter().collect();
+        let mut b_v: Vec<_> = b.into_iter().collect();
         // `skip_binder` here is okay because `stable_cmp` doesn't look at binders
         a_v.sort_by(|a, b| {
             stable_cmp_existential_predicate(a.as_ref().skip_binder(), b.as_ref().skip_binder())
@@ -145,7 +144,7 @@ impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for BoundExistentialPre
                 Binder<'_, ty::ExistentialPredicate<_>>,
                 Binder<'_, ty::ExistentialPredicate<_>>,
             )| {
-                match (ep_a.clone().skip_binder(), ep_b.clone().skip_binder()) {
+                match (ep_a.skip_binder(), ep_b.skip_binder()) {
                     (ty::ExistentialPredicate::Trait(a), ty::ExistentialPredicate::Trait(b)) => {
                         Ok(ep_a.rebind(ty::ExistentialPredicate::Trait(
                             relation.relate(ep_a.rebind(a), ep_b.rebind(b))?.skip_binder(),
@@ -161,10 +160,7 @@ impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for BoundExistentialPre
                         ty::ExistentialPredicate::AutoTrait(a),
                         ty::ExistentialPredicate::AutoTrait(b),
                     ) if a == b => Ok(ep_a.rebind(ty::ExistentialPredicate::AutoTrait(a))),
-                    _ => Err(TypeError::ExistentialMismatch(ExpectedFound::new(
-                        a.clone(),
-                        b.clone(),
-                    ))),
+                    _ => Err(TypeError::ExistentialMismatch(ExpectedFound::new(a, b))),
                 }
             },
         );
@@ -195,26 +191,26 @@ impl<'db> std::fmt::Debug
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Binder<")?;
-        match self.0.internee.clone().skip_binder() {
+        match self.0.internee.skip_binder() {
             rustc_type_ir::PredicateKind::Clause(clause_kind) => {
-                write!(f, "{:?}", clause_kind)
+                write!(f, "{clause_kind:?}")
             }
             rustc_type_ir::PredicateKind::DynCompatible(trait_def_id) => {
-                write!(f, "the trait `{:?}` is dyn-compatible", trait_def_id)
+                write!(f, "the trait `{trait_def_id:?}` is dyn-compatible")
             }
             rustc_type_ir::PredicateKind::Subtype(subtype_predicate) => {
-                write!(f, "{:?}", subtype_predicate)
+                write!(f, "{subtype_predicate:?}")
             }
             rustc_type_ir::PredicateKind::Coerce(coerce_predicate) => {
-                write!(f, "{:?}", coerce_predicate)
+                write!(f, "{coerce_predicate:?}")
             }
             rustc_type_ir::PredicateKind::ConstEquate(c1, c2) => {
-                write!(f, "the constant `{:?}` equals `{:?}`", c1, c2)
+                write!(f, "the constant `{c1:?}` equals `{c2:?}`")
             }
             rustc_type_ir::PredicateKind::Ambiguous => write!(f, "ambiguous"),
-            rustc_type_ir::PredicateKind::NormalizesTo(data) => write!(f, "{:?}", data),
+            rustc_type_ir::PredicateKind::NormalizesTo(data) => write!(f, "{data:?}"),
             rustc_type_ir::PredicateKind::AliasRelate(t1, t2, dir) => {
-                write!(f, "{:?} {:?} {:?}", t1, dir, t2)
+                write!(f, "{t1:?} {dir:?} {t2:?}")
             }
         }?;
         write!(f, ", [{:?}]>", self.0.internee.bound_vars())?;
@@ -224,7 +220,7 @@ impl<'db> std::fmt::Debug
 
 impl<'db> Predicate<'db> {
     pub fn new(interner: DbInterner<'db>, kind: Binder<'db, PredicateKind<'db>>) -> Self {
-        let flags = FlagComputation::for_predicate(kind.clone());
+        let flags = FlagComputation::for_predicate(kind);
         let cached = WithCachedTypeInfo {
             internee: kind,
             flags: flags.flags,
@@ -384,12 +380,12 @@ impl<'db> rustc_type_ir::TypeFoldable<DbInterner<'db>> for Clauses<'db> {
         use rustc_type_ir::inherent::SliceLike as _;
         let inner: smallvec::SmallVec<[_; 2]> =
             self.iter().map(|v| v.try_fold_with(folder)).collect::<Result<_, _>>()?;
-        Ok(Clauses::new_from_iter(folder.cx(), inner.into_iter()))
+        Ok(Clauses::new_from_iter(folder.cx(), inner))
     }
     fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
         use rustc_type_ir::inherent::SliceLike as _;
         let inner: smallvec::SmallVec<[_; 2]> = self.iter().map(|v| v.fold_with(folder)).collect();
-        Clauses::new_from_iter(folder.cx(), inner.into_iter())
+        Clauses::new_from_iter(folder.cx(), inner)
     }
 }
 
@@ -484,7 +480,7 @@ impl<'db> TypeVisitable<DbInterner<'db>> for Predicate<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        visitor.visit_predicate(self.clone())
+        visitor.visit_predicate(*self)
     }
 }
 
@@ -493,7 +489,7 @@ impl<'db> TypeSuperVisitable<DbInterner<'db>> for Predicate<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        self.clone().kind().visit_with(visitor)
+        (*self).kind().visit_with(visitor)
     }
 }
 
@@ -563,7 +559,7 @@ impl<'db> IntoKind for Predicate<'db> {
     type Kind = Binder<'db, PredicateKind<'db>>;
 
     fn kind(self) -> Self::Kind {
-        self.inner().internee.clone()
+        self.inner().internee
     }
 }
 
@@ -675,7 +671,7 @@ impl<'db> UpcastFrom<DbInterner<'db>, ty::OutlivesPredicate<DbInterner<'db>, Reg
 
 impl<'db> rustc_type_ir::inherent::Predicate<DbInterner<'db>> for Predicate<'db> {
     fn as_clause(self) -> Option<<DbInterner<'db> as rustc_type_ir::Interner>::Clause> {
-        match self.clone().kind().skip_binder() {
+        match self.kind().skip_binder() {
             PredicateKind::Clause(..) => Some(self.expect_clause()),
             _ => None,
         }
@@ -712,8 +708,8 @@ impl<'db> rustc_type_ir::inherent::Predicate<DbInterner<'db>> for Predicate<'db>
 impl<'db> Predicate<'db> {
     /// Assert that the predicate is a clause.
     pub fn expect_clause(self) -> Clause<'db> {
-        match self.clone().kind().skip_binder() {
-            PredicateKind::Clause(..) => Clause(self.clone()),
+        match self.kind().skip_binder() {
+            PredicateKind::Clause(..) => Clause(self),
             _ => panic!("{self:?} is not a clause"),
         }
     }
@@ -724,7 +720,7 @@ impl<'db> TypeVisitable<DbInterner<'db>> for Clause<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        visitor.visit_predicate(self.clone().as_predicate())
+        visitor.visit_predicate((*self).as_predicate())
     }
 }
 
@@ -733,10 +729,10 @@ impl<'db> TypeFoldable<DbInterner<'db>> for Clause<'db> {
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        Ok(folder.try_fold_predicate(self.clone().as_predicate())?.expect_clause())
+        Ok(folder.try_fold_predicate(self.as_predicate())?.expect_clause())
     }
     fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
-        folder.fold_predicate(self.clone().as_predicate()).expect_clause()
+        folder.fold_predicate(self.as_predicate()).expect_clause()
     }
 }
 

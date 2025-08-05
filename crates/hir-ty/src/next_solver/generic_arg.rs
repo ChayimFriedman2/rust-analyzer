@@ -250,7 +250,7 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
         interner: DbInterner<'db>,
         def_id: <DbInterner<'db> as rustc_type_ir::Interner>::DefId,
     ) -> <DbInterner<'db> as rustc_type_ir::Interner>::GenericArgs {
-        Self::for_item(interner, def_id.into(), |name, index, kind, _| mk_param(index, name, kind))
+        Self::for_item(interner, def_id, |name, index, kind, _| mk_param(index, name, kind))
     }
 
     fn extend_with_error(
@@ -258,9 +258,9 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
         def_id: <DbInterner<'db> as rustc_type_ir::Interner>::DefId,
         original_args: &[<DbInterner<'db> as rustc_type_ir::Interner>::GenericArg],
     ) -> <DbInterner<'db> as rustc_type_ir::Interner>::GenericArgs {
-        Self::for_item(interner, def_id.into(), |name, index, kind, _| {
+        Self::for_item(interner, def_id, |name, index, kind, _| {
             if let Some(arg) = original_args.get(index as usize) {
-                arg.clone()
+                *arg
             } else {
                 error_for_param_kind(kind, interner)
             }
@@ -298,8 +298,7 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
                         interner,
                         TyKind::FnPtr(
                             sig_tys.map_bound(|s| {
-                                let inputs =
-                                    Ty::new_tup_from_iter(interner, s.clone().inputs().iter());
+                                let inputs = Ty::new_tup_from_iter(interner, s.inputs().iter());
                                 let output = s.output();
                                 FnSigTys {
                                     inputs_and_output: Tys::new_from_iter(

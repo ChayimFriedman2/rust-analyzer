@@ -171,7 +171,7 @@ impl<'db> IntoKind for Const<'db> {
     type Kind = ConstKind<'db>;
 
     fn kind(self) -> Self::Kind {
-        self.inner().internee.clone()
+        self.inner().internee
     }
 }
 
@@ -180,7 +180,7 @@ impl<'db> TypeVisitable<DbInterner<'db>> for Const<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        visitor.visit_const(self.clone())
+        visitor.visit_const(*self)
     }
 }
 
@@ -189,7 +189,7 @@ impl<'db> TypeSuperVisitable<DbInterner<'db>> for Const<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        match self.clone().kind() {
+        match (*self).kind() {
             ConstKind::Param(p) => p.visit_with(visitor),
             // FIXME(next-solver): need to add this impl upstream
             //ConstKind::Infer(i) => i.visit_with(visitor),
@@ -224,7 +224,7 @@ impl<'db> TypeSuperFoldable<DbInterner<'db>> for Const<'db> {
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        let kind = match self.clone().kind() {
+        let kind = match self.kind() {
             ConstKind::Param(p) => ConstKind::Param(p.try_fold_with(folder)?),
             // FIXME(next-solver): need to add this impl upstream
             //ConstKind::Infer(i) => ConstKind::Infer(i.try_fold_with(folder)?),
@@ -238,13 +238,13 @@ impl<'db> TypeSuperFoldable<DbInterner<'db>> for Const<'db> {
             ConstKind::Error(e) => ConstKind::Error(e.try_fold_with(folder)?),
             ConstKind::Expr(e) => ConstKind::Expr(e.try_fold_with(folder)?),
         };
-        if kind != self.clone().kind() { Ok(Const::new(folder.cx(), kind)) } else { Ok(self) }
+        if kind != self.kind() { Ok(Const::new(folder.cx(), kind)) } else { Ok(self) }
     }
     fn super_fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(
         self,
         folder: &mut F,
     ) -> Self {
-        let kind = match self.clone().kind() {
+        let kind = match self.kind() {
             ConstKind::Param(p) => ConstKind::Param(p.fold_with(folder)),
             // FIXME(next-solver): need to add this impl upstream
             //ConstKind::Infer(i) => ConstKind::Infer(i.fold_with(folder)),
@@ -256,7 +256,7 @@ impl<'db> TypeSuperFoldable<DbInterner<'db>> for Const<'db> {
             ConstKind::Error(e) => ConstKind::Error(e.fold_with(folder)),
             ConstKind::Expr(e) => ConstKind::Expr(e.fold_with(folder)),
         };
-        if kind != self.clone().kind() { Const::new(folder.cx(), kind) } else { self }
+        if kind != self.kind() { Const::new(folder.cx(), kind) } else { self }
     }
 }
 
@@ -340,7 +340,7 @@ impl<'db> PlaceholderLike<DbInterner<'db>> for PlaceholderConst {
     }
 
     fn with_updated_universe(self, ui: rustc_type_ir::UniverseIndex) -> Self {
-        Placeholder { universe: ui, bound: self.bound.clone() }
+        Placeholder { universe: ui, bound: self.bound }
     }
 
     fn new(ui: rustc_type_ir::UniverseIndex, var: rustc_type_ir::BoundVar) -> Self {

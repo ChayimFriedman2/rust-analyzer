@@ -69,36 +69,36 @@ impl<'db> Region<'db> {
 
         match &self.inner() {
             RegionKind::ReVar(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_INFER;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_RE_INFER;
             }
             RegionKind::RePlaceholder(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_PLACEHOLDER;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_RE_PLACEHOLDER;
             }
             RegionKind::ReEarlyParam(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_PARAM;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_RE_PARAM;
             }
             RegionKind::ReLateParam(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
             }
             RegionKind::ReStatic => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
             }
             RegionKind::ReBound(..) => {
-                flags = flags | TypeFlags::HAS_RE_BOUND;
+                flags |= TypeFlags::HAS_RE_BOUND;
             }
             RegionKind::ReErased => {
-                flags = flags | TypeFlags::HAS_RE_ERASED;
+                flags |= TypeFlags::HAS_RE_ERASED;
             }
             RegionKind::ReError(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_ERROR;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_ERROR;
             }
         }
 
@@ -186,10 +186,7 @@ impl core::fmt::Debug for BoundRegion {
 
 impl BoundRegionKind {
     pub fn is_named(&self) -> bool {
-        match self {
-            BoundRegionKind::Named(_) => true,
-            _ => false,
-        }
+        matches!(self, BoundRegionKind::Named(_))
     }
 
     pub fn get_name(&self) -> Option<Symbol> {
@@ -208,7 +205,7 @@ impl<'db> IntoKind for Region<'db> {
     type Kind = RegionKind<'db>;
 
     fn kind(self) -> Self::Kind {
-        self.inner().clone()
+        *self.inner()
     }
 }
 
@@ -217,7 +214,7 @@ impl<'db> TypeVisitable<DbInterner<'db>> for Region<'db> {
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        visitor.visit_region(self.clone())
+        visitor.visit_region(*self)
     }
 }
 
@@ -300,7 +297,7 @@ impl<'db> PlaceholderLike<DbInterner<'db>> for PlaceholderRegion {
     }
 
     fn with_updated_universe(self, ui: rustc_type_ir::UniverseIndex) -> Self {
-        Placeholder { universe: ui, bound: self.bound.clone() }
+        Placeholder { universe: ui, bound: self.bound }
     }
 
     fn new(ui: rustc_type_ir::UniverseIndex, bound: Self::Bound) -> Self {
@@ -308,7 +305,7 @@ impl<'db> PlaceholderLike<DbInterner<'db>> for PlaceholderRegion {
     }
 
     fn new_anon(ui: rustc_type_ir::UniverseIndex, var: rustc_type_ir::BoundVar) -> Self {
-        Placeholder { universe: ui, bound: BoundRegion { var: var, kind: BoundRegionKind::Anon } }
+        Placeholder { universe: ui, bound: BoundRegion { var, kind: BoundRegionKind::Anon } }
     }
 }
 

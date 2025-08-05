@@ -42,7 +42,7 @@ impl<'db> OpaqueTypeStorage<'db> {
             // FIXME(#120456) - is `swap_remove` correct?
             match self.opaque_types.swap_remove(&key) {
                 None => {
-                    panic!("reverted opaque type inference that was never registered: {:?}", key)
+                    panic!("reverted opaque type inference that was never registered: {key:?}")
                 }
                 Some(_) => {}
             }

@@ -11,7 +11,6 @@ pub(crate) mod path;
 
 use std::{
     cell::OnceCell,
-    collections::HashSet,
     iter, mem,
     ops::{self, Not as _},
 };
@@ -259,7 +258,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
         let const_ref = &self.store[const_ref.expr];
         match const_ref {
             hir_def::hir::Expr::Path(path) => {
-                path_to_const(self.db, self.resolver, path, || self.generics(), const_type.clone())
+                path_to_const(self.db, self.resolver, path, || self.generics(), const_type)
                     .unwrap_or_else(|| unknown_const(const_type))
             }
             hir_def::hir::Expr::Literal(literal) => intern_const_ref(
@@ -282,7 +281,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
     }
 
     pub(crate) fn lower_path_as_const(&mut self, path: &Path, const_type: Ty<'db>) -> Const<'db> {
-        path_to_const(self.db, self.resolver, path, || self.generics(), const_type.clone())
+        path_to_const(self.db, self.resolver, path, || self.generics(), const_type)
             .unwrap_or_else(|| unknown_const(const_type))
     }
 
@@ -406,13 +405,9 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
                         // other, but separately. So if the `T` refers to a type
                         // parameter of the outer function, it's just one binder
                         // away instead of two.
-                        let actual_opaque_type_data =
-                            self.with_debruijn(DebruijnIndex::ZERO, |ctx| {
-                                ctx.lower_impl_trait(
-                                    opaque_ty_id.into(),
-                                    bounds,
-                                    self.resolver.krate(),
-                                )
+                        let actual_opaque_type_data = self
+                            .with_debruijn(DebruijnIndex::ZERO, |ctx| {
+                                ctx.lower_impl_trait(opaque_ty_id, bounds, self.resolver.krate())
                             });
                         self.impl_trait_mode.opaque_type_data[idx] = actual_opaque_type_data;
 
@@ -585,9 +580,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
         match bound {
             &TypeBound::Path(path, TraitBoundModifier::None) | &TypeBound::ForLifetime(_, path) => {
                 // FIXME Don't silently drop the hrtb lifetimes here
-                if let Some((trait_ref, mut ctx)) =
-                    self.lower_trait_ref_from_path(path, self_ty.clone())
-                {
+                if let Some((trait_ref, mut ctx)) = self.lower_trait_ref_from_path(path, self_ty) {
                     // FIXME(sized-hierarchy): Remove this bound modifications once we have implemented
                     // sized-hierarchy correctly.
                     let meta_sized = LangItem::MetaSized
@@ -603,8 +596,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
                         ctx.ty_ctx().unsized_types.insert(self_ty);
                     } else {
                         if !ignore_bindings {
-                            assoc_bounds =
-                                ctx.assoc_type_bindings_from_type_bound(trait_ref.clone());
+                            assoc_bounds = ctx.assoc_type_bindings_from_type_bound(trait_ref);
                         }
                         clause = Some(Clause(Predicate::new(
                             interner,
@@ -624,7 +616,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
                 // `?Sized` has no of them.
                 // If we got another trait here ignore the bound completely.
                 let trait_id =
-                    self.lower_trait_ref_from_path(path, self_ty.clone()).map(|(trait_ref, _)| {
+                    self.lower_trait_ref_from_path(path, self_ty).map(|(trait_ref, _)| {
                         match trait_ref.def_id {
                             SolverDefId::TraitId(id) => id,
                             _ => unreachable!(),
@@ -667,7 +659,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
             > = Vec::new();
             for b in bounds {
                 let db = ctx.db;
-                ctx.lower_type_bound(b, self_ty.clone(), false).for_each(|b| {
+                ctx.lower_type_bound(b, self_ty, false).for_each(|b| {
                     if let Some(bound) = b
                         .kind()
                         .map_bound(|c| match c {
@@ -729,7 +721,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
             let mut multiple_same_projection = false;
             lowered_bounds.sort_unstable_by(|lhs, rhs| {
                 use std::cmp::Ordering;
-                match (lhs.clone().skip_binder(), rhs.clone().skip_binder()) {
+                match ((*lhs).skip_binder(), (*rhs).skip_binder()) {
                     (ExistentialPredicate::Trait(_), ExistentialPredicate::Trait(_)) => {
                         multiple_regular_traits = true;
                         // Order doesn't matter - we error
@@ -798,7 +790,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
 
         if let Some(bounds) = bounds {
             let region = match lifetime {
-                Some(it) => match it.clone().kind() {
+                Some(it) => match it.kind() {
                     rustc_type_ir::RegionKind::ReBound(db, var) => Region::new_bound(
                         self.interner,
                         db.shifted_out_to_binder(DebruijnIndex::from_u32(2)),
@@ -833,7 +825,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
         let predicates = self.with_shifted_in(DebruijnIndex::from_u32(1), |ctx| {
             let mut predicates = Vec::new();
             for b in bounds {
-                predicates.extend(ctx.lower_type_bound(b, self_ty.clone(), false));
+                predicates.extend(ctx.lower_type_bound(b, self_ty, false));
             }
 
             if !ctx.unsized_types.contains(&self_ty) {
@@ -842,7 +834,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
                     let trait_ref = TraitRef::new_from_args(
                         interner,
                         trait_id.into(),
-                        GenericArgs::new_from_iter(interner, [self_ty.clone().into()]),
+                        GenericArgs::new_from_iter(interner, [self_ty.into()]),
                     );
                     Clause(Predicate::new(
                         interner,
@@ -1030,7 +1022,7 @@ pub(crate) fn impl_self_ty_with_diagnostics_query<'db>(
 ) -> (EarlyBinder<'db, Ty<'db>>, Diagnostics) {
     // HACK HACK HACK delete pls
     thread_local! {
-        static REENTRANT_MAP: std::cell::RefCell<HashSet<ImplId>> = std::cell::RefCell::new(HashSet::new());
+        static REENTRANT_MAP: std::cell::RefCell<FxHashSet<ImplId>> = std::cell::RefCell::new(FxHashSet::default());
     }
     let new = REENTRANT_MAP.with_borrow_mut(|m| m.insert(impl_id));
     if !new {
@@ -1080,7 +1072,7 @@ pub(crate) fn const_param_ty_with_diagnostics_query<'db>(
         db,
         &resolver,
         &store,
-        def.parent().into(),
+        def.parent(),
         LifetimeElisionKind::AnonymousReportError,
     );
     let ty = match data {
@@ -1121,7 +1113,7 @@ pub(crate) fn field_types_with_diagnostics_query<'db>(
         db,
         &resolver,
         &var_data.store,
-        def.into(),
+        def,
         LifetimeElisionKind::AnonymousReportError,
     );
     for (field_id, field_data) in var_data.fields().iter() {
@@ -1232,7 +1224,7 @@ pub(crate) fn generic_predicates_for_param_query<'db>(
                 predicates.extend(ctx.lower_where_predicate(
                     pred,
                     true,
-                    &maybe_parent_generics,
+                    maybe_parent_generics,
                     PredicateFilter::All,
                 ));
             }
@@ -1240,7 +1232,7 @@ pub(crate) fn generic_predicates_for_param_query<'db>(
     }
 
     let args = GenericArgs::identity_for_item(interner, def.into());
-    if !args.clone().is_empty() {
+    if !args.is_empty() {
         let explicitly_unsized_tys = ctx.unsized_types;
         if let Some(implicitly_sized_predicates) =
             implicitly_sized_clauses(db, param_id.parent, &explicitly_unsized_tys, &args, &resolver)
@@ -1321,7 +1313,7 @@ where
         db,
         &resolver,
         generics.store(),
-        def.into(),
+        def,
         LifetimeElisionKind::AnonymousReportError,
     );
 
@@ -1338,7 +1330,7 @@ where
                 predicates.extend(ctx.lower_where_predicate(
                     pred,
                     false,
-                    &maybe_parent_generics,
+                    maybe_parent_generics,
                     predicate_filter,
                 ));
             }
@@ -1364,14 +1356,14 @@ where
                         continue;
                     };
                     let idx = idx as u32 + generics.parent_count as u32;
-                    let param_ty = Ty::new_param(DbInterner::new(db), idx, p.name.clone()).into();
+                    let param_ty = Ty::new_param(DbInterner::new(db), idx, p.name.clone());
                     if explicitly_unsized_tys.contains(&param_ty) {
                         continue;
                     }
                     let trait_ref = TraitRef::new_from_args(
                         interner,
                         sized_trait.into(),
-                        GenericArgs::new_from_iter(interner, [param_ty.clone().into()]),
+                        GenericArgs::new_from_iter(interner, [param_ty.into()]),
                     );
                     let clause = Clause(Predicate::new(
                         interner,
@@ -1571,7 +1563,7 @@ fn fn_sig_for_fn<'db>(
 fn type_for_adt<'db>(db: &'db dyn HirDatabase, adt: AdtId) -> EarlyBinder<'db, Ty<'db>> {
     let interner = DbInterner::new_with(db, None, None);
     let args = GenericArgs::identity_for_item(interner, adt.into());
-    let ty = Ty::new_adt(DbInterner::new(db), AdtDef::new(adt.into(), interner), args);
+    let ty = Ty::new_adt(DbInterner::new(db), AdtDef::new(adt, interner), args);
     EarlyBinder::bind(ty)
 }
 
@@ -1580,7 +1572,7 @@ fn fn_sig_for_struct_constructor<'db>(
     def: StructId,
 ) -> EarlyBinder<'db, PolyFnSig<'db>> {
     let field_tys = db.field_types_ns(def.into());
-    let params = field_tys.iter().map(|(_, ty)| ty.skip_binder().clone());
+    let params = field_tys.iter().map(|(_, ty)| ty.skip_binder());
     let ret = type_for_adt(db, def.into()).skip_binder();
 
     let inputs_and_output = Tys::new_from_iter(DbInterner::new(db), params.chain(Some(ret)));
@@ -1597,7 +1589,7 @@ fn fn_sig_for_enum_variant_constructor<'db>(
     def: EnumVariantId,
 ) -> EarlyBinder<'db, PolyFnSig<'db>> {
     let field_tys = db.field_types_ns(def.into());
-    let params = field_tys.iter().map(|(_, ty)| ty.skip_binder().clone());
+    let params = field_tys.iter().map(|(_, ty)| ty.skip_binder());
     let parent = def.lookup(db).parent;
     let ret = type_for_adt(db, parent.into()).skip_binder();
 

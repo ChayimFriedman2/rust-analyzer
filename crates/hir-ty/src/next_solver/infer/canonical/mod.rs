@@ -78,7 +78,7 @@ impl<'db> InferCtxt<'db> {
             .collect();
 
         let canonical_inference_vars =
-            self.instantiate_canonical_vars(canonical.variables.clone(), |ui| universes[ui]);
+            self.instantiate_canonical_vars(canonical.variables, |ui| universes[ui]);
         let result = canonical.instantiate(self.interner, &canonical_inference_vars);
         (result, canonical_inference_vars)
     }
