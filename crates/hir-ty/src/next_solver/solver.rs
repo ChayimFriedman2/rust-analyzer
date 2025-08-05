@@ -60,7 +60,7 @@ impl<'db> SolverDelegate for SolverContext<'db> {
         arg: <Self::Interner as rustc_type_ir::Interner>::GenericArg,
         span: <Self::Interner as rustc_type_ir::Interner>::Span,
     ) -> <Self::Interner as rustc_type_ir::Interner>::GenericArg {
-        todo!()
+        unimplemented!()
     }
 
     fn leak_check(
@@ -82,7 +82,7 @@ impl<'db> SolverDelegate for SolverContext<'db> {
             >,
         >,
     > {
-        todo!()
+        unimplemented!()
     }
 
     fn make_deduplicated_outlives_constraints(
@@ -130,7 +130,7 @@ impl<'db> SolverDelegate for SolverContext<'db> {
             >,
         >,
     ) {
-        todo!()
+        unimplemented!()
     }
 
     fn fetch_eligible_assoc_item(
@@ -178,7 +178,7 @@ impl<'db> SolverDelegate for SolverContext<'db> {
         src: <Self::Interner as rustc_type_ir::Interner>::Ty,
         assume: <Self::Interner as rustc_type_ir::Interner>::Const,
     ) -> Result<Certainty, NoSolution> {
-        todo!()
+        unimplemented!()
     }
 
     fn evaluate_const(
@@ -186,7 +186,7 @@ impl<'db> SolverDelegate for SolverContext<'db> {
         param_env: <Self::Interner as rustc_type_ir::Interner>::ParamEnv,
         uv: rustc_type_ir::UnevaluatedConst<Self::Interner>,
     ) -> Option<<Self::Interner as rustc_type_ir::Interner>::Const> {
-        todo!()
+        unimplemented!()
     }
 
     fn compute_goal_fast_path(

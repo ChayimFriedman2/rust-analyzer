@@ -591,7 +591,7 @@ impl<'db> rustc_type_ir::inherent::Ty<DbInterner<'db>> for Ty<'db> {
                 );
                 TyKind::new_projection_from_args(tcx, assoc_items[0], tcx.mk_args(&[self.into()]))
                 */
-                todo!()
+                unimplemented!()
             }
 
             TyKind::Pat(ty, _) => ty.discriminant_ty(interner),
@@ -631,7 +631,7 @@ impl<'db> rustc_type_ir::inherent::Ty<DbInterner<'db>> for Ty<'db> {
                     self
                 )
             }
-            TyKind::UnsafeBinder(..) => todo!(),
+            TyKind::UnsafeBinder(..) => unimplemented!(),
         }
     }
 

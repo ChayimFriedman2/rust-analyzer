@@ -2,8 +2,8 @@
 
 use base_db::Crate;
 use chalk_ir::{
-    CanonicalVarKind, CanonicalVarKinds, InferenceVar, Substitution, TyVariableKind, WellFormed,
-    fold::Shift, interner::HasInterner,
+    CanonicalVarKind, CanonicalVarKinds, ForeignDefId, InferenceVar, Substitution, TyVariableKind,
+    WellFormed, fold::Shift, interner::HasInterner,
 };
 use hir_def::{
     CallableDefId, ConstParamId, FunctionId, GeneralConstId, LifetimeParamId, TypeAliasId,
@@ -32,7 +32,7 @@ use crate::{
         Binder, ClauseKind, ConstBytes, TraitPredicate, UnevaluatedConst,
         interner::{AdtDef, BoundVarKind, BoundVarKinds, DbInterner},
     },
-    to_assoc_type_id, to_chalk_trait_id,
+    to_assoc_type_id, to_chalk_trait_id, to_foreign_def_id,
 };
 
 use super::{
@@ -919,9 +919,9 @@ pub fn convert_canonical_args_for_result<'db>(
                 chalk_ir::VariableKind::Const(crate::TyKind::Error.intern(Interner)),
                 chalk_ir::UniverseIndex::ROOT,
             ),
-            rustc_type_ir::CanonicalVarKind::PlaceholderTy(_) => todo!(),
-            rustc_type_ir::CanonicalVarKind::PlaceholderRegion(_) => todo!(),
-            rustc_type_ir::CanonicalVarKind::PlaceholderConst(_) => todo!(),
+            rustc_type_ir::CanonicalVarKind::PlaceholderTy(_) => unimplemented!(),
+            rustc_type_ir::CanonicalVarKind::PlaceholderRegion(_) => unimplemented!(),
+            rustc_type_ir::CanonicalVarKind::PlaceholderConst(_) => unimplemented!(),
         }),
     );
     chalk_ir::Canonical {
@@ -1034,7 +1034,11 @@ pub(crate) fn convert_ty_for_result<'db>(interner: DbInterner<'db>, ty: Ty<'db>)
                 rustc_type_ir::InferTy::FloatVar(var) => {
                     (InferenceVar::from(var.as_u32()), TyVariableKind::Float)
                 }
-                _ => todo!(),
+                rustc_type_ir::InferTy::FreshFloatTy(..)
+                | rustc_type_ir::InferTy::FreshIntTy(..)
+                | rustc_type_ir::InferTy::FreshTy(..) => {
+                    panic!("Freshening shouldn't happen.")
+                }
             };
             TyKind::InferenceVar(var, kind)
         }
@@ -1088,8 +1092,8 @@ pub(crate) fn convert_ty_for_result<'db>(interner: DbInterner<'db>, ty: Ty<'db>)
                     substitution,
                 }))
             }
-            rustc_type_ir::AliasTyKind::Inherent => todo!(),
-            rustc_type_ir::AliasTyKind::Free => todo!(),
+            rustc_type_ir::AliasTyKind::Inherent => unimplemented!(),
+            rustc_type_ir::AliasTyKind::Free => unimplemented!(),
         },
 
         rustc_type_ir::TyKind::Placeholder(placeholder) => {
@@ -1220,8 +1224,14 @@ pub(crate) fn convert_ty_for_result<'db>(interner: DbInterner<'db>, ty: Ty<'db>)
             TyKind::Slice(ty)
         }
 
-        rustc_type_ir::TyKind::Foreign(_) => todo!(),
-        rustc_type_ir::TyKind::Pat(_, _) => todo!(),
+        rustc_type_ir::TyKind::Foreign(foreign) => {
+            let def_id = match foreign {
+                SolverDefId::ForeignId(id) => id,
+                _ => unreachable!(),
+            };
+            TyKind::Foreign(to_foreign_def_id(def_id))
+        }
+        rustc_type_ir::TyKind::Pat(_, _) => unimplemented!(),
         rustc_type_ir::TyKind::RawPtr(ty, mutability) => {
             let mutability = match mutability {
                 rustc_ast_ir::Mutability::Mut => chalk_ir::Mutability::Mut,
@@ -1249,7 +1259,7 @@ pub(crate) fn convert_ty_for_result<'db>(interner: DbInterner<'db>, ty: Ty<'db>)
             let subst = convert_args_for_result(interner, args.as_slice());
             TyKind::Closure(id.into(), subst)
         }
-        rustc_type_ir::TyKind::CoroutineClosure(_, _) => todo!(),
+        rustc_type_ir::TyKind::CoroutineClosure(_, _) => unimplemented!(),
         rustc_type_ir::TyKind::Coroutine(def_id, args) => {
             let id = match def_id {
                 SolverDefId::InternedCoroutineId(id) => id,
@@ -1267,19 +1277,21 @@ pub(crate) fn convert_ty_for_result<'db>(interner: DbInterner<'db>, ty: Ty<'db>)
             TyKind::CoroutineWitness(id.into(), subst)
         }
 
-        rustc_type_ir::TyKind::Param(_) => todo!(),
-        rustc_type_ir::TyKind::UnsafeBinder(_) => todo!(),
+        rustc_type_ir::TyKind::Param(_) => unimplemented!(),
+        rustc_type_ir::TyKind::UnsafeBinder(_) => unimplemented!(),
     }
     .intern(Interner)
 }
 
 fn convert_const_for_result<'db>(interner: DbInterner<'db>, const_: Const<'db>) -> crate::Const {
     let value: chalk_ir::ConstValue<Interner> = match const_.kind() {
-        rustc_type_ir::ConstKind::Param(_) => todo!(),
+        rustc_type_ir::ConstKind::Param(_) => unimplemented!(),
         rustc_type_ir::ConstKind::Infer(rustc_type_ir::InferConst::Var(var)) => {
             chalk_ir::ConstValue::InferenceVar(chalk_ir::InferenceVar::from(var.as_u32()))
         }
-        rustc_type_ir::ConstKind::Infer(rustc_type_ir::InferConst::Fresh(fresh)) => todo!(),
+        rustc_type_ir::ConstKind::Infer(rustc_type_ir::InferConst::Fresh(fresh)) => {
+            panic!("Vars should not be freshened.")
+        }
         rustc_type_ir::ConstKind::Bound(debruijn_index, var) => {
             chalk_ir::ConstValue::BoundVar(chalk_ir::BoundVar::new(
                 chalk_ir::DebruijnIndex::new(debruijn_index.as_u32()),
@@ -1319,14 +1331,14 @@ fn convert_const_for_result<'db>(interner: DbInterner<'db>, const_: Const<'db>) 
                 interned: ConstScalar::Unknown,
             })
         }
-        rustc_type_ir::ConstKind::Expr(_) => todo!(),
+        rustc_type_ir::ConstKind::Expr(_) => unimplemented!(),
     };
     chalk_ir::ConstData { ty: crate::TyKind::Error.intern(Interner), value }.intern(Interner)
 }
 
 fn convert_region_for_result<'db>(region: Region<'db>) -> crate::Lifetime {
     match region.kind() {
-        rustc_type_ir::RegionKind::ReEarlyParam(early) => todo!(),
+        rustc_type_ir::RegionKind::ReEarlyParam(early) => unimplemented!(),
         rustc_type_ir::RegionKind::ReBound(db, bound) => chalk_ir::Lifetime::new(
             Interner,
             chalk_ir::LifetimeData::BoundVar(chalk_ir::BoundVar::new(
@@ -1334,7 +1346,7 @@ fn convert_region_for_result<'db>(region: Region<'db>) -> crate::Lifetime {
                 bound.var.as_usize(),
             )),
         ),
-        rustc_type_ir::RegionKind::ReLateParam(_) => todo!(),
+        rustc_type_ir::RegionKind::ReLateParam(_) => unimplemented!(),
         rustc_type_ir::RegionKind::ReStatic => {
             chalk_ir::Lifetime::new(Interner, chalk_ir::LifetimeData::Static)
         }

@@ -280,7 +280,7 @@ impl PrimitiveExt for Primitive {
 
 impl<'db> HasDataLayout for DbInterner<'db> {
     fn data_layout(&self) -> &rustc_abi::TargetDataLayout {
-        todo!()
+        unimplemented!()
     }
 }
 

@@ -673,8 +673,8 @@ impl<'db> InferCtxt<'db> {
                 defining_opaque_types_and_generators.contains(&id.into())
             }
             TypingMode::Coherence | TypingMode::PostAnalysis => false,
-            TypingMode::Borrowck { defining_opaque_types } => todo!(),
-            TypingMode::PostBorrowckAnalysis { defined_opaque_types } => todo!(),
+            TypingMode::Borrowck { defining_opaque_types } => unimplemented!(),
+            TypingMode::PostBorrowckAnalysis { defined_opaque_types } => unimplemented!(),
         }
     }
 
