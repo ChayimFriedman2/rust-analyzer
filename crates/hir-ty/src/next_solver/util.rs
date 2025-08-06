@@ -304,21 +304,19 @@ impl<'db> CoroutineArgsExt<'db> for CoroutineArgs<DbInterner<'db>> {
 }
 
 /// Finds the max universe present
-pub struct MaxUniverse<'_self> {
-    // FIXME(next-solve): remove this when DbInterner carries a 'db lifetime, this is just to not have to use 'static
-    _self: &'_self (),
+pub struct MaxUniverse {
     max_universe: UniverseIndex,
 }
 
-impl Default for MaxUniverse<'_> {
+impl Default for MaxUniverse {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MaxUniverse<'_> {
+impl MaxUniverse {
     pub fn new() -> Self {
-        MaxUniverse { _self: &(), max_universe: UniverseIndex::ROOT }
+        MaxUniverse { max_universe: UniverseIndex::ROOT }
     }
 
     pub fn max_universe(self) -> UniverseIndex {
@@ -326,7 +324,7 @@ impl MaxUniverse<'_> {
     }
 }
 
-impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse<'db> {
+impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse {
     type Result = ();
 
     fn visit_ty(&mut self, t: Ty<'db>) {

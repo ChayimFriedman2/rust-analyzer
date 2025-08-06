@@ -865,7 +865,6 @@ impl<'db> rustc_type_ir::inherent::Clause<DbInterner<'db>> for Clause<'db> {
         let bound_vars =
             BoundVarKinds::new_from_iter(cx, trait_bound_vars.iter().chain(pred_bound_vars.iter()));
 
-        // FIXME: Is it really perf sensitive to use reuse_or_mk_predicate here?
         let predicate: Predicate<'db> =
             ty::Binder::bind_with_vars(PredicateKind::Clause(new), bound_vars).upcast(cx);
         predicate.expect_clause()

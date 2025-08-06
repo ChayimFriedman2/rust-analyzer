@@ -354,10 +354,20 @@ pub struct DepNodeIndex;
 #[derive(Debug)]
 pub struct Tracked<T: fmt::Debug + Clone>(T);
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)] // FIXME implement Debug by hand
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Placeholder<T> {
     pub universe: UniverseIndex,
     pub bound: T,
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Placeholder<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        if self.universe == UniverseIndex::ROOT {
+            write!(f, "!{:?}", self.bound)
+        } else {
+            write!(f, "!{}_{:?}", self.universe.index(), self.bound)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -1216,8 +1226,6 @@ impl<'db> rustc_type_ir::Interner for DbInterner<'db> {
 
         // Search for a predicate like `Self : Sized` amongst the trait bounds.
         let predicates = self.predicates_of(def_id);
-        // FIXME: I don't think this worked for generic associated associated types,
-        // because the parent args are *after* the item args
         elaborate(self, predicates.iter_identity()).any(|pred| match pred.kind().skip_binder() {
             ClauseKind::Trait(ref trait_pred) => {
                 trait_pred.def_id() == sized_def_id

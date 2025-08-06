@@ -113,7 +113,7 @@ pub struct EarlyParamRegion {
     pub index: u32,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)] // FIXME implement Debug manually
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 /// The parameter representation of late-bound function parameters, "some region
 /// at least as big as the scope `fr.scope`".
 ///
@@ -127,7 +127,13 @@ pub struct LateParamRegion {
     pub bound_region: BoundRegionKind,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)] // FIXME implement Debug manually
+impl std::fmt::Debug for LateParamRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReLateParam({:?}, {:?})", self.scope, self.bound_region)
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BoundRegionKind {
     /// An anonymous region parameter for a given fn (&T)
     Anon,
@@ -141,6 +147,18 @@ pub enum BoundRegionKind {
     /// Anonymous region for the implicit env pointer parameter
     /// to a closure
     ClosureEnv,
+}
+
+impl std::fmt::Debug for BoundRegionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            BoundRegionKind::Anon => write!(f, "BrAnon"),
+            BoundRegionKind::Named(did) => {
+                write!(f, "BrNamed({did:?})")
+            }
+            BoundRegionKind::ClosureEnv => write!(f, "BrEnv"),
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]

@@ -666,7 +666,7 @@ impl<'db> rustc_type_ir::inherent::Tys<DbInterner<'db>> for Tys<'db> {
 
 pub type PlaceholderTy = Placeholder<BoundTy>;
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)] // FIXME implement Debug by hand
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ParamTy {
     pub index: u32,
 }
@@ -677,10 +677,25 @@ impl ParamTy {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)] // FIXME implement Debug by hand
+impl std::fmt::Debug for ParamTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.index)
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BoundTy {
     pub var: BoundVar,
     pub kind: BoundTyKind,
+}
+
+impl std::fmt::Debug for BoundTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            BoundTyKind::Anon => write!(f, "{:?}", self.var),
+            BoundTyKind::Param(def_id) => write!(f, "{def_id:?}"),
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
