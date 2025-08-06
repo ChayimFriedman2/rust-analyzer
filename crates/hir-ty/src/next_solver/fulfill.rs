@@ -135,12 +135,7 @@ impl<'db> FulfillmentCtxt<'db> {
             .pending
             .drain(..)
             .map(|(obligation, _)| NextSolverError::Ambiguity(obligation))
-            .chain(
-                self.obligations
-                    .overflowed
-                    .drain(..)
-                    .map(|obligation| NextSolverError::Overflow(obligation)),
-            )
+            .chain(self.obligations.overflowed.drain(..).map(NextSolverError::Overflow))
             .collect()
     }
 

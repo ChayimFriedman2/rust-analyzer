@@ -104,11 +104,7 @@ impl<'db> NormalizationFolder<'_, 'db> {
             tcx,
             self.at.cause.clone(),
             self.at.param_env,
-            PredicateKind::AliasRelate(
-                alias_term.into(),
-                infer_term.into(),
-                AliasRelationDirection::Equate,
-            ),
+            PredicateKind::AliasRelate(alias_term, infer_term, AliasRelationDirection::Equate),
         );
 
         self.fulfill_cx.register_predicate_obligation(infcx, obligation);

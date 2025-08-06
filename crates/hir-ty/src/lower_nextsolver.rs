@@ -1360,7 +1360,7 @@ where
                         continue;
                     };
                     let idx = idx as u32 + generics.parent_count as u32;
-                    let param_ty = Ty::new_param(interner, idx, p.name.clone()).into();
+                    let param_ty = Ty::new_param(interner, idx, p.name.clone());
                     if explicitly_unsized_tys.contains(&param_ty) {
                         continue;
                     }
@@ -1565,7 +1565,7 @@ fn fn_sig_for_fn<'db>(
 fn type_for_adt<'db>(db: &'db dyn HirDatabase, adt: AdtId) -> EarlyBinder<'db, Ty<'db>> {
     let interner = DbInterner::new_with(db, None, None);
     let args = GenericArgs::identity_for_item(interner, adt.into());
-    let ty = Ty::new_adt(interner, AdtDef::new(adt.into(), interner), args);
+    let ty = Ty::new_adt(interner, AdtDef::new(adt, interner), args);
     EarlyBinder::bind(ty)
 }
 

@@ -156,7 +156,7 @@ impl<'a, 'db> At<'a, 'db> {
     where
         T: ToTrace<'db>,
     {
-        self.clone().eq_trace(
+        self.eq_trace(
             define_opaque_types,
             ToTrace::to_trace(self.cause, expected, actual),
             expected,
