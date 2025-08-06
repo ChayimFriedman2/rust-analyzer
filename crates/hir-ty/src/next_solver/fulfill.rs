@@ -76,10 +76,10 @@ impl<'db> ObligationStorage<'db> {
         &mut self,
         cond: impl Fn(&PredicateObligation<'db>) -> bool,
     ) -> PendingObligations<'db> {
-        let (unstalled, pending) =
+        let (not_stalled, pending) =
             mem::take(&mut self.pending).into_iter().partition(|(o, _)| cond(o));
         self.pending = pending;
-        unstalled
+        not_stalled
     }
 
     fn on_fulfillment_overflow(&mut self, infcx: &InferCtxt<'db>) {
