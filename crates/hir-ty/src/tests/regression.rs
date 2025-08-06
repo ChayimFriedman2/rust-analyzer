@@ -1227,6 +1227,8 @@ fn mamba(a: U32!(), p: u32) -> u32 {
 
 #[test]
 fn for_loop_block_expr_iterable() {
+    // FIXME(next-solver): it would be nice to be able to hint `IntoIterator::IntoIter<()>` instead of just `{unknown}`
+    // (even though `(): IntoIterator` does not hold)
     check_infer(
         r#"
 //- minicore: iterator
