@@ -71,9 +71,15 @@ impl<'db> std::fmt::Debug for InternedWrapperNoDebug<WithCachedTypeInfo<ConstKin
 
 pub type PlaceholderConst = Placeholder<rustc_type_ir::BoundVar>;
 
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)] // FIXME implement manually
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub struct ParamConst {
     pub index: u32,
+}
+
+impl std::fmt::Debug for ParamConst {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.index)
+    }
 }
 
 /// A type-level constant value.
