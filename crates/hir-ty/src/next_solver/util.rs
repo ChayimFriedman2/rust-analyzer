@@ -11,12 +11,14 @@ use la_arena::Idx;
 use rustc_abi::{Float, HasDataLayout, Integer, IntegerType, Primitive, ReprOptions};
 use rustc_type_ir::data_structures::IndexMap;
 use rustc_type_ir::inherent::{
-    AdtDef, Const as _, GenericArg as _, GenericArgs as _, Region as _, SliceLike, Ty as _,
+    AdtDef, Const as _, GenericArg as _, GenericArgs as _, ParamEnv as _, Region as _, SliceLike,
+    Ty as _,
 };
+use rustc_type_ir::lang_items::TraitSolverLangItem;
 use rustc_type_ir::solve::SizedTraitKind;
 use rustc_type_ir::{
-    BoundVar, Canonical, DebruijnIndex, GenericArgKind, INNERMOST, TypeFlags, TypeVisitable,
-    TypeVisitableExt,
+    BoundVar, Canonical, DebruijnIndex, GenericArgKind, INNERMOST, Interner, PredicatePolarity,
+    TypeFlags, TypeVisitable, TypeVisitableExt,
 };
 use rustc_type_ir::{
     ConstKind, CoroutineArgs, FloatTy, IntTy, RegionKind, TypeFolder, TypeSuperFoldable,
@@ -27,7 +29,8 @@ use rustc_type_ir::{InferCtxtLike, TypeFoldable};
 use crate::lower_nextsolver::{LifetimeElisionKind, TyLoweringContext};
 use crate::next_solver::infer::InferCtxt;
 use crate::next_solver::{
-    CanonicalVarKind, FxIndexMap, Placeholder, PlaceholderConst, PlaceholderRegion, TypingMode,
+    CanonicalVarKind, FxIndexMap, ParamEnv, Placeholder, PlaceholderConst, PlaceholderRegion,
+    TypingMode,
 };
 use crate::{
     db::HirDatabase,
@@ -1011,4 +1014,51 @@ pub(crate) fn needs_normalization<'db, T: TypeVisitable<DbInterner<'db>>>(
     }
 
     value.has_type_flags(flags)
+}
+
+pub fn sizedness_fast_path<'db>(
+    tcx: DbInterner<'db>,
+    predicate: Predicate<'db>,
+    param_env: ParamEnv<'db>,
+) -> bool {
+    // Proving `Sized`/`MetaSized`, very often on "obviously sized" types like
+    // `&T`, accounts for about 60% percentage of the predicates we have to prove. No need to
+    // canonicalize and all that for such cases.
+    if let PredicateKind::Clause(ClauseKind::Trait(trait_pred)) = predicate.kind().skip_binder()
+        && trait_pred.polarity == PredicatePolarity::Positive
+    {
+        let sizedness = match tcx.as_lang_item(trait_pred.def_id()) {
+            Some(TraitSolverLangItem::Sized) => SizedTraitKind::Sized,
+            Some(TraitSolverLangItem::MetaSized) => SizedTraitKind::MetaSized,
+            _ => return false,
+        };
+
+        // FIXME(sized_hierarchy): this temporarily reverts the `sized_hierarchy` feature
+        // while a proper fix for `tests/ui/sized-hierarchy/incomplete-inference-issue-143992.rs`
+        // is pending a proper fix
+        if matches!(sizedness, SizedTraitKind::MetaSized) {
+            return true;
+        }
+
+        if trait_pred.self_ty().has_trivial_sizedness(tcx, sizedness) {
+            tracing::debug!("fast path -- trivial sizedness");
+            return true;
+        }
+
+        if matches!(trait_pred.self_ty().kind(), TyKind::Param(_) | TyKind::Placeholder(_)) {
+            for clause in param_env.caller_bounds().iter() {
+                if let ClauseKind::Trait(clause_pred) = clause.kind().skip_binder()
+                    && clause_pred.polarity == PredicatePolarity::Positive
+                    && clause_pred.self_ty() == trait_pred.self_ty()
+                    && (clause_pred.def_id() == trait_pred.def_id()
+                        || (sizedness == SizedTraitKind::MetaSized
+                            && tcx.is_lang_item(clause_pred.def_id(), TraitSolverLangItem::Sized)))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }

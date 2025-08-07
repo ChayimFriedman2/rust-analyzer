@@ -61,6 +61,17 @@ impl<'db> Const<'db> {
     pub fn is_ct_infer(&self) -> bool {
         matches!(&self.inner().internee, ConstKind::Infer(_))
     }
+
+    pub fn is_trivially_wf(self) -> bool {
+        match self.kind() {
+            ConstKind::Param(_) | ConstKind::Placeholder(_) | ConstKind::Bound(..) => true,
+            ConstKind::Infer(_)
+            | ConstKind::Unevaluated(..)
+            | ConstKind::Value(_)
+            | ConstKind::Error(_)
+            | ConstKind::Expr(_) => false,
+        }
+    }
 }
 
 impl<'db> std::fmt::Debug for InternedWrapperNoDebug<WithCachedTypeInfo<ConstKind<'db>>> {

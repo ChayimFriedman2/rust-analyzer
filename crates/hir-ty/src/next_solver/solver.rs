@@ -3,15 +3,20 @@
 use hir_def::{AssocItemId, GeneralConstId, TypeAliasId};
 use rustc_next_trait_solver::delegate::SolverDelegate;
 use rustc_type_ir::{
-    UniverseIndex,
-    inherent::{SliceLike, Span as _},
+    InferCtxtLike, Interner, PredicatePolarity, TypeFlags, TypeVisitableExt, UniverseIndex,
+    inherent::{IntoKind, SliceLike, Span as _, Term as _, Ty as _},
+    lang_items::TraitSolverLangItem,
     solve::{Certainty, NoSolution},
 };
 
 use crate::{
     TraitRefExt,
     db::HirDatabase,
-    next_solver::mapping::{ChalkToNextSolver, convert_args_for_result},
+    next_solver::{
+        ClauseKind, CoercePredicate, PredicateKind, SubtypePredicate,
+        mapping::{ChalkToNextSolver, convert_args_for_result},
+        util::sizedness_fast_path,
+    },
 };
 
 use super::{
@@ -208,6 +213,77 @@ impl<'db> SolverDelegate for SolverContext<'db> {
         >,
         span: <Self::Interner as rustc_type_ir::Interner>::Span,
     ) -> Option<Certainty> {
-        None
+        if let Some(trait_pred) = goal.predicate.as_trait_clause() {
+            if self.shallow_resolve(trait_pred.self_ty().skip_binder()).is_ty_var()
+                // We don't do this fast path when opaques are defined since we may
+                // eventually use opaques to incompletely guide inference via ty var
+                // self types.
+                // FIXME: Properly consider opaques here.
+                && self.inner.borrow_mut().opaque_types().is_empty()
+            {
+                return Some(Certainty::AMBIGUOUS);
+            }
+
+            if trait_pred.polarity() == PredicatePolarity::Positive {
+                match self.0.cx().as_lang_item(trait_pred.def_id()) {
+                    Some(TraitSolverLangItem::Sized) | Some(TraitSolverLangItem::MetaSized) => {
+                        let predicate = self.resolve_vars_if_possible(goal.predicate);
+                        if sizedness_fast_path(self.cx(), predicate, goal.param_env) {
+                            return Some(Certainty::Yes);
+                        }
+                    }
+                    Some(TraitSolverLangItem::Copy | TraitSolverLangItem::Clone) => {
+                        let self_ty =
+                            self.resolve_vars_if_possible(trait_pred.self_ty().skip_binder());
+                        // Unlike `Sized` traits, which always prefer the built-in impl,
+                        // `Copy`/`Clone` may be shadowed by a param-env candidate which
+                        // could force a lifetime error or guide inference. While that's
+                        // not generally desirable, it is observable, so for now let's
+                        // ignore this fast path for types that have regions or infer.
+                        if !self_ty
+                            .has_type_flags(TypeFlags::HAS_FREE_REGIONS | TypeFlags::HAS_INFER)
+                            && self_ty.is_trivially_pure_clone_copy()
+                        {
+                            return Some(Certainty::Yes);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let pred = goal.predicate.kind();
+        match pred.no_bound_vars()? {
+            PredicateKind::Clause(ClauseKind::RegionOutlives(outlives)) => Some(Certainty::Yes),
+            PredicateKind::Clause(ClauseKind::TypeOutlives(outlives)) => Some(Certainty::Yes),
+            PredicateKind::Subtype(SubtypePredicate { a, b, .. })
+            | PredicateKind::Coerce(CoercePredicate { a, b }) => {
+                if self.shallow_resolve(a).is_ty_var() && self.shallow_resolve(b).is_ty_var() {
+                    // FIXME: We also need to register a subtype relation between these vars
+                    // when those are added, and if they aren't in the same sub root then
+                    // we should mark this goal as `has_changed`.
+                    Some(Certainty::AMBIGUOUS)
+                } else {
+                    None
+                }
+            }
+            PredicateKind::Clause(ClauseKind::ConstArgHasType(ct, _)) => {
+                if self.shallow_resolve_const(ct).is_ct_infer() {
+                    Some(Certainty::AMBIGUOUS)
+                } else {
+                    None
+                }
+            }
+            PredicateKind::Clause(ClauseKind::WellFormed(arg)) => {
+                if arg.is_trivially_wf(self.interner) {
+                    Some(Certainty::Yes)
+                } else if arg.is_infer() {
+                    Some(Certainty::AMBIGUOUS)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 }

@@ -63,6 +63,13 @@ impl<'db> Term<'db> {
     pub fn expect_type(&self) -> Ty<'db> {
         self.as_type().expect("expected a type, but found a const")
     }
+
+    pub fn is_trivially_wf(&self, tcx: DbInterner<'db>) -> bool {
+        match self.kind() {
+            TermKind::Ty(ty) => ty.is_trivially_wf(tcx),
+            TermKind::Const(ct) => ct.is_trivially_wf(),
+        }
+    }
 }
 
 impl<'db> From<Ty<'db>> for GenericArg<'db> {

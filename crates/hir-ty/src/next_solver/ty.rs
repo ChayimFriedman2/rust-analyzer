@@ -2,12 +2,16 @@
 
 use intern::{Interned, Symbol, sym};
 use rustc_abi::{Float, Integer, Size};
-use rustc_ast_ir::{try_visit, visit::VisitorResult};
+use rustc_ast_ir::{Mutability, try_visit, visit::VisitorResult};
 use rustc_type_ir::{
     BoundVar, ClosureKind, FlagComputation, Flags, FloatTy, FloatVid, InferTy, IntTy, IntVid,
-    TypeFoldable, TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, UintTy, WithCachedTypeInfo,
-    inherent::{BoundVarLike, GenericArgs as _, IntoKind, ParamLike, PlaceholderLike, SliceLike},
+    TypeFoldable, TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitableExt, UintTy,
+    WithCachedTypeInfo,
+    inherent::{
+        AdtDef, BoundVarLike, GenericArgs as _, IntoKind, ParamLike, PlaceholderLike, SliceLike,
+    },
     relate::Relate,
+    solve::SizedTraitKind,
     walk::TypeWalker,
 };
 use salsa::plumbing::{AsId, FromId};
@@ -125,6 +129,176 @@ impl<'db> Ty<'db> {
 
     pub fn walk(self) -> TypeWalker<DbInterner<'db>> {
         TypeWalker::new(self.into())
+    }
+
+    /// Fast path helper for testing if a type is `Sized` or `MetaSized`.
+    ///
+    /// Returning true means the type is known to implement the sizedness trait. Returning `false`
+    /// means nothing -- could be sized, might not be.
+    ///
+    /// Note that we could never rely on the fact that a type such as `[_]` is trivially `!Sized`
+    /// because we could be in a type environment with a bound such as `[_]: Copy`. A function with
+    /// such a bound obviously never can be called, but that doesn't mean it shouldn't typecheck.
+    /// This is why this method doesn't return `Option<bool>`.
+    #[tracing::instrument(skip(tcx), level = "debug")]
+    pub fn has_trivial_sizedness(self, tcx: DbInterner<'db>, sizedness: SizedTraitKind) -> bool {
+        match self.kind() {
+            TyKind::Infer(InferTy::IntVar(_) | InferTy::FloatVar(_))
+            | TyKind::Uint(_)
+            | TyKind::Int(_)
+            | TyKind::Bool
+            | TyKind::Float(_)
+            | TyKind::FnDef(..)
+            | TyKind::FnPtr(..)
+            | TyKind::UnsafeBinder(_)
+            | TyKind::RawPtr(..)
+            | TyKind::Char
+            | TyKind::Ref(..)
+            | TyKind::Coroutine(..)
+            | TyKind::CoroutineWitness(..)
+            | TyKind::Array(..)
+            | TyKind::Pat(..)
+            | TyKind::Closure(..)
+            | TyKind::CoroutineClosure(..)
+            | TyKind::Never
+            | TyKind::Error(_) => true,
+
+            TyKind::Str | TyKind::Slice(_) | TyKind::Dynamic(_, _, _) => match sizedness {
+                SizedTraitKind::Sized => false,
+                SizedTraitKind::MetaSized => true,
+            },
+
+            TyKind::Foreign(..) => match sizedness {
+                SizedTraitKind::Sized | SizedTraitKind::MetaSized => false,
+            },
+
+            TyKind::Tuple(tys) => {
+                tys.last().is_none_or(|ty| ty.has_trivial_sizedness(tcx, sizedness))
+            }
+
+            TyKind::Adt(def, args) => def
+                .sizedness_constraint(tcx, sizedness)
+                .is_none_or(|ty| ty.instantiate(tcx, args).has_trivial_sizedness(tcx, sizedness)),
+
+            TyKind::Alias(..) | TyKind::Param(_) | TyKind::Placeholder(..) | TyKind::Bound(..) => {
+                false
+            }
+
+            TyKind::Infer(InferTy::TyVar(_)) => false,
+
+            TyKind::Infer(
+                InferTy::FreshTy(_) | InferTy::FreshIntTy(_) | InferTy::FreshFloatTy(_),
+            ) => {
+                panic!("`has_trivial_sizedness` applied to unexpected type: {:?}", self)
+            }
+        }
+    }
+
+    /// Fast path helper for primitives which are always `Copy` and which
+    /// have a side-effect-free `Clone` impl.
+    ///
+    /// Returning true means the type is known to be pure and `Copy+Clone`.
+    /// Returning `false` means nothing -- could be `Copy`, might not be.
+    ///
+    /// This is mostly useful for optimizations, as these are the types
+    /// on which we can replace cloning with dereferencing.
+    pub fn is_trivially_pure_clone_copy(self) -> bool {
+        match self.kind() {
+            TyKind::Bool | TyKind::Char | TyKind::Never => true,
+
+            // These aren't even `Clone`
+            TyKind::Str | TyKind::Slice(..) | TyKind::Foreign(..) | TyKind::Dynamic(..) => false,
+
+            TyKind::Infer(InferTy::FloatVar(_) | InferTy::IntVar(_))
+            | TyKind::Int(..)
+            | TyKind::Uint(..)
+            | TyKind::Float(..) => true,
+
+            // ZST which can't be named are fine.
+            TyKind::FnDef(..) => true,
+
+            TyKind::Array(element_ty, _len) => element_ty.is_trivially_pure_clone_copy(),
+
+            // A 100-tuple isn't "trivial", so doing this only for reasonable sizes.
+            TyKind::Tuple(field_tys) => {
+                field_tys.len() <= 3 && field_tys.iter().all(Self::is_trivially_pure_clone_copy)
+            }
+
+            TyKind::Pat(ty, _) => ty.is_trivially_pure_clone_copy(),
+
+            // Sometimes traits aren't implemented for every ABI or arity,
+            // because we can't be generic over everything yet.
+            TyKind::FnPtr(..) => false,
+
+            // Definitely absolutely not copy.
+            TyKind::Ref(_, _, Mutability::Mut) => false,
+
+            // The standard library has a blanket Copy impl for shared references and raw pointers,
+            // for all unsized types.
+            TyKind::Ref(_, _, Mutability::Not) | TyKind::RawPtr(..) => true,
+
+            TyKind::Coroutine(..) | TyKind::CoroutineWitness(..) => false,
+
+            // Might be, but not "trivial" so just giving the safe answer.
+            TyKind::Adt(..) | TyKind::Closure(..) | TyKind::CoroutineClosure(..) => false,
+
+            TyKind::UnsafeBinder(_) => false,
+
+            // Needs normalization or revealing to determine, so no is the safe answer.
+            TyKind::Alias(..) => false,
+
+            TyKind::Param(..)
+            | TyKind::Placeholder(..)
+            | TyKind::Bound(..)
+            | TyKind::Infer(..)
+            | TyKind::Error(..) => false,
+        }
+    }
+
+    pub fn is_trivially_wf(self, tcx: DbInterner<'db>) -> bool {
+        match self.kind() {
+            TyKind::Bool
+            | TyKind::Char
+            | TyKind::Int(_)
+            | TyKind::Uint(_)
+            | TyKind::Float(_)
+            | TyKind::Str
+            | TyKind::Never
+            | TyKind::Param(_)
+            | TyKind::Placeholder(_)
+            | TyKind::Bound(..) => true,
+
+            TyKind::Slice(ty) => {
+                ty.is_trivially_wf(tcx) && ty.has_trivial_sizedness(tcx, SizedTraitKind::Sized)
+            }
+            TyKind::RawPtr(ty, _) => ty.is_trivially_wf(tcx),
+
+            TyKind::FnPtr(sig_tys, _) => {
+                sig_tys.skip_binder().inputs_and_output.iter().all(|ty| ty.is_trivially_wf(tcx))
+            }
+            TyKind::Ref(_, ty, _) => ty.is_global() && ty.is_trivially_wf(tcx),
+
+            TyKind::Infer(infer) => match infer {
+                InferTy::TyVar(_) => false,
+                InferTy::IntVar(_) | InferTy::FloatVar(_) => true,
+                InferTy::FreshTy(_) | InferTy::FreshIntTy(_) | InferTy::FreshFloatTy(_) => true,
+            },
+
+            TyKind::Adt(_, _)
+            | TyKind::Tuple(_)
+            | TyKind::Array(..)
+            | TyKind::Foreign(_)
+            | TyKind::Pat(_, _)
+            | TyKind::FnDef(..)
+            | TyKind::UnsafeBinder(..)
+            | TyKind::Dynamic(..)
+            | TyKind::Closure(..)
+            | TyKind::CoroutineClosure(..)
+            | TyKind::Coroutine(..)
+            | TyKind::CoroutineWitness(..)
+            | TyKind::Alias(..)
+            | TyKind::Error(_) => false,
+        }
     }
 }
 

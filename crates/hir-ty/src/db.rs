@@ -296,6 +296,7 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     ) -> Ty;
 
     #[salsa::invoke(crate::traits::trait_solve_query)]
+    #[salsa::transparent]
     fn trait_solve(
         &self,
         krate: Crate,

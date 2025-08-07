@@ -262,6 +262,28 @@ impl<'db> Predicate<'db> {
 
         Some(Predicate::new(DbInterner::conjure(), kind))
     }
+
+    pub fn as_trait_clause(self) -> Option<PolyTraitPredicate<'db>> {
+        let predicate = self.kind();
+        match predicate.skip_binder() {
+            PredicateKind::Clause(ClauseKind::Trait(t)) => Some(predicate.rebind(t)),
+            PredicateKind::Clause(ClauseKind::Projection(..))
+            | PredicateKind::Clause(ClauseKind::HostEffect(..))
+            | PredicateKind::Clause(ClauseKind::ConstArgHasType(..))
+            | PredicateKind::Clause(ClauseKind::UnstableFeature(_))
+            | PredicateKind::NormalizesTo(..)
+            | PredicateKind::AliasRelate(..)
+            | PredicateKind::Subtype(..)
+            | PredicateKind::Coerce(..)
+            | PredicateKind::Clause(ClauseKind::RegionOutlives(..))
+            | PredicateKind::Clause(ClauseKind::WellFormed(..))
+            | PredicateKind::DynCompatible(..)
+            | PredicateKind::Clause(ClauseKind::TypeOutlives(..))
+            | PredicateKind::Clause(ClauseKind::ConstEvaluatable(..))
+            | PredicateKind::ConstEquate(..)
+            | PredicateKind::Ambiguous => None,
+        }
+    }
 }
 
 // FIXME: should make a "header" in interned_vec
