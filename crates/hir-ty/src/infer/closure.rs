@@ -1413,7 +1413,7 @@ impl InferenceContext<'_> {
             // without creating query cycles.
             return self.result.closure_info.get(id).map(|it| it.1 == FnTrait::Fn).unwrap_or(true);
         }
-        self.table.resolve_completely(ty).is_copy(self.db, self.owner)
+        self.table.resolve_completely(ty).is_copy(self.db, &mut self.table.trait_solver, self.owner)
     }
 
     fn select_from_expr(&mut self, expr: ExprId) {

@@ -26,7 +26,6 @@ use crate::{
     lower::{Diagnostics, GenericDefaults, GenericPredicates},
     method_resolution::{InherentImpls, TraitImpls, TyFingerprint},
     mir::{BorrowckResult, MirBody, MirLowerError},
-    traits::NextTraitSolveResult,
 };
 
 #[query_group::query_group]
@@ -294,15 +293,6 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
         projection: crate::ProjectionTy,
         env: Arc<TraitEnvironment>,
     ) -> Ty;
-
-    #[salsa::invoke(crate::traits::trait_solve_query)]
-    #[salsa::transparent]
-    fn trait_solve(
-        &self,
-        krate: Crate,
-        block: Option<BlockId>,
-        goal: crate::Canonical<crate::InEnvironment<crate::Goal>>,
-    ) -> NextTraitSolveResult;
 
     #[salsa::invoke(crate::drop::has_drop_glue)]
     #[salsa::cycle(cycle_result = crate::drop::has_drop_glue_cycle_result)]

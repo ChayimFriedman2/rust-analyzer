@@ -1932,12 +1932,15 @@ impl<'db> InferenceContext<'db> {
         Some(struct_.into())
     }
 
-    fn get_traits_in_scope(&self) -> Either<FxHashSet<TraitId>, &FxHashSet<TraitId>> {
-        let mut b_traits = self.resolver.traits_in_scope_from_block_scopes().peekable();
+    fn get_traits_in_scope<'a>(
+        resolver: &'a Resolver<'_>,
+        traits_in_scope: &'a FxHashSet<TraitId>,
+    ) -> Either<FxHashSet<TraitId>, &'a FxHashSet<TraitId>> {
+        let mut b_traits = resolver.traits_in_scope_from_block_scopes().peekable();
         if b_traits.peek().is_some() {
-            Either::Left(self.traits_in_scope.iter().copied().chain(b_traits).collect())
+            Either::Left(traits_in_scope.iter().copied().chain(b_traits).collect())
         } else {
-            Either::Right(&self.traits_in_scope)
+            Either::Right(traits_in_scope)
         }
     }
 }

@@ -33,7 +33,7 @@ use crate::{
     next_solver::SolverDefId,
     primitive::{FloatTy, IntTy, UintTy},
     to_chalk_trait_id,
-    traits::NextTraitSolveResult,
+    traits::{NextTraitSolveResult, TraitSolver},
     utils::all_super_traits,
 };
 
@@ -538,9 +538,8 @@ pub fn def_crates(db: &dyn HirDatabase, ty: &Ty, cur_crate: Crate) -> Option<Sma
 
 /// Look up the method with the given name.
 pub(crate) fn lookup_method(
-    db: &dyn HirDatabase,
     ty: &Canonical<Ty>,
-    env: Arc<TraitEnvironment>,
+    table: &mut InferenceTable<'_>,
     traits_in_scope: &FxHashSet<TraitId>,
     visible_from_module: VisibleFromModule,
     name: &Name,
@@ -548,8 +547,7 @@ pub(crate) fn lookup_method(
     let mut not_visible = None;
     let res = iterate_method_candidates(
         ty,
-        db,
-        env,
+        table,
         traits_in_scope,
         visible_from_module,
         Some(name),
@@ -703,8 +701,7 @@ impl ReceiverAdjustments {
 // FIXME add a context type here?
 pub(crate) fn iterate_method_candidates<T>(
     ty: &Canonical<Ty>,
-    db: &dyn HirDatabase,
-    env: Arc<TraitEnvironment>,
+    table: &mut InferenceTable<'_>,
     traits_in_scope: &FxHashSet<TraitId>,
     visible_from_module: VisibleFromModule,
     name: Option<&Name>,
@@ -712,10 +709,9 @@ pub(crate) fn iterate_method_candidates<T>(
     mut callback: impl FnMut(ReceiverAdjustments, AssocItemId, bool) -> Option<T>,
 ) -> Option<T> {
     let mut slot = None;
-    _ = iterate_method_candidates_dyn(
+    _ = iterate_method_candidates_dyn_with_table(
         ty,
-        db,
-        env,
+        table,
         traits_in_scope,
         visible_from_module,
         name,
@@ -1050,6 +1046,7 @@ pub fn check_orphan_rules(db: &dyn HirDatabase, impl_: ImplId) -> bool {
     is_not_orphan
 }
 
+/// Do not use this from hir-ty, only hir! It does not cache the trait solving result.
 pub fn iterate_path_candidates(
     ty: &Canonical<Ty>,
     db: &dyn HirDatabase,
@@ -1059,10 +1056,9 @@ pub fn iterate_path_candidates(
     name: Option<&Name>,
     callback: &mut dyn MethodCandidateCallback,
 ) -> ControlFlow<()> {
-    iterate_method_candidates_dyn(
+    iterate_method_candidates_dyn_with_table(
         ty,
-        db,
-        env,
+        &mut InferenceTable::new(db, env),
         traits_in_scope,
         visible_from_module,
         name,
@@ -1073,9 +1069,29 @@ pub fn iterate_path_candidates(
 }
 
 pub fn iterate_method_candidates_dyn(
-    ty: &Canonical<Ty>,
     db: &dyn HirDatabase,
+    ty: &Canonical<Ty>,
     env: Arc<TraitEnvironment>,
+    traits_in_scope: &FxHashSet<TraitId>,
+    visible_from_module: VisibleFromModule,
+    name: Option<&Name>,
+    mode: LookupMode,
+    callback: &mut dyn MethodCandidateCallback,
+) -> ControlFlow<()> {
+    iterate_method_candidates_dyn_with_table(
+        ty,
+        &mut InferenceTable::new(db, env),
+        traits_in_scope,
+        visible_from_module,
+        name,
+        mode,
+        callback,
+    )
+}
+
+fn iterate_method_candidates_dyn_with_table(
+    ty: &Canonical<Ty>,
+    table: &mut InferenceTable<'_>,
     traits_in_scope: &FxHashSet<TraitId>,
     visible_from_module: VisibleFromModule,
     name: Option<&Name>,
@@ -1090,56 +1106,56 @@ pub fn iterate_method_candidates_dyn(
     )
     .entered();
 
-    match mode {
-        LookupMode::MethodCall => {
-            // For method calls, rust first does any number of autoderef, and
-            // then one autoref (i.e. when the method takes &self or &mut self).
-            // Note that when we've got a receiver like &S, even if the method
-            // we find in the end takes &self, we still do the autoderef step
-            // (just as rustc does an autoderef and then autoref again).
+    table.run_in_snapshot(|table| {
+        match mode {
+            LookupMode::MethodCall => {
+                // For method calls, rust first does any number of autoderef, and
+                // then one autoref (i.e. when the method takes &self or &mut self).
+                // Note that when we've got a receiver like &S, even if the method
+                // we find in the end takes &self, we still do the autoderef step
+                // (just as rustc does an autoderef and then autoref again).
 
-            // We have to be careful about the order we're looking at candidates
-            // in here. Consider the case where we're resolving `it.clone()`
-            // where `it: &Vec<_>`. This resolves to the clone method with self
-            // type `Vec<_>`, *not* `&_`. I.e. we need to consider methods where
-            // the receiver type exactly matches before cases where we have to
-            // do autoref. But in the autoderef steps, the `&_` self type comes
-            // up *before* the `Vec<_>` self type.
-            //
-            // On the other hand, we don't want to just pick any by-value method
-            // before any by-autoref method; it's just that we need to consider
-            // the methods by autoderef order of *receiver types*, not *self
-            // types*.
+                // We have to be careful about the order we're looking at candidates
+                // in here. Consider the case where we're resolving `it.clone()`
+                // where `it: &Vec<_>`. This resolves to the clone method with self
+                // type `Vec<_>`, *not* `&_`. I.e. we need to consider methods where
+                // the receiver type exactly matches before cases where we have to
+                // do autoref. But in the autoderef steps, the `&_` self type comes
+                // up *before* the `Vec<_>` self type.
+                //
+                // On the other hand, we don't want to just pick any by-value method
+                // before any by-autoref method; it's just that we need to consider
+                // the methods by autoderef order of *receiver types*, not *self
+                // types*.
 
-            let mut table = InferenceTable::new(db, env);
-            let ty = table.instantiate_canonical(ty.clone());
-            let deref_chain = autoderef_method_receiver(&mut table, ty);
+                let ty = table.instantiate_canonical(ty.clone());
+                let deref_chain = autoderef_method_receiver(table, ty);
 
-            deref_chain.into_iter().try_for_each(|(receiver_ty, adj)| {
-                iterate_method_candidates_with_autoref(
-                    &mut table,
-                    receiver_ty,
-                    adj,
+                deref_chain.into_iter().try_for_each(|(receiver_ty, adj)| {
+                    iterate_method_candidates_with_autoref(
+                        table,
+                        receiver_ty,
+                        adj,
+                        traits_in_scope,
+                        visible_from_module,
+                        name,
+                        callback,
+                    )
+                })
+            }
+            LookupMode::Path => {
+                // No autoderef for path lookups
+                iterate_method_candidates_for_self_ty(
+                    ty,
+                    table,
                     traits_in_scope,
                     visible_from_module,
                     name,
                     callback,
                 )
-            })
+            }
         }
-        LookupMode::Path => {
-            // No autoderef for path lookups
-            iterate_method_candidates_for_self_ty(
-                ty,
-                db,
-                env,
-                traits_in_scope,
-                visible_from_module,
-                name,
-                callback,
-            )
-        }
-    }
+    })
 }
 
 #[tracing::instrument(skip_all, fields(name = ?name))]
@@ -1313,37 +1329,37 @@ fn iterate_method_candidates_by_receiver(
 #[tracing::instrument(skip_all, fields(name = ?name))]
 fn iterate_method_candidates_for_self_ty(
     self_ty: &Canonical<Ty>,
-    db: &dyn HirDatabase,
-    env: Arc<TraitEnvironment>,
+    table: &mut InferenceTable<'_>,
     traits_in_scope: &FxHashSet<TraitId>,
     visible_from_module: VisibleFromModule,
     name: Option<&Name>,
     callback: &mut dyn MethodCandidateCallback,
 ) -> ControlFlow<()> {
-    let mut table = InferenceTable::new(db, env);
-    let self_ty = table.instantiate_canonical(self_ty.clone());
-    iterate_inherent_methods(
-        &self_ty,
-        &mut table,
-        name,
-        None,
-        None,
-        visible_from_module,
-        &mut |adjustments, item, is_visible| {
-            callback.on_inherent_method(adjustments, item, is_visible)
-        },
-    )?;
-    iterate_trait_method_candidates(
-        &self_ty,
-        &mut table,
-        traits_in_scope,
-        name,
-        None,
-        None,
-        &mut |adjustments, item, is_visible| {
-            callback.on_trait_method(adjustments, item, is_visible)
-        },
-    )
+    table.run_in_snapshot(|table| {
+        let self_ty = table.instantiate_canonical(self_ty.clone());
+        iterate_inherent_methods(
+            &self_ty,
+            table,
+            name,
+            None,
+            None,
+            visible_from_module,
+            &mut |adjustments, item, is_visible| {
+                callback.on_inherent_method(adjustments, item, is_visible)
+            },
+        )?;
+        iterate_trait_method_candidates(
+            &self_ty,
+            table,
+            traits_in_scope,
+            name,
+            None,
+            None,
+            &mut |adjustments, item, is_visible| {
+                callback.on_trait_method(adjustments, item, is_visible)
+            },
+        )
+    })
 }
 
 #[tracing::instrument(skip_all, fields(name = ?name, visible_from_module, receiver_ty))]
@@ -1359,7 +1375,7 @@ fn iterate_trait_method_candidates(
     let db = table.db;
 
     let canonical_self_ty = table.canonicalize(self_ty.clone());
-    let TraitEnvironment { krate, block, .. } = *table.trait_env;
+    let TraitEnvironment { krate, .. } = *table.trait_env;
 
     'traits: for &t in traits_in_scope {
         let data = db.trait_signature(t);
@@ -1407,7 +1423,7 @@ fn iterate_trait_method_candidates(
                 };
             if !known_implemented {
                 let goal = generic_implements_goal(db, &table.trait_env, t, &canonical_self_ty);
-                if db.trait_solve(krate, block, goal.cast(Interner)).no_solution() {
+                if table.trait_solve(goal.cast(Interner)).no_solution() {
                     continue 'traits;
                 }
             }
@@ -1580,24 +1596,21 @@ fn iterate_inherent_methods(
 
 /// Returns the receiver type for the index trait call.
 pub(crate) fn resolve_indexing_op(
-    db: &dyn HirDatabase,
-    env: Arc<TraitEnvironment>,
+    table: &mut InferenceTable<'_>,
     ty: Canonical<Ty>,
     index_trait: TraitId,
 ) -> Option<ReceiverAdjustments> {
-    let mut table = InferenceTable::new(db, env);
-    let ty = table.instantiate_canonical(ty);
-    let deref_chain = autoderef_method_receiver(&mut table, ty);
-    for (ty, adj) in deref_chain {
-        let goal = generic_implements_goal(db, &table.trait_env, index_trait, &ty);
-        if !db
-            .trait_solve(table.trait_env.krate, table.trait_env.block, goal.cast(Interner))
-            .no_solution()
-        {
-            return Some(adj);
+    table.run_in_snapshot(|table| {
+        let ty = table.instantiate_canonical(ty);
+        let deref_chain = autoderef_method_receiver(table, ty);
+        for (ty, adj) in deref_chain {
+            let goal = generic_implements_goal(table.db, &table.trait_env, index_trait, &ty);
+            if !table.trait_solve(goal.cast(Interner)).no_solution() {
+                return Some(adj);
+            }
         }
-    }
-    None
+        None
+    })
 }
 
 // FIXME: Replace this with a `Try` impl once stable
@@ -1779,11 +1792,7 @@ fn is_valid_impl_fn_candidate(
         for goal in goals.clone() {
             let in_env = InEnvironment::new(&table.trait_env.env, goal);
             let canonicalized = table.canonicalize_with_free_vars(in_env);
-            let solution = table.db.trait_solve(
-                table.trait_env.krate,
-                table.trait_env.block,
-                canonicalized.value.clone(),
-            );
+            let solution = table.trait_solve(canonicalized.value.clone());
 
             match solution {
                 NextTraitSolveResult::Certain(canonical_subst) => {
@@ -1810,16 +1819,7 @@ fn is_valid_impl_fn_candidate(
     })
 }
 
-pub fn implements_trait(
-    ty: &Canonical<Ty>,
-    db: &dyn HirDatabase,
-    env: &TraitEnvironment,
-    trait_: TraitId,
-) -> bool {
-    let goal = generic_implements_goal(db, env, trait_, ty);
-    !db.trait_solve(env.krate, env.block, goal.cast(Interner)).no_solution()
-}
-
+/// Do not use this in hir-ty, only in hir! (it does not cache the trait solving answer).
 pub fn implements_trait_unique(
     ty: &Canonical<Ty>,
     db: &dyn HirDatabase,
@@ -1827,7 +1827,7 @@ pub fn implements_trait_unique(
     trait_: TraitId,
 ) -> bool {
     let goal = generic_implements_goal(db, env, trait_, ty);
-    db.trait_solve(env.krate, env.block, goal.cast(Interner)).certain()
+    TraitSolver::trait_solve_no_cache(db, env.krate, env.block, goal.cast(Interner)).certain()
 }
 
 /// This creates Substs for a trait with the given Self type and type variables

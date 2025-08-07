@@ -16,6 +16,7 @@ use crate::{
     db::{HirDatabase, InternedClosure},
     display::DisplayTarget,
     mir::OperandKind,
+    traits::TraitSolver,
     utils::ClosureSubst,
 };
 
@@ -94,11 +95,12 @@ pub fn borrowck_query(
 ) -> Result<Arc<[BorrowckResult]>, MirLowerError> {
     let _p = tracing::info_span!("borrowck_query").entered();
     let mut res = vec![];
+    let mut trait_solver = TraitSolver::default();
     all_mir_bodies(db, def, |body| {
         res.push(BorrowckResult {
             mutability_of_locals: mutability_of_locals(db, &body),
-            moved_out_of_ref: moved_out_of_ref(db, &body),
-            partially_moved: partially_moved(db, &body),
+            moved_out_of_ref: moved_out_of_ref(db, &mut trait_solver, &body),
+            partially_moved: partially_moved(db, &mut trait_solver, &body),
             borrow_regions: borrow_regions(db, &body),
             mir_body: body,
         });
@@ -118,7 +120,11 @@ fn make_fetch_closure_field(
     }
 }
 
-fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> {
+fn moved_out_of_ref(
+    db: &dyn HirDatabase,
+    trait_solver: &mut TraitSolver,
+    body: &MirBody,
+) -> Vec<MovedOutOfRef> {
     let mut result = vec![];
     let mut for_operand = |op: &Operand, span: MirSpan| match op.kind {
         OperandKind::Copy(p) | OperandKind::Move(p) => {
@@ -136,7 +142,7 @@ fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> 
                 );
             }
             if is_dereference_of_ref
-                && !ty.clone().is_copy(db, body.owner)
+                && !ty.clone().is_copy(db, trait_solver, body.owner)
                 && !ty.data(Interner).flags.intersects(TypeFlags::HAS_ERROR)
             {
                 result.push(MovedOutOfRef { span: op.span.unwrap_or(span), ty });
@@ -213,7 +219,11 @@ fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> 
     result
 }
 
-fn partially_moved(db: &dyn HirDatabase, body: &MirBody) -> Vec<PartiallyMoved> {
+fn partially_moved(
+    db: &dyn HirDatabase,
+    trait_solver: &mut TraitSolver,
+    body: &MirBody,
+) -> Vec<PartiallyMoved> {
     let mut result = vec![];
     let mut for_operand = |op: &Operand, span: MirSpan| match op.kind {
         OperandKind::Copy(p) | OperandKind::Move(p) => {
@@ -226,7 +236,7 @@ fn partially_moved(db: &dyn HirDatabase, body: &MirBody) -> Vec<PartiallyMoved> 
                     body.owner.module(db).krate(),
                 );
             }
-            if !ty.clone().is_copy(db, body.owner)
+            if !ty.clone().is_copy(db, trait_solver, body.owner)
                 && !ty.data(Interner).flags.intersects(TypeFlags::HAS_ERROR)
             {
                 result.push(PartiallyMoved { span, ty, local: p.local });

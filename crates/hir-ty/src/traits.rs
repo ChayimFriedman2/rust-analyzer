@@ -9,6 +9,7 @@ use base_db::Crate;
 use hir_def::{BlockId, TraitId, lang_item::LangItem};
 use hir_expand::name::Name;
 use intern::sym;
+use rustc_hash::FxHashMap;
 use rustc_next_trait_solver::solve::{HasChanged, SolverDelegateEvalExt};
 use rustc_type_ir::{
     InferCtxtLike, TypingMode,
@@ -128,8 +129,46 @@ fn identity_subst(
     chalk_ir::Canonical { binders, value: identity_subst }
 }
 
+#[derive(Default, Clone)]
+pub struct TraitSolver {
+    cache:
+        FxHashMap<(Crate, Option<BlockId>, Canonical<InEnvironment<Goal>>), NextTraitSolveResult>,
+}
+
+impl fmt::Debug for TraitSolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TraitSolver").field("cache", &"...").finish()
+    }
+}
+
+impl TraitSolver {
+    #[inline]
+    pub fn trait_solve(
+        &mut self,
+        db: &dyn HirDatabase,
+        krate: Crate,
+        block: Option<BlockId>,
+        goal: Canonical<InEnvironment<Goal>>,
+    ) -> NextTraitSolveResult {
+        self.cache
+            .entry((krate, block, goal.clone()))
+            .or_insert_with(|| trait_solve(db, krate, block, goal))
+            .clone()
+    }
+
+    #[inline]
+    pub fn trait_solve_no_cache(
+        db: &dyn HirDatabase,
+        krate: Crate,
+        block: Option<BlockId>,
+        goal: Canonical<InEnvironment<Goal>>,
+    ) -> NextTraitSolveResult {
+        trait_solve(db, krate, block, goal)
+    }
+}
+
 /// Solve a trait goal using Chalk.
-pub(crate) fn trait_solve_query(
+fn trait_solve(
     db: &dyn HirDatabase,
     krate: Crate,
     block: Option<BlockId>,
@@ -232,7 +271,7 @@ impl NextTraitSolveResult {
 }
 
 /// Solve a trait goal using Chalk.
-pub fn next_trait_solve(
+fn next_trait_solve(
     db: &dyn HirDatabase,
     krate: Crate,
     block: Option<BlockId>,

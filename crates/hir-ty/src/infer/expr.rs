@@ -828,8 +828,7 @@ impl InferenceContext<'_> {
                 if let Some(index_trait) = self.resolve_lang_trait(LangItem::Index) {
                     let canonicalized = self.canonicalize(base_ty.clone());
                     let receiver_adjustments = method_resolution::resolve_indexing_op(
-                        self.db,
-                        self.table.trait_env.clone(),
+                        &mut self.table,
                         canonicalized,
                         index_trait,
                     );
@@ -1680,10 +1679,11 @@ impl InferenceContext<'_> {
                 // work out while people are typing
                 let canonicalized_receiver = self.canonicalize(receiver_ty.clone());
                 let resolved = method_resolution::lookup_method(
-                    self.db,
                     &canonicalized_receiver,
-                    self.table.trait_env.clone(),
-                    self.get_traits_in_scope().as_ref().left_or_else(|&it| it),
+                    &mut self.table,
+                    Self::get_traits_in_scope(&self.resolver, &self.traits_in_scope)
+                        .as_ref()
+                        .left_or_else(|&it| it),
                     VisibleFromModule::Filter(self.resolver.module()),
                     name,
                 );
@@ -1827,10 +1827,11 @@ impl InferenceContext<'_> {
         let canonicalized_receiver = self.canonicalize(receiver_ty.clone());
 
         let resolved = method_resolution::lookup_method(
-            self.db,
             &canonicalized_receiver,
-            self.table.trait_env.clone(),
-            self.get_traits_in_scope().as_ref().left_or_else(|&it| it),
+            &mut self.table,
+            Self::get_traits_in_scope(&self.resolver, &self.traits_in_scope)
+                .as_ref()
+                .left_or_else(|&it| it),
             VisibleFromModule::Filter(self.resolver.module()),
             method_name,
         );
@@ -1872,9 +1873,10 @@ impl InferenceContext<'_> {
 
                 let assoc_func_with_same_name = method_resolution::iterate_method_candidates(
                     &canonicalized_receiver,
-                    self.db,
-                    self.table.trait_env.clone(),
-                    self.get_traits_in_scope().as_ref().left_or_else(|&it| it),
+                    &mut self.table,
+                    Self::get_traits_in_scope(&self.resolver, &self.traits_in_scope)
+                        .as_ref()
+                        .left_or_else(|&it| it),
                     VisibleFromModule::Filter(self.resolver.module()),
                     Some(method_name),
                     method_resolution::LookupMode::Path,

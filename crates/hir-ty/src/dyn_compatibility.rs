@@ -22,6 +22,7 @@ use crate::{
     from_assoc_type_id, from_chalk_trait_id,
     generics::{generics, trait_self_param_idx},
     to_chalk_trait_id,
+    traits::TraitSolver,
     utils::elaborate_clause_supertraits,
 };
 
@@ -101,9 +102,10 @@ where
 
     // rustc checks for non-lifetime binders here, but we don't support HRTB yet
 
+    let mut trait_solver = TraitSolver::default();
     let trait_data = trait_.trait_items(db);
     for (_, assoc_item) in &trait_data.items {
-        dyn_compatibility_violation_for_assoc_item(db, trait_, *assoc_item, cb)?;
+        dyn_compatibility_violation_for_assoc_item(db, &mut trait_solver, trait_, *assoc_item, cb)?;
     }
 
     ControlFlow::Continue(())
@@ -321,6 +323,7 @@ fn contains_illegal_self_type_reference<T: TypeVisitable<Interner>>(
 
 fn dyn_compatibility_violation_for_assoc_item<F>(
     db: &dyn HirDatabase,
+    trait_solver: &mut TraitSolver,
     trait_: TraitId,
     item: AssocItemId,
     cb: &mut F,
@@ -337,7 +340,7 @@ where
     match item {
         AssocItemId::ConstId(it) => cb(DynCompatibilityViolation::AssocConst(it)),
         AssocItemId::FunctionId(it) => {
-            virtual_call_violations_for_method(db, trait_, it, &mut |mvc| {
+            virtual_call_violations_for_method(db, trait_solver, trait_, it, &mut |mvc| {
                 cb(DynCompatibilityViolation::Method(it, mvc))
             })
         }
@@ -359,6 +362,7 @@ where
 
 fn virtual_call_violations_for_method<F>(
     db: &dyn HirDatabase,
+    trait_solver: &mut TraitSolver,
     trait_: TraitId,
     func: FunctionId,
     cb: &mut F,
@@ -411,7 +415,8 @@ where
         cb(MethodViolationCode::Generic)?;
     }
 
-    if func_data.has_self_param() && !receiver_is_dispatchable(db, trait_, func, &sig) {
+    if func_data.has_self_param() && !receiver_is_dispatchable(db, trait_solver, trait_, func, &sig)
+    {
         cb(MethodViolationCode::UndispatchableReceiver)?;
     }
 
@@ -459,6 +464,7 @@ where
 
 fn receiver_is_dispatchable(
     db: &dyn HirDatabase,
+    trait_solver: &mut TraitSolver,
     trait_: TraitId,
     func: FunctionId,
     sig: &Binders<CallableSig>,
@@ -558,7 +564,7 @@ fn receiver_is_dispatchable(
     let mut table = chalk_solve::infer::InferenceTable::<Interner>::new();
     let canonicalized = table.canonicalize(Interner, in_env);
 
-    db.trait_solve(krate, None, canonicalized.quantified).certain()
+    trait_solver.trait_solve(db, krate, None, canonicalized.quantified).certain()
 }
 
 fn receiver_for_self_ty(db: &dyn HirDatabase, func: FunctionId, ty: Ty) -> Option<Ty> {

@@ -10,7 +10,7 @@ use triomphe::Arc;
 use crate::{
     AliasTy, Canonical, CanonicalVarKinds, ConcreteConst, ConstScalar, ConstValue, InEnvironment,
     Interner, ProjectionTy, TraitEnvironment, Ty, TyBuilder, TyKind, db::HirDatabase,
-    method_resolution::TyFingerprint,
+    method_resolution::TyFingerprint, traits::TraitSolver,
 };
 
 fn has_destructor(db: &dyn HirDatabase, adt: AdtId) -> bool {
@@ -187,7 +187,7 @@ fn is_copy(db: &dyn HirDatabase, ty: Ty, env: Arc<TraitEnvironment>) -> bool {
         value: InEnvironment::new(&env.env, trait_ref.cast(Interner)),
         binders: CanonicalVarKinds::empty(Interner),
     };
-    db.trait_solve(env.krate, env.block, goal).certain()
+    TraitSolver::trait_solve_no_cache(db, env.krate, env.block, goal).certain()
 }
 
 pub(crate) fn has_drop_glue_cycle_result(

@@ -87,7 +87,7 @@ use hir_ty::{
     mir::{MutBorrowKind, interpret_mir},
     next_solver::{DbInterner, GenericArgs, SolverDefId, infer::InferCtxt},
     primitive::UintTy,
-    traits::FnTrait,
+    traits::{FnTrait, TraitSolver},
 };
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
@@ -5186,7 +5186,7 @@ impl<'db> Type<'db> {
             binders: CanonicalVarKinds::empty(Interner),
         };
 
-        !db.trait_solve(self.env.krate, self.env.block, goal).no_solution()
+        !TraitSolver::trait_solve_no_cache(db, self.env.krate, self.env.block, goal).no_solution()
     }
 
     pub fn normalize_trait_assoc_type(
@@ -5634,8 +5634,8 @@ impl<'db> Type<'db> {
             .map_or_else(|| TraitEnvironment::empty(krate.id), |d| db.trait_environment(d));
 
         _ = method_resolution::iterate_method_candidates_dyn(
-            &canonical,
             db,
+            &canonical,
             environment,
             traits_in_scope,
             with_local_impls.and_then(|b| b.id.containing_block()).into(),

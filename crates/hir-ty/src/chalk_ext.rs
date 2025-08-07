@@ -16,7 +16,8 @@ use crate::{
     ClosureId, DynTy, FnPointer, ImplTraitId, InEnvironment, Interner, Lifetime, ProjectionTy,
     QuantifiedWhereClause, Substitution, ToChalk, TraitRef, Ty, TyBuilder, TyKind, TypeFlags,
     WhereClause, db::HirDatabase, from_assoc_type_id, from_chalk_trait_id, from_foreign_def_id,
-    from_placeholder_idx, generics::generics, to_chalk_trait_id, utils::ClosureSubst,
+    from_placeholder_idx, generics::generics, to_chalk_trait_id, traits::TraitSolver,
+    utils::ClosureSubst,
 };
 
 pub trait TyExt {
@@ -52,7 +53,12 @@ pub trait TyExt {
 
     fn impl_trait_bounds(&self, db: &dyn HirDatabase) -> Option<Vec<QuantifiedWhereClause>>;
     fn associated_type_parent_trait(&self, db: &dyn HirDatabase) -> Option<TraitId>;
-    fn is_copy(self, db: &dyn HirDatabase, owner: DefWithBodyId) -> bool;
+    fn is_copy(
+        self,
+        db: &dyn HirDatabase,
+        trait_solver: &mut TraitSolver,
+        owner: DefWithBodyId,
+    ) -> bool;
 
     /// FIXME: Get rid of this, it's not a good abstraction
     fn equals_ctor(&self, other: &Ty) -> bool;
@@ -359,7 +365,12 @@ impl TyExt for Ty {
         }
     }
 
-    fn is_copy(self, db: &dyn HirDatabase, owner: DefWithBodyId) -> bool {
+    fn is_copy(
+        self,
+        db: &dyn HirDatabase,
+        trait_solver: &mut TraitSolver,
+        owner: DefWithBodyId,
+    ) -> bool {
         let crate_id = owner.module(db).krate();
         let Some(copy_trait) = LangItem::Copy.resolve_trait(db, crate_id) else {
             return false;
@@ -370,7 +381,7 @@ impl TyExt for Ty {
             value: InEnvironment::new(&env.env, trait_ref.cast(Interner)),
             binders: CanonicalVarKinds::empty(Interner),
         };
-        !db.trait_solve(crate_id, None, goal).no_solution()
+        !trait_solver.trait_solve(db, crate_id, None, goal).no_solution()
     }
 
     fn equals_ctor(&self, other: &Ty) -> bool {

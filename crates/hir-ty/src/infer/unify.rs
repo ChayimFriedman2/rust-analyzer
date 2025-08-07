@@ -25,7 +25,7 @@ use crate::{
     consteval::unknown_const,
     db::HirDatabase,
     fold_generic_args, fold_tys_and_consts, to_chalk_trait_id,
-    traits::{FnTrait, NextTraitSolveResult},
+    traits::{FnTrait, NextTraitSolveResult, TraitSolver},
 };
 
 impl InferenceContext<'_> {
@@ -237,6 +237,7 @@ pub(crate) struct InferenceTable<'a> {
     /// Double buffer used in [`Self::resolve_obligations_as_possible`] to cut down on
     /// temporary allocations.
     resolve_obligations_buffer: Vec<Canonicalized<InEnvironment<Goal>>>,
+    pub(crate) trait_solver: TraitSolver,
 }
 
 pub(crate) struct InferenceTableSnapshot {
@@ -249,6 +250,7 @@ impl<'a> InferenceTable<'a> {
     pub(crate) fn new(db: &'a dyn HirDatabase, trait_env: Arc<TraitEnvironment>) -> Self {
         InferenceTable {
             db,
+            trait_solver: TraitSolver::default(),
             trait_env,
             tait_coercion_table: None,
             var_unification_table: ChalkInferenceTable::new(),
@@ -256,6 +258,14 @@ impl<'a> InferenceTable<'a> {
             pending_obligations: Vec::new(),
             resolve_obligations_buffer: Vec::new(),
         }
+    }
+
+    #[inline]
+    pub(crate) fn trait_solve(
+        &mut self,
+        goal: Canonical<InEnvironment<Goal>>,
+    ) -> NextTraitSolveResult {
+        self.trait_solver.trait_solve(self.db, self.trait_env.krate, self.trait_env.block, goal)
     }
 
     /// Chalk doesn't know about the `diverging` flag, so when it unifies two
@@ -381,11 +391,7 @@ impl<'a> InferenceTable<'a> {
                                     .collect();
                                 Canonicalized { value: result.quantified, free_vars }
                             };
-                            let solution = self.db.trait_solve(
-                                self.trait_env.krate,
-                                self.trait_env.block,
-                                canonicalized.value.clone(),
-                            );
+                            let solution = self.trait_solve(canonicalized.value.clone());
                             if let NextTraitSolveResult::Certain(canonical_subst) = solution {
                                 // This is not great :) But let's just assert this for now and come back to it later.
                                 if canonical_subst.value.subst.len(Interner) != 1 {
@@ -751,7 +757,7 @@ impl<'a> InferenceTable<'a> {
         let in_env = InEnvironment::new(&self.trait_env.env, goal);
         let canonicalized = self.canonicalize(in_env);
 
-        self.db.trait_solve(self.trait_env.krate, self.trait_env.block, canonicalized)
+        self.trait_solve(canonicalized)
     }
 
     pub(crate) fn register_obligation(&mut self, goal: Goal) {
@@ -926,11 +932,7 @@ impl<'a> InferenceTable<'a> {
         &mut self,
         canonicalized: &Canonicalized<InEnvironment<Goal>>,
     ) -> NextTraitSolveResult {
-        let solution = self.db.trait_solve(
-            self.trait_env.krate,
-            self.trait_env.block,
-            canonicalized.value.clone(),
-        );
+        let solution = self.trait_solve(canonicalized.value.clone());
 
         tracing::debug!(?solution, ?canonicalized);
         match &solution {
@@ -1021,11 +1023,7 @@ impl<'a> InferenceTable<'a> {
                 environment: trait_env.clone(),
             };
             let canonical = self.canonicalize(obligation.clone());
-            if !self
-                .db
-                .trait_solve(krate, self.trait_env.block, canonical.cast(Interner))
-                .no_solution()
-            {
+            if !self.trait_solve(canonical.cast(Interner)).no_solution() {
                 self.register_obligation(obligation.goal);
                 let return_ty = self.normalize_projection_ty(projection);
                 for &fn_x in subtraits {
@@ -1037,11 +1035,7 @@ impl<'a> InferenceTable<'a> {
                             environment: trait_env.clone(),
                         };
                     let canonical = self.canonicalize(obligation.clone());
-                    if !self
-                        .db
-                        .trait_solve(krate, self.trait_env.block, canonical.cast(Interner))
-                        .no_solution()
-                    {
+                    if !self.trait_solve(canonical.cast(Interner)).no_solution() {
                         return Some((fn_x, arg_tys, return_ty));
                     }
                 }

@@ -716,11 +716,7 @@ impl InferenceTable<'_> {
         // solve `CoerceUnsized` and `Unsize` goals at this point and leaves the
         // rest for later. Also, there's some logic about sized type variables.
         // Need to find out in what cases this is necessary
-        let solution = self.db.trait_solve(
-            krate,
-            self.trait_env.block,
-            canonicalized.value.clone().cast(Interner),
-        );
+        let solution = self.trait_solve(canonicalized.value.clone().cast(Interner));
 
         match solution {
             // FIXME: this is a weaker guarantee than Chalk's `Guidance::Unique`

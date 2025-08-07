@@ -25,7 +25,7 @@ use syntax::TextRange;
 use triomphe::Arc;
 
 use crate::{
-    Adjust, Adjustment, AutoBorrow, CallableDefId, TraitEnvironment, TyBuilder, TyExt,
+    Adjust, Adjustment, AutoBorrow, CallableDefId, TyBuilder, TyExt,
     consteval::ConstEvalError,
     db::{HirDatabase, InternedClosure, InternedClosureId},
     display::{DisplayTarget, HirDisplay, hir_display_with_store},
@@ -79,7 +79,7 @@ struct MirLowerCtx<'db> {
     infer: &'db InferenceResult,
     resolver: Resolver<'db>,
     drop_scopes: Vec<DropScope>,
-    env: Arc<TraitEnvironment>,
+    table: InferenceTable<'db>,
 }
 
 // FIXME: Make this smaller, its stored in database queries
@@ -302,7 +302,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
             labeled_loop_blocks: Default::default(),
             discr_temp: None,
             drop_scopes: vec![DropScope::default()],
-            env,
+            table: InferenceTable::new(db, env),
         }
     }
 
@@ -947,8 +947,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                     let cast_kind = if source_ty.as_reference().is_some() {
                         CastKind::PointerCoercion(PointerCast::ArrayToPointer)
                     } else {
-                        let mut table = InferenceTable::new(self.db, self.env.clone());
-                        cast_kind(&mut table, &source_ty, &target_ty)?
+                        cast_kind(&mut self.table, &source_ty, &target_ty)?
                     };
 
                     Rvalue::Cast(cast_kind, it, target_ty)
@@ -1411,8 +1410,11 @@ impl<'ctx> MirLowerCtx<'ctx> {
     }
 
     fn lower_literal_to_operand(&mut self, ty: Ty, l: &Literal) -> Result<Operand> {
-        let size =
-            || self.db.layout_of_ty(ty.clone(), self.env.clone()).map(|it| it.size.bytes_usize());
+        let size = || {
+            self.db
+                .layout_of_ty(ty.clone(), self.table.trait_env.clone())
+                .map(|it| it.size.bytes_usize())
+        };
         const USIZE_SIZE: usize = size_of::<usize>();
         let bytes: Box<[_]> = match l {
             hir_def::hir::Literal::String(b) => {
@@ -1723,7 +1725,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
             self.db,
             &self.infer[expr_id],
             self.owner.module(self.db),
-            self.env.clone(),
+            self.table.trait_env.clone(),
         )
     }
 
@@ -1999,7 +2001,11 @@ impl<'ctx> MirLowerCtx<'ctx> {
         span: MirSpan,
     ) {
         for &l in scope.locals.iter().rev() {
-            if !self.result.locals[l].ty.clone().is_copy(self.db, self.owner) {
+            if !self.result.locals[l].ty.clone().is_copy(
+                self.db,
+                &mut self.table.trait_solver,
+                self.owner,
+            ) {
                 let prev = std::mem::replace(current, self.new_basic_block());
                 self.set_terminator(
                     prev,
