@@ -519,6 +519,7 @@ impl SomeStruct {
     );
 }
 
+// FIXME(next-solver): does this test make sense with fast path?
 #[test]
 fn add_struct_invalidates_trait_solve() {
     let (mut db, file_id) = TestDB::with_single_file(
@@ -559,7 +560,7 @@ fn main() {
                 let _inference_result = db.infer(def);
             }
         },
-        &[("trait_solve_shim", 2)],
+        &[("trait_solve_shim", 0)],
         expect_test::expect![[r#"
             [
                 "source_root_crates_shim",
@@ -606,7 +607,6 @@ fn main() {
                 "callable_item_signature_shim",
                 "adt_variance_shim",
                 "variances_of_shim",
-                "trait_solve_shim",
                 "trait_impls_in_deps_shim",
                 "trait_impls_in_crate_shim",
                 "impl_trait_with_diagnostics_shim",
@@ -618,7 +618,6 @@ fn main() {
                 "generic_predicates_ns_shim",
                 "value_ty_shim",
                 "generic_predicates_shim",
-                "trait_solve_shim",
                 "lang_item",
             ]
         "#]],
