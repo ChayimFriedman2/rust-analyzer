@@ -189,7 +189,7 @@ impl<'db> Ty<'db> {
             TyKind::Infer(
                 InferTy::FreshTy(_) | InferTy::FreshIntTy(_) | InferTy::FreshFloatTy(_),
             ) => {
-                panic!("`has_trivial_sizedness` applied to unexpected type: {:?}", self)
+                panic!("`has_trivial_sizedness` applied to unexpected type: {self:?}")
             }
         }
     }
