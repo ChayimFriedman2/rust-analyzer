@@ -15,7 +15,7 @@ use hir_def::{
 };
 use rustc_ast_ir::Mutability;
 use rustc_hash::{FxHashMap, FxHashSet};
-use rustc_type_ir::inherent::{IntoKind, SliceLike, Ty as _};
+use rustc_type_ir::inherent::{GenericArgsRef as _, SliceLike};
 use smallvec::{SmallVec, smallvec};
 use stdx::{format_to, never};
 use syntax::utils::is_raw_identifier;
@@ -25,7 +25,7 @@ use crate::{
     db::{HirDatabase, InternedClosure, InternedClosureId},
     infer::InferenceContext,
     mir::{BorrowKind, MirSpan, MutBorrowKind, ProjectionElem},
-    next_solver::{DbInterner, EarlyBinder, GenericArgs, Ty, TyKind},
+    next_solver::{DbInterner, EarlyBinder, GenericArgsRef, Ty, TyKind},
     traits::FnTrait,
 };
 
@@ -39,7 +39,7 @@ pub(crate) struct HirPlace<'db> {
 
 impl<'db> HirPlace<'db> {
     fn ty(&self, ctx: &mut InferenceContext<'_, 'db>) -> Ty<'db> {
-        let mut ty = ctx.table.resolve_completely(ctx.result[self.local]);
+        let mut ty = ctx.table.resolve_completely(ctx.result[self.local].clone());
         for p in &self.projections {
             ty = p.projected_ty(
                 &ctx.table.infer_ctxt,
@@ -100,9 +100,9 @@ impl<'db> CapturedItem<'db> {
         self.place.projections.iter().any(|it| !matches!(it, ProjectionElem::Deref))
     }
 
-    pub fn ty(&self, db: &'db dyn HirDatabase, subst: GenericArgs<'db>) -> Ty<'db> {
+    pub fn ty(&self, db: &'db dyn HirDatabase, subst: GenericArgsRef<'_, 'db>) -> Ty<'db> {
         let interner = DbInterner::new_with(db, None, None);
-        self.ty.instantiate(interner, subst.split_closure_args_untupled().parent_args)
+        self.ty.clone().instantiate(interner, subst.as_closure().parent_args())
     }
 
     pub fn kind(&self) -> CaptureKind {
@@ -288,7 +288,7 @@ impl<'db> CapturedItemWithoutTy<'db> {
                     BorrowKind::Mut { .. } => Mutability::Mut,
                     _ => Mutability::Not,
                 };
-                Ty::new_ref(ctx.interner(), ctx.types.re_error, ty, m)
+                Ty::new_ref(ctx.types.regions.error.clone(), ty, m)
             }
         };
         CapturedItem {
@@ -610,7 +610,7 @@ impl<'db> InferenceContext<'_, 'db> {
             Expr::UnaryOp { expr, op: UnaryOp::Deref } => {
                 if self.result.method_resolution(tgt_expr).is_some() {
                     // Overloaded deref.
-                    match self.expr_ty_after_adjustments(*expr).kind() {
+                    match *self.expr_ty_after_adjustments(*expr).kind() {
                         TyKind::Ref(_, _, mutability) => {
                             let place = self.place_of_expr(*expr);
                             match mutability {
@@ -778,7 +778,7 @@ impl<'db> InferenceContext<'_, 'db> {
             }
             Pat::Bind { id, .. } => match self.result.binding_modes[p] {
                 crate::BindingMode::Move => {
-                    if self.is_ty_copy(self.result.type_of_binding[*id]) {
+                    if self.is_ty_copy(self.result.type_of_binding[*id].clone()) {
                         update_result(CaptureKind::ByRef(BorrowKind::Shared));
                     } else {
                         update_result(CaptureKind::ByValue);
@@ -828,8 +828,8 @@ impl<'db> InferenceContext<'_, 'db> {
         // FIXME: Borrow checker problems without this.
         let mut current_captures = std::mem::take(&mut self.current_captures);
         for capture in &mut current_captures {
-            let mut ty = self.table.resolve_completely(self.result[capture.place.local]);
-            if ty.is_raw_ptr() || ty.is_union() {
+            let mut ty = self.table.resolve_completely(self.result[capture.place.local].clone());
+            if ty.r().is_raw_ptr() || ty.r().is_union() {
                 capture.kind = CaptureKind::ByRef(BorrowKind::Shared);
                 self.truncate_capture_spans(capture, 0);
                 capture.place.projections.truncate(0);
@@ -844,7 +844,7 @@ impl<'db> InferenceContext<'_, 'db> {
                     },
                     self.owner.module(self.db).krate(),
                 );
-                if ty.is_raw_ptr() || ty.is_union() {
+                if ty.r().is_raw_ptr() || ty.r().is_union() {
                     capture.kind = CaptureKind::ByRef(BorrowKind::Shared);
                     self.truncate_capture_spans(capture, i + 1);
                     capture.place.projections.truncate(i + 1);
@@ -919,7 +919,7 @@ impl<'db> InferenceContext<'_, 'db> {
                 Pat::Tuple { args, ellipsis } => {
                     let (al, ar) = args.split_at(ellipsis.map_or(args.len(), |it| it as usize));
                     let field_count = match self.result[tgt_pat].kind() {
-                        TyKind::Tuple(s) => s.len(),
+                        TyKind::Tuple(s) => s.r().len(),
                         _ => break 'reset_span_stack,
                     };
                     let fields = 0..field_count;

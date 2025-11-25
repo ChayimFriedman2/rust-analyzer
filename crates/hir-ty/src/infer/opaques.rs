@@ -31,7 +31,7 @@ impl<'db> InferenceContext<'_, 'db> {
 }
 
 #[expect(unused, reason = "rustc has this")]
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 enum UsageKind<'db> {
     None,
     NonDefiningUse(OpaqueTypeKey<'db>, OpaqueHiddenType<'db>),
@@ -68,18 +68,18 @@ impl<'db> InferenceContext<'_, 'db> {
         mut opaque_types: Vec<(OpaqueTypeKey<'db>, OpaqueHiddenType<'db>)>,
     ) {
         for entry in opaque_types.iter_mut() {
-            *entry = self.table.infer_ctxt.resolve_vars_if_possible(*entry);
+            *entry = self.table.infer_ctxt.resolve_vars_if_possible(entry.clone());
         }
         debug!(?opaque_types);
 
         let interner = self.interner();
         let TypingMode::Analysis { defining_opaque_types_and_generators } =
-            self.table.infer_ctxt.typing_mode()
+            self.table.infer_ctxt.typing_mode().clone()
         else {
             unreachable!();
         };
 
-        for def_id in defining_opaque_types_and_generators {
+        for &def_id in defining_opaque_types_and_generators.r().iter() {
             let def_id = match def_id {
                 SolverDefId::InternedOpaqueTyId(it) => it,
                 _ => continue,
@@ -89,12 +89,13 @@ impl<'db> InferenceContext<'_, 'db> {
             // store this), because we can go from `UnconstrainedHiddenType` to
             // `HasDefiningUse` (because of fallback)
             let mut usage_kind = UsageKind::None;
-            for &(opaque_type_key, hidden_type) in &opaque_types {
+            for (opaque_type_key, hidden_type) in &opaque_types {
                 if opaque_type_key.def_id != def_id.into() {
                     continue;
                 }
 
-                usage_kind.merge(self.consider_opaque_type_use(opaque_type_key, hidden_type));
+                usage_kind
+                    .merge(self.consider_opaque_type_use(opaque_type_key, hidden_type.clone()));
 
                 if let UsageKind::HasDefiningUse(..) = usage_kind {
                     break;
@@ -102,14 +103,14 @@ impl<'db> InferenceContext<'_, 'db> {
             }
 
             if let UsageKind::HasDefiningUse(ty) = usage_kind {
-                for &(opaque_type_key, hidden_type) in &opaque_types {
+                for (opaque_type_key, hidden_type) in &opaque_types {
                     if opaque_type_key.def_id != def_id.into() {
                         continue;
                     }
 
-                    let expected =
-                        EarlyBinder::bind(ty.ty).instantiate(interner, opaque_type_key.args);
-                    _ = self.demand_eqtype_fixme_no_diag(expected, hidden_type.ty);
+                    let expected = EarlyBinder::bind(ty.ty.clone())
+                        .instantiate(interner, opaque_type_key.args.r());
+                    _ = self.demand_eqtype_fixme_no_diag(expected.r(), hidden_type.ty.r());
                 }
 
                 self.result.type_of_opaque.insert(def_id, ty.ty);
@@ -117,14 +118,14 @@ impl<'db> InferenceContext<'_, 'db> {
                 continue;
             }
 
-            self.result.type_of_opaque.insert(def_id, self.types.error);
+            self.result.type_of_opaque.insert(def_id, self.types.types.error.clone());
         }
     }
 
     #[tracing::instrument(skip(self), ret)]
     fn consider_opaque_type_use(
         &self,
-        opaque_type_key: OpaqueTypeKey<'db>,
+        opaque_type_key: &OpaqueTypeKey<'db>,
         hidden_type: OpaqueHiddenType<'db>,
     ) -> UsageKind<'db> {
         // We ignore uses of the opaque if they have any inference variables
@@ -136,12 +137,13 @@ impl<'db> InferenceContext<'_, 'db> {
         }
 
         let cause = ObligationCause::new();
-        let at = self.table.infer_ctxt.at(&cause, self.table.trait_env.env);
+        let at = self.table.at(&cause);
         let hidden_type = match at.deeply_normalize(hidden_type) {
             Ok(hidden_type) => hidden_type,
-            Err(_errors) => OpaqueHiddenType { ty: self.types.error },
+            Err(_errors) => OpaqueHiddenType { ty: self.types.types.error.clone() },
         };
-        let hidden_type = fold_regions(self.interner(), hidden_type, |_, _| self.types.re_erased);
+        let hidden_type =
+            fold_regions(self.interner(), hidden_type, |_, _| self.types.regions.erased.clone());
         UsageKind::HasDefiningUse(hidden_type)
     }
 }

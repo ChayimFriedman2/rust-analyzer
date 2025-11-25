@@ -1,62 +1,368 @@
 //! Things related to generic args in the next-trait-solver.
 
+use std::{marker::PhantomData, mem::ManuallyDrop};
+
 use hir_def::{GenericDefId, GenericParamId};
-use macros::{TypeFoldable, TypeVisitable};
+use intern::{Interned, InternedRef};
 use rustc_type_ir::{
-    ClosureArgs, CollectAndApply, ConstVid, CoroutineArgs, CoroutineClosureArgs, FnSigTys,
-    GenericArgKind, Interner, TermKind, TyKind, TyVid, Variance,
-    inherent::{GenericArg as _, GenericsOf, IntoKind, SliceLike, Term as _, Ty as _},
-    relate::{Relate, VarianceDiagInfo},
+    ConstVid, FallibleTypeFolder, Interner, TyVid, TypeFoldable, TypeFolder, TypeVisitable,
+    TypeVisitor,
+    inherent::{AsOwnedKindRef, GenericArgsRef as _, GenericsOf, SliceLike, TyRef as _},
+    relate::{Relate, RelateRef, TypeRelation, relate_args_invariantly},
 };
 use smallvec::SmallVec;
 
-use crate::next_solver::{PolyFnSig, interned_vec_db};
-
-use super::{
-    Const, DbInterner, EarlyParamRegion, ErrorGuaranteed, ParamConst, Region, SolverDefId, Ty, Tys,
-    generics::Generics,
+use crate::{
+    FnAbi,
+    next_solver::{
+        AsBorrowedSlice, AsOwnedSlice, Const, ConstInterned, ConstRef, DbInterner,
+        EarlyParamRegion, FnSig, IteratorOwnedExt, ParamConst, ParamTy, PolyFnSig, Region,
+        RegionInterned, RegionRef, SameRepr, SolverDefId, Ty, TyInterned, TyRef, Tys, abi::Safety,
+        generics::Generics, impl_foldable_for_interned_slice_with_borrowed,
+        infer::relate::RelateResult, interned_slice_with_borrowed, interner::interned_slice,
+    },
 };
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, TypeVisitable, TypeFoldable, salsa::Supertype)]
-pub enum GenericArg<'db> {
-    Ty(Ty<'db>),
+pub type GenericArgKind<'a, 'db> = rustc_type_ir::GenericArgKind<'a, DbInterner<'db>>;
+pub type TermKind<'a, 'db> = rustc_type_ir::TermKind<'a, DbInterner<'db>>;
+pub type ClosureArgs<'a, 'db> = rustc_type_ir::ClosureArgs<'a, DbInterner<'db>>;
+pub type CoroutineArgs<'a, 'db> = rustc_type_ir::CoroutineArgs<'a, DbInterner<'db>>;
+pub type CoroutineClosureArgs<'a, 'db> = rustc_type_ir::CoroutineClosureArgs<'a, DbInterner<'db>>;
+
+pub enum OwnedGenericArgKind<'db> {
+    Type(Ty<'db>),
+    Const(Const<'db>),
     Lifetime(Region<'db>),
+}
+
+pub enum OwnedTermKind<'db> {
+    Ty(Ty<'db>),
     Const(Const<'db>),
 }
 
-impl<'db> std::fmt::Debug for GenericArg<'db> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ty(t) => std::fmt::Debug::fmt(t, f),
-            Self::Lifetime(r) => std::fmt::Debug::fmt(r, f),
-            Self::Const(c) => std::fmt::Debug::fmt(c, f),
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct GenericArgImpl<'db> {
+    // Bit packed - suffix:
+    //  0b00 - Ty
+    //  0b01 - Const
+    //  0b10 - Region
+    ptr: *const (),
+    _marker: PhantomData<fn() -> &'db ()>,
+}
+
+unsafe impl Send for GenericArgImpl<'_> {}
+unsafe impl Sync for GenericArgImpl<'_> {}
+
+impl<'db> GenericArgImpl<'db> {
+    const PTR_MASK: usize = !Self::KIND_MASK;
+    const KIND_MASK: usize = 0b11;
+    const TY_MASK: usize = 0b00;
+    const CONST_MASK: usize = 0b01;
+    const REGION_MASK: usize = 0b10;
+
+    #[inline]
+    fn new_ty(ptr: *const TyInterned) -> Self {
+        Self { ptr: ptr.map_addr(|addr| addr | Self::TY_MASK).cast::<()>(), _marker: PhantomData }
+    }
+
+    #[inline]
+    fn new_const(ptr: *const ConstInterned) -> Self {
+        Self {
+            ptr: ptr.map_addr(|addr| addr | Self::CONST_MASK).cast::<()>(),
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn new_region(ptr: *const RegionInterned) -> Self {
+        Self {
+            ptr: ptr.map_addr(|addr| addr | Self::REGION_MASK).cast::<()>(),
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    unsafe fn with<R>(
+        self,
+        ty: impl FnOnce(*const TyInterned) -> R,
+        konst: impl FnOnce(*const ConstInterned) -> R,
+        region: impl FnOnce(*const RegionInterned) -> R,
+    ) -> R {
+        let ptr = self.ptr.map_addr(|addr| addr & Self::PTR_MASK);
+        unsafe {
+            match self.ptr.addr() & Self::KIND_MASK {
+                Self::TY_MASK => ty(ptr.cast::<TyInterned>()),
+                Self::CONST_MASK => konst(ptr.cast::<ConstInterned>()),
+                Self::REGION_MASK => region(ptr.cast::<RegionInterned>()),
+                _ => core::hint::unreachable_unchecked(),
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn with_term<R>(
+        self,
+        ty: impl FnOnce(*const TyInterned) -> R,
+        konst: impl FnOnce(*const ConstInterned) -> R,
+    ) -> R {
+        let ptr = self.ptr.map_addr(|addr| addr & Self::PTR_MASK);
+        unsafe {
+            match self.ptr.addr() & Self::KIND_MASK {
+                Self::TY_MASK => ty(ptr.cast::<TyInterned>()),
+                Self::CONST_MASK => konst(ptr.cast::<ConstInterned>()),
+                _ => core::hint::unreachable_unchecked(),
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn kind<'a>(self) -> GenericArgKind<'a, 'db> {
+        unsafe {
+            self.with(
+                |ptr| {
+                    GenericArgKind::Type(TyRef {
+                        interned: InternedRef::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+                |ptr| {
+                    GenericArgKind::Const(ConstRef {
+                        interned: InternedRef::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+                |ptr| {
+                    GenericArgKind::Lifetime(RegionRef {
+                        interned: InternedRef::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+            )
+        }
+    }
+
+    #[inline]
+    unsafe fn owned_kind(self) -> OwnedGenericArgKind<'db> {
+        unsafe {
+            self.with(
+                |ptr| {
+                    OwnedGenericArgKind::Type(Ty {
+                        interned: Interned::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+                |ptr| {
+                    OwnedGenericArgKind::Const(Const {
+                        interned: Interned::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+                |ptr| {
+                    OwnedGenericArgKind::Lifetime(Region {
+                        interned: Interned::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+            )
+        }
+    }
+
+    #[inline]
+    unsafe fn term_kind<'a>(self) -> TermKind<'a, 'db> {
+        unsafe {
+            self.with_term(
+                |ptr| {
+                    TermKind::Ty(TyRef {
+                        interned: InternedRef::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+                |ptr| {
+                    TermKind::Const(ConstRef {
+                        interned: InternedRef::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+            )
+        }
+    }
+
+    #[inline]
+    unsafe fn owned_term_kind(self) -> OwnedTermKind<'db> {
+        unsafe {
+            self.with_term(
+                |ptr| {
+                    OwnedTermKind::Ty(Ty {
+                        interned: Interned::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+                |ptr| {
+                    OwnedTermKind::Const(Const {
+                        interned: Interned::from_raw(ptr),
+                        _marker: PhantomData,
+                    })
+                },
+            )
         }
     }
 }
 
-impl<'db> GenericArg<'db> {
-    pub fn ty(self) -> Option<Ty<'db>> {
+#[derive(PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct GenericArg<'db>(GenericArgImpl<'db>);
+
+impl<'db> Clone for GenericArg<'db> {
+    #[inline]
+    fn clone(&self) -> Self {
+        unsafe {
+            self.0.with(
+                |ptr| Ty { interned: InternedRef::from_raw(ptr).o(), _marker: PhantomData }.into(),
+                |ptr| {
+                    Const { interned: InternedRef::from_raw(ptr).o(), _marker: PhantomData }.into()
+                },
+                |ptr| {
+                    Region { interned: InternedRef::from_raw(ptr).o(), _marker: PhantomData }.into()
+                },
+            )
+        }
+    }
+}
+
+impl<'db> Drop for GenericArg<'db> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe {
+            self.0.with(
+                |ptr| drop(Ty { interned: Interned::from_raw(ptr), _marker: PhantomData }),
+                |ptr| drop(Const { interned: Interned::from_raw(ptr), _marker: PhantomData }),
+                |ptr| drop(Region { interned: Interned::from_raw(ptr), _marker: PhantomData }),
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct GenericArgRef<'a, 'db>(GenericArgImpl<'db>, PhantomData<&'a &'db ()>);
+
+unsafe impl<'db> SameRepr for GenericArg<'db> {
+    type Borrowed<'a>
+        = GenericArgRef<'a, 'db>
+    where
+        Self: 'a;
+}
+
+impl<'db> From<Ty<'db>> for GenericArg<'db> {
+    #[inline]
+    fn from(value: Ty<'db>) -> Self {
+        Self(GenericArgImpl::new_ty(value.interned.into_raw()))
+    }
+}
+
+impl<'db> From<Const<'db>> for GenericArg<'db> {
+    #[inline]
+    fn from(value: Const<'db>) -> Self {
+        Self(GenericArgImpl::new_const(value.interned.into_raw()))
+    }
+}
+
+impl<'db> From<Region<'db>> for GenericArg<'db> {
+    #[inline]
+    fn from(value: Region<'db>) -> Self {
+        Self(GenericArgImpl::new_region(value.interned.into_raw()))
+    }
+}
+
+impl<'db> From<Term<'db>> for GenericArg<'db> {
+    #[inline]
+    fn from(value: Term<'db>) -> Self {
+        Self(value.0)
+    }
+}
+
+impl<'a, 'db> From<TyRef<'a, 'db>> for GenericArgRef<'a, 'db> {
+    #[inline]
+    fn from(value: TyRef<'a, 'db>) -> Self {
+        Self(GenericArgImpl::new_ty(value.interned.as_raw()), PhantomData)
+    }
+}
+
+impl<'a, 'db> From<ConstRef<'a, 'db>> for GenericArgRef<'a, 'db> {
+    #[inline]
+    fn from(value: ConstRef<'a, 'db>) -> Self {
+        Self(GenericArgImpl::new_const(value.interned.as_raw()), PhantomData)
+    }
+}
+
+impl<'a, 'db> From<RegionRef<'a, 'db>> for GenericArgRef<'a, 'db> {
+    #[inline]
+    fn from(value: RegionRef<'a, 'db>) -> Self {
+        Self(GenericArgImpl::new_region(value.interned.as_raw()), PhantomData)
+    }
+}
+
+impl<'a, 'db> From<TermRef<'a, 'db>> for GenericArgRef<'a, 'db> {
+    #[inline]
+    fn from(value: TermRef<'a, 'db>) -> Self {
+        Self(value.0, PhantomData)
+    }
+}
+
+impl<'db> std::fmt::Debug for GenericArgRef<'_, 'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind() {
+            GenericArgKind::Type(it) => it.fmt(f),
+            GenericArgKind::Lifetime(it) => it.fmt(f),
+            GenericArgKind::Const(it) => it.fmt(f),
+        }
+    }
+}
+
+impl<'db> std::fmt::Debug for GenericArg<'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.r().fmt(f)
+    }
+}
+
+impl<'a, 'db> GenericArgRef<'a, 'db> {
+    #[inline]
+    pub fn o(self) -> GenericArg<'db> {
+        (*ManuallyDrop::new(GenericArg(self.0))).clone()
+    }
+
+    #[inline]
+    pub fn kind(self) -> GenericArgKind<'a, 'db> {
+        unsafe { self.0.kind() }
+    }
+
+    #[inline]
+    pub fn ty(self) -> Option<TyRef<'a, 'db>> {
         match self.kind() {
             GenericArgKind::Type(ty) => Some(ty),
             _ => None,
         }
     }
 
-    pub fn expect_ty(self) -> Ty<'db> {
+    #[inline]
+    pub fn expect_ty(self) -> TyRef<'a, 'db> {
         match self.kind() {
             GenericArgKind::Type(ty) => ty,
             _ => panic!("Expected ty, got {self:?}"),
         }
     }
 
-    pub fn konst(self) -> Option<Const<'db>> {
+    #[inline]
+    pub fn konst(self) -> Option<ConstRef<'a, 'db>> {
         match self.kind() {
             GenericArgKind::Const(konst) => Some(konst),
             _ => None,
         }
     }
 
-    pub fn region(self) -> Option<Region<'db>> {
+    #[inline]
+    pub fn region(self) -> Option<RegionRef<'a, 'db>> {
         match self.kind() {
             GenericArgKind::Lifetime(r) => Some(r),
             _ => None,
@@ -64,123 +370,437 @@ impl<'db> GenericArg<'db> {
     }
 
     #[inline]
-    pub(crate) fn expect_region(self) -> Region<'db> {
-        match self {
-            GenericArg::Lifetime(region) => region,
+    pub fn expect_region(self) -> RegionRef<'a, 'db> {
+        match self.kind() {
+            GenericArgKind::Lifetime(region) => region,
             _ => panic!("expected a region, got {self:?}"),
         }
     }
+}
 
-    pub fn error_from_id(interner: DbInterner<'db>, id: GenericParamId) -> GenericArg<'db> {
+impl<'db> GenericArg<'db> {
+    #[inline]
+    pub fn r(&self) -> GenericArgRef<'_, 'db> {
+        GenericArgRef(self.0, PhantomData)
+    }
+
+    #[inline]
+    pub fn kind(&self) -> GenericArgKind<'_, 'db> {
+        self.r().kind()
+    }
+
+    #[inline]
+    pub fn into_kind(&self) -> OwnedGenericArgKind<'db> {
+        unsafe { self.0.owned_kind() }
+    }
+
+    #[inline]
+    pub fn error_from_id(id: GenericParamId) -> GenericArg<'db> {
         match id {
-            GenericParamId::TypeParamId(_) => Ty::new_error(interner, ErrorGuaranteed).into(),
-            GenericParamId::ConstParamId(_) => Const::error(interner).into(),
-            GenericParamId::LifetimeParamId(_) => Region::error(interner).into(),
+            GenericParamId::TypeParamId(_) => Ty::new_error().into(),
+            GenericParamId::ConstParamId(_) => Const::new_error().into(),
+            GenericParamId::LifetimeParamId(_) => Region::new_error().into(),
+        }
+    }
+
+    #[inline]
+    pub fn into_type(self) -> Option<Ty<'db>> {
+        match self.into_kind() {
+            OwnedGenericArgKind::Type(it) => Some(it),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn into_const(self) -> Option<Const<'db>> {
+        match self.into_kind() {
+            OwnedGenericArgKind::Const(it) => Some(it),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn into_region(self) -> Option<Region<'db>> {
+        match self.into_kind() {
+            OwnedGenericArgKind::Lifetime(it) => Some(it),
+            _ => None,
         }
     }
 }
 
-impl<'db> From<Term<'db>> for GenericArg<'db> {
-    fn from(value: Term<'db>) -> Self {
-        match value {
-            Term::Ty(ty) => GenericArg::Ty(ty),
-            Term::Const(c) => GenericArg::Const(c),
+#[derive(PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct Term<'db>(GenericArgImpl<'db>);
+
+impl<'db> Clone for Term<'db> {
+    #[inline]
+    fn clone(&self) -> Self {
+        unsafe {
+            self.0.with_term(
+                |ptr| Ty { interned: InternedRef::from_raw(ptr).o(), _marker: PhantomData }.into(),
+                |ptr| {
+                    Const { interned: InternedRef::from_raw(ptr).o(), _marker: PhantomData }.into()
+                },
+            )
         }
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, TypeVisitable, TypeFoldable)]
-pub enum Term<'db> {
-    Ty(Ty<'db>),
-    Const(Const<'db>),
+impl<'db> Drop for Term<'db> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe {
+            self.0.with_term(
+                |ptr| drop(Ty { interned: Interned::from_raw(ptr), _marker: PhantomData }),
+                |ptr| drop(Const { interned: Interned::from_raw(ptr), _marker: PhantomData }),
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct TermRef<'a, 'db>(GenericArgImpl<'db>, PhantomData<&'a &'db ()>);
+
+impl<'db> From<Ty<'db>> for Term<'db> {
+    #[inline]
+    fn from(value: Ty<'db>) -> Self {
+        Self(GenericArgImpl::new_ty(value.interned.into_raw()))
+    }
+}
+
+impl<'db> From<Const<'db>> for Term<'db> {
+    #[inline]
+    fn from(value: Const<'db>) -> Self {
+        Self(GenericArgImpl::new_const(value.interned.into_raw()))
+    }
+}
+
+impl<'a, 'db> From<TyRef<'a, 'db>> for TermRef<'a, 'db> {
+    #[inline]
+    fn from(value: TyRef<'a, 'db>) -> Self {
+        Self(GenericArgImpl::new_ty(value.interned.as_raw()), PhantomData)
+    }
+}
+
+impl<'a, 'db> From<ConstRef<'a, 'db>> for TermRef<'a, 'db> {
+    #[inline]
+    fn from(value: ConstRef<'a, 'db>) -> Self {
+        Self(GenericArgImpl::new_const(value.interned.as_raw()), PhantomData)
+    }
+}
+
+impl<'db> std::fmt::Debug for TermRef<'_, 'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind() {
+            TermKind::Ty(it) => it.fmt(f),
+            TermKind::Const(it) => it.fmt(f),
+        }
+    }
 }
 
 impl<'db> std::fmt::Debug for Term<'db> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ty(t) => std::fmt::Debug::fmt(t, f),
-            Self::Const(c) => std::fmt::Debug::fmt(c, f),
-        }
+        self.r().fmt(f)
     }
 }
 
-impl<'db> Term<'db> {
-    pub fn expect_type(&self) -> Ty<'db> {
-        self.as_type().expect("expected a type, but found a const")
+impl<'a, 'db> TermRef<'a, 'db> {
+    #[inline]
+    pub fn o(self) -> Term<'db> {
+        (*ManuallyDrop::new(Term(self.0))).clone()
     }
 
-    pub fn is_trivially_wf(&self, tcx: DbInterner<'db>) -> bool {
+    #[inline]
+    pub fn kind(self) -> TermKind<'a, 'db> {
+        unsafe { self.0.term_kind() }
+    }
+
+    #[inline]
+    pub fn ty(self) -> Option<TyRef<'a, 'db>> {
         match self.kind() {
-            TermKind::Ty(ty) => ty.is_trivially_wf(tcx),
+            TermKind::Ty(ty) => Some(ty),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn expect_ty(self) -> TyRef<'a, 'db> {
+        match self.kind() {
+            TermKind::Ty(ty) => ty,
+            _ => panic!("Expected ty, got {self:?}"),
+        }
+    }
+
+    #[inline]
+    pub fn konst(self) -> Option<ConstRef<'a, 'db>> {
+        match self.kind() {
+            TermKind::Const(konst) => Some(konst),
+            _ => None,
+        }
+    }
+
+    pub fn is_trivially_wf(&self) -> bool {
+        match self.kind() {
+            TermKind::Ty(ty) => ty.is_trivially_wf(),
             TermKind::Const(ct) => ct.is_trivially_wf(),
         }
     }
 }
 
-impl<'db> From<Ty<'db>> for GenericArg<'db> {
-    fn from(value: Ty<'db>) -> Self {
-        Self::Ty(value)
+impl<'db> Term<'db> {
+    #[inline]
+    pub fn r(&self) -> TermRef<'_, 'db> {
+        TermRef(self.0, PhantomData)
     }
-}
 
-impl<'db> From<Region<'db>> for GenericArg<'db> {
-    fn from(value: Region<'db>) -> Self {
-        Self::Lifetime(value)
+    #[inline]
+    pub fn kind(&self) -> TermKind<'_, 'db> {
+        self.r().kind()
     }
-}
 
-impl<'db> From<Const<'db>> for GenericArg<'db> {
-    fn from(value: Const<'db>) -> Self {
-        Self::Const(value)
+    #[inline]
+    pub fn into_kind(&self) -> OwnedTermKind<'db> {
+        unsafe { self.0.owned_term_kind() }
     }
-}
 
-impl<'db> IntoKind for GenericArg<'db> {
-    type Kind = GenericArgKind<DbInterner<'db>>;
+    #[inline]
+    pub fn into_type(self) -> Option<Ty<'db>> {
+        match self.into_kind() {
+            OwnedTermKind::Ty(it) => Some(it),
+            _ => None,
+        }
+    }
 
-    fn kind(self) -> Self::Kind {
-        match self {
-            GenericArg::Ty(ty) => GenericArgKind::Type(ty),
-            GenericArg::Lifetime(region) => GenericArgKind::Lifetime(region),
-            GenericArg::Const(c) => GenericArgKind::Const(c),
+    #[inline]
+    pub fn expect_type(self) -> Ty<'db> {
+        match self.into_kind() {
+            OwnedTermKind::Ty(it) => it,
+            _ => panic!("expected a type, found {self:?}"),
+        }
+    }
+
+    #[inline]
+    pub fn into_const(self) -> Option<Const<'db>> {
+        match self.into_kind() {
+            OwnedTermKind::Const(it) => Some(it),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn expect_const(self) -> Const<'db> {
+        match self.into_kind() {
+            OwnedTermKind::Const(it) => it,
+            _ => panic!("expected a type, found {self:?}"),
         }
     }
 }
 
-impl<'db> Relate<DbInterner<'db>> for GenericArg<'db> {
-    fn relate<R: rustc_type_ir::relate::TypeRelation<DbInterner<'db>>>(
+impl<'a, 'db> AsOwnedKindRef<'a> for GenericArgRef<'a, 'db>
+where
+    'db: 'a,
+{
+    type Kind = GenericArgKind<'a, 'db>;
+
+    #[inline]
+    fn kind(self) -> Self::Kind {
+        self.kind()
+    }
+}
+
+impl<'a, 'db> AsOwnedKindRef<'a> for TermRef<'a, 'db>
+where
+    'db: 'a,
+{
+    type Kind = TermKind<'a, 'db>;
+
+    #[inline]
+    fn kind(self) -> Self::Kind {
+        self.kind()
+    }
+}
+
+impl<'db> TypeVisitable<DbInterner<'db>> for GenericArg<'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        self.r().visit_with(visitor)
+    }
+}
+
+impl<'db> TypeVisitable<DbInterner<'db>> for GenericArgRef<'_, 'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        match self.kind() {
+            GenericArgKind::Lifetime(it) => it.visit_with(visitor),
+            GenericArgKind::Type(it) => it.visit_with(visitor),
+            GenericArgKind::Const(it) => it.visit_with(visitor),
+        }
+    }
+}
+
+impl<'db> TypeFoldable<DbInterner<'db>> for GenericArg<'db> {
+    #[inline]
+    fn try_fold_with<F: FallibleTypeFolder<DbInterner<'db>>>(
+        self,
+        folder: &mut F,
+    ) -> Result<Self, F::Error> {
+        match self.into_kind() {
+            OwnedGenericArgKind::Type(it) => it.try_fold_with(folder).map(Into::into),
+            OwnedGenericArgKind::Const(it) => it.try_fold_with(folder).map(Into::into),
+            OwnedGenericArgKind::Lifetime(it) => it.try_fold_with(folder).map(Into::into),
+        }
+    }
+
+    #[inline]
+    fn fold_with<F: TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
+        match self.into_kind() {
+            OwnedGenericArgKind::Type(it) => it.fold_with(folder).into(),
+            OwnedGenericArgKind::Const(it) => it.fold_with(folder).into(),
+            OwnedGenericArgKind::Lifetime(it) => it.fold_with(folder).into(),
+        }
+    }
+}
+
+impl<'db> TypeVisitable<DbInterner<'db>> for Term<'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        self.r().visit_with(visitor)
+    }
+}
+
+impl<'db> TypeVisitable<DbInterner<'db>> for TermRef<'_, 'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        match self.kind() {
+            TermKind::Ty(it) => it.visit_with(visitor),
+            TermKind::Const(it) => it.visit_with(visitor),
+        }
+    }
+}
+
+impl<'db> TypeFoldable<DbInterner<'db>> for Term<'db> {
+    #[inline]
+    fn try_fold_with<F: FallibleTypeFolder<DbInterner<'db>>>(
+        self,
+        folder: &mut F,
+    ) -> Result<Self, F::Error> {
+        match self.into_kind() {
+            OwnedTermKind::Ty(it) => it.try_fold_with(folder).map(Into::into),
+            OwnedTermKind::Const(it) => it.try_fold_with(folder).map(Into::into),
+        }
+    }
+
+    #[inline]
+    fn fold_with<F: TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
+        match self.into_kind() {
+            OwnedTermKind::Ty(it) => it.fold_with(folder).into(),
+            OwnedTermKind::Const(it) => it.fold_with(folder).into(),
+        }
+    }
+}
+
+impl<'db> RelateRef<DbInterner<'db>> for GenericArg<'db> {
+    #[inline]
+    fn relate_ref<R: TypeRelation<DbInterner<'db>>>(
+        relation: &mut R,
+        a: &Self,
+        b: &Self,
+    ) -> RelateResult<'db, Self> {
+        relation.relate(a.r(), b.r())
+    }
+}
+
+impl<'db> Relate<DbInterner<'db>> for GenericArgRef<'_, 'db> {
+    type RelateResult = GenericArg<'db>;
+
+    #[inline]
+    fn into_relate_result(self) -> Self::RelateResult {
+        self.o()
+    }
+
+    #[inline]
+    fn relate<R: TypeRelation<DbInterner<'db>>>(
         relation: &mut R,
         a: Self,
         b: Self,
-    ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
+    ) -> RelateResult<'db, Self::RelateResult> {
         match (a.kind(), b.kind()) {
-            (GenericArgKind::Lifetime(a_lt), GenericArgKind::Lifetime(b_lt)) => {
-                Ok(relation.relate(a_lt, b_lt)?.into())
+            (GenericArgKind::Lifetime(a), GenericArgKind::Lifetime(b)) => {
+                relation.relate(a, b).map(Into::into)
             }
-            (GenericArgKind::Type(a_ty), GenericArgKind::Type(b_ty)) => {
-                Ok(relation.relate(a_ty, b_ty)?.into())
+            (GenericArgKind::Type(a), GenericArgKind::Type(b)) => {
+                relation.relate(a, b).map(Into::into)
             }
-            (GenericArgKind::Const(a_ct), GenericArgKind::Const(b_ct)) => {
-                Ok(relation.relate(a_ct, b_ct)?.into())
+            (GenericArgKind::Const(a), GenericArgKind::Const(b)) => {
+                relation.relate(a, b).map(Into::into)
             }
-            (GenericArgKind::Lifetime(unpacked), x) => {
-                unreachable!("impossible case reached: can't relate: {:?} with {:?}", unpacked, x)
-            }
-            (GenericArgKind::Type(unpacked), x) => {
-                unreachable!("impossible case reached: can't relate: {:?} with {:?}", unpacked, x)
-            }
-            (GenericArgKind::Const(unpacked), x) => {
-                unreachable!("impossible case reached: can't relate: {:?} with {:?}", unpacked, x)
-            }
+            _ => panic!("impossible case reached: can't relate: {a:?} with {b:?}"),
         }
     }
 }
 
-interned_vec_db!(GenericArgs, GenericArg);
+impl<'db> RelateRef<DbInterner<'db>> for Term<'db> {
+    #[inline]
+    fn relate_ref<R: TypeRelation<DbInterner<'db>>>(
+        relation: &mut R,
+        a: &Self,
+        b: &Self,
+    ) -> RelateResult<'db, Self> {
+        relation.relate(a.r(), b.r())
+    }
+}
 
-impl<'db> rustc_type_ir::inherent::GenericArg<DbInterner<'db>> for GenericArg<'db> {}
+impl<'db> Relate<DbInterner<'db>> for TermRef<'_, 'db> {
+    type RelateResult = Term<'db>;
+
+    #[inline]
+    fn into_relate_result(self) -> Self::RelateResult {
+        self.o()
+    }
+
+    #[inline]
+    fn relate<R: TypeRelation<DbInterner<'db>>>(
+        relation: &mut R,
+        a: Self,
+        b: Self,
+    ) -> RelateResult<'db, Self::RelateResult> {
+        match (a.kind(), b.kind()) {
+            (TermKind::Ty(a), TermKind::Ty(b)) => relation.relate(a, b).map(Into::into),
+            (TermKind::Const(a), TermKind::Const(b)) => relation.relate(a, b).map(Into::into),
+            _ => panic!("impossible case reached: can't relate: {a:?} with {b:?}"),
+        }
+    }
+}
+
+interned_slice!(
+    GenericArgsStorage,
+    GenericArgs,
+    GenericArgsRef,
+    GenericArg<'db>,
+    GenericArgRef<'a, 'db>,
+    GenericArg<'static>,
+    generic_args,
+);
+impl_foldable_for_interned_slice_with_borrowed!(GenericArgs, GenericArgsRef);
+interned_slice_with_borrowed!(
+    GenericArgs,
+    GenericArgsRef,
+    GenericArg<'db>,
+    GenericArgRef<'a, 'db>,
+    GenericArg<'static>
+);
+
+impl<'a, 'db> rustc_type_ir::inherent::GenericArg<'a, DbInterner<'db>> for GenericArgRef<'a, 'db> where
+    'db: 'a
+{
+}
 
 impl<'db> GenericArgs<'db> {
+    pub fn identity_for_item(interner: DbInterner<'db>, def_id: SolverDefId) -> GenericArgs<'db> {
+        GenericArgs::for_item(interner, def_id, |index, kind, _| mk_param(index, kind))
+    }
+
     /// Creates an `GenericArgs` for generic parameter definitions,
     /// by calling closures to obtain each kind.
     /// The closures get to observe the `GenericArgs` as they're
@@ -203,12 +823,12 @@ impl<'db> GenericArgs<'db> {
 
         let mut args = SmallVec::with_capacity(count);
         Self::fill_item(&mut args, interner, defs, &mut mk_kind);
-        interner.mk_args(&args)
+        GenericArgs::new_from_smallvec(args)
     }
 
     /// Creates an all-error `GenericArgs`.
     pub fn error_for_item(interner: DbInterner<'db>, def_id: SolverDefId) -> GenericArgs<'db> {
-        GenericArgs::for_item(interner, def_id, |_, id, _| GenericArg::error_from_id(interner, id))
+        GenericArgs::for_item(interner, def_id, |_, id, _| GenericArg::error_from_id(id))
     }
 
     /// Like `for_item`, but prefers the default of a parameter if it has any.
@@ -222,7 +842,7 @@ impl<'db> GenericArgs<'db> {
     {
         let defaults = interner.db.generic_defaults(def_id);
         Self::for_item(interner, def_id.into(), |idx, id, prev| match defaults.get(idx as usize) {
-            Some(default) => default.instantiate(interner, prev),
+            Some(default) => default.instantiate(interner, prev.as_borrowed_slice()),
             None => fallback(idx, id, prev),
         })
     }
@@ -257,7 +877,7 @@ impl<'db> GenericArgs<'db> {
         Self::fill_rest(interner, def_id.into(), first, |idx, id, prev| {
             defaults
                 .get(idx as usize)
-                .map(|default| default.instantiate(interner, prev))
+                .map(|default| default.instantiate(interner, prev.as_borrowed_slice()))
                 .unwrap_or_else(|| fallback(idx, id, prev))
         })
     }
@@ -287,198 +907,183 @@ impl<'db> GenericArgs<'db> {
             args.push(kind);
         }
     }
+}
 
-    pub fn closure_sig_untupled(self) -> PolyFnSig<'db> {
-        let TyKind::FnPtr(inputs_and_output, hdr) =
-            self.split_closure_args_untupled().closure_sig_as_fn_ptr_ty.kind()
-        else {
-            unreachable!("not a function pointer")
-        };
-        inputs_and_output.with(hdr)
+impl<'a, 'db> GenericArgsRef<'a, 'db> {
+    pub fn types(self) -> impl Iterator<Item = TyRef<'a, 'db>> {
+        self.iter().filter_map(|it| it.ty())
     }
 
-    /// A "sensible" `.split_closure_args()`, where the arguments are not in a tuple.
-    pub fn split_closure_args_untupled(self) -> rustc_type_ir::ClosureArgsParts<DbInterner<'db>> {
-        // FIXME: should use `ClosureSubst` when possible
-        match self.inner().as_slice() {
-            [parent_args @ .., closure_kind_ty, sig_ty, tupled_upvars_ty] => {
-                let interner = DbInterner::conjure();
-                rustc_type_ir::ClosureArgsParts {
-                    parent_args: GenericArgs::new_from_iter(interner, parent_args.iter().cloned()),
-                    closure_sig_as_fn_ptr_ty: sig_ty.expect_ty(),
-                    closure_kind_ty: closure_kind_ty.expect_ty(),
-                    tupled_upvars_ty: tupled_upvars_ty.expect_ty(),
-                }
-            }
-            _ => {
-                unreachable!("unexpected closure sig");
-            }
-        }
+    pub fn consts(self) -> impl Iterator<Item = ConstRef<'a, 'db>> {
+        self.iter().filter_map(|it| it.konst())
     }
 
-    pub fn types(self) -> impl Iterator<Item = Ty<'db>> {
-        self.iter().filter_map(|it| it.as_type())
+    pub fn regions(self) -> impl Iterator<Item = RegionRef<'a, 'db>> {
+        self.iter().filter_map(|it| it.region())
     }
 
-    pub fn consts(self) -> impl Iterator<Item = Const<'db>> {
-        self.iter().filter_map(|it| it.as_const())
+    pub fn type_at(self, i: usize) -> TyRef<'a, 'db> {
+        self.as_slice()
+            .get(i)
+            .and_then(|g| g.ty())
+            .unwrap_or_else(|| panic!("expected type: index={i}, args={self:?}"))
     }
 
-    pub fn regions(self) -> impl Iterator<Item = Region<'db>> {
-        self.iter().filter_map(|it| it.as_region())
+    pub fn region_at(self, i: usize) -> RegionRef<'a, 'db> {
+        self.as_slice()
+            .get(i)
+            .and_then(|g| g.region())
+            .unwrap_or_else(|| panic!("expected type: index={i}, args={self:?}"))
+    }
+
+    pub fn const_at(self, i: usize) -> ConstRef<'a, 'db> {
+        self.as_slice()
+            .get(i)
+            .and_then(|g| g.konst())
+            .unwrap_or_else(|| panic!("expected type: index={i}, args={self:?}"))
+    }
+
+    /// Assuming these are args of a closure, this returns its signature untupled
+    /// (that is, `Fn(i32, i32)` will be returned as `fn(i32, i32)`, while it's stored
+    /// as `fn((i32, i32))`), and with `safety` as the safety.
+    pub fn signature_unclosure(self, safety: Safety) -> PolyFnSig<'db> {
+        self.as_closure().sig().map_bound(|sig| FnSig {
+            inputs_and_output: Tys::new_from_iter(
+                sig.inputs_and_output.as_slice()[0]
+                    .tuple_fields()
+                    .iter()
+                    .chain(std::iter::once(sig.output()))
+                    .owned(),
+            ),
+            c_variadic: sig.c_variadic,
+            safety,
+            abi: FnAbi::Rust,
+        })
     }
 }
 
-impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for GenericArgs<'db> {
-    fn relate<R: rustc_type_ir::relate::TypeRelation<DbInterner<'db>>>(
+impl<'db> RelateRef<DbInterner<'db>> for GenericArgs<'db> {
+    #[inline]
+    fn relate_ref<R: TypeRelation<DbInterner<'db>>>(
+        relation: &mut R,
+        a: &Self,
+        b: &Self,
+    ) -> RelateResult<'db, Self> {
+        relation.relate(a.r(), b.r())
+    }
+}
+
+impl<'a, 'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for GenericArgsRef<'a, 'db> {
+    type RelateResult = GenericArgs<'db>;
+
+    #[inline]
+    fn into_relate_result(self) -> Self::RelateResult {
+        self.o()
+    }
+
+    fn relate<R: TypeRelation<DbInterner<'db>>>(
         relation: &mut R,
         a: Self,
         b: Self,
-    ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
-        let interner = relation.cx();
-        CollectAndApply::collect_and_apply(
-            std::iter::zip(a.iter(), b.iter()).map(|(a, b)| {
-                relation.relate_with_variance(
-                    Variance::Invariant,
-                    VarianceDiagInfo::default(),
-                    a,
-                    b,
-                )
-            }),
-            |g| GenericArgs::new_from_iter(interner, g.iter().cloned()),
-        )
+    ) -> RelateResult<'db, Self::RelateResult> {
+        relate_args_invariantly(relation, a, b)
     }
 }
 
-impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<'db> {
-    fn as_closure(self) -> ClosureArgs<DbInterner<'db>> {
+impl<'a, 'db> rustc_type_ir::inherent::GenericArgsRef<'a, DbInterner<'db>>
+    for GenericArgsRef<'a, 'db>
+where
+    'db: 'a,
+{
+    fn as_closure(self) -> ClosureArgs<'a, 'db> {
         ClosureArgs { args: self }
     }
-    fn as_coroutine(self) -> CoroutineArgs<DbInterner<'db>> {
+    fn as_coroutine(self) -> CoroutineArgs<'a, 'db> {
         CoroutineArgs { args: self }
     }
-    fn as_coroutine_closure(self) -> CoroutineClosureArgs<DbInterner<'db>> {
+    fn as_coroutine_closure(self) -> CoroutineClosureArgs<'a, 'db> {
         CoroutineClosureArgs { args: self }
     }
     fn rebase_onto(
         self,
         interner: DbInterner<'db>,
-        source_def_id: <DbInterner<'db> as rustc_type_ir::Interner>::DefId,
-        target: <DbInterner<'db> as rustc_type_ir::Interner>::GenericArgs,
-    ) -> <DbInterner<'db> as rustc_type_ir::Interner>::GenericArgs {
+        source_def_id: SolverDefId,
+        target: GenericArgsRef<'_, 'db>,
+    ) -> GenericArgs<'db> {
         let defs = interner.generics_of(source_def_id);
-        interner.mk_args_from_iter(target.iter().chain(self.iter().skip(defs.count())))
+        interner.mk_args_from_iter(target.iter().chain(self.iter().skip(defs.count())).owned())
     }
 
-    fn identity_for_item(
-        interner: DbInterner<'db>,
-        def_id: <DbInterner<'db> as rustc_type_ir::Interner>::DefId,
-    ) -> <DbInterner<'db> as rustc_type_ir::Interner>::GenericArgs {
-        Self::for_item(interner, def_id, |index, kind, _| mk_param(interner, index, kind))
+    fn identity_for_item(interner: DbInterner<'db>, def_id: SolverDefId) -> GenericArgs<'db> {
+        GenericArgs::for_item(interner, def_id, |index, kind, _| mk_param(index, kind))
     }
 
     fn extend_with_error(
         interner: DbInterner<'db>,
-        def_id: <DbInterner<'db> as rustc_type_ir::Interner>::DefId,
-        original_args: &[<DbInterner<'db> as rustc_type_ir::Interner>::GenericArg],
-    ) -> <DbInterner<'db> as rustc_type_ir::Interner>::GenericArgs {
-        Self::for_item(interner, def_id, |index, kind, _| {
+        def_id: SolverDefId,
+        original_args: &[GenericArg<'db>],
+    ) -> GenericArgs<'db> {
+        GenericArgs::for_item(interner, def_id, |index, kind, _| {
             if let Some(arg) = original_args.get(index as usize) {
-                *arg
+                arg.clone()
             } else {
-                error_for_param_kind(kind, interner)
+                GenericArg::error_from_id(kind)
             }
         })
     }
-    fn type_at(self, i: usize) -> <DbInterner<'db> as rustc_type_ir::Interner>::Ty {
-        self.inner()
-            .get(i)
-            .and_then(|g| g.as_type())
-            .unwrap_or_else(|| Ty::new_error(DbInterner::conjure(), ErrorGuaranteed))
+
+    fn type_at(self, i: usize) -> TyRef<'a, 'db> {
+        self.type_at(i)
     }
 
-    fn region_at(self, i: usize) -> <DbInterner<'db> as rustc_type_ir::Interner>::Region {
-        self.inner()
-            .get(i)
-            .and_then(|g| g.as_region())
-            .unwrap_or_else(|| Region::error(DbInterner::conjure()))
+    fn region_at(self, i: usize) -> RegionRef<'a, 'db> {
+        self.region_at(i)
     }
 
-    fn const_at(self, i: usize) -> <DbInterner<'db> as rustc_type_ir::Interner>::Const {
-        self.inner()
-            .get(i)
-            .and_then(|g| g.as_const())
-            .unwrap_or_else(|| Const::error(DbInterner::conjure()))
+    fn const_at(self, i: usize) -> ConstRef<'a, 'db> {
+        self.const_at(i)
     }
 
-    fn split_closure_args(self) -> rustc_type_ir::ClosureArgsParts<DbInterner<'db>> {
-        // FIXME: should use `ClosureSubst` when possible
-        match self.inner().as_slice() {
-            [parent_args @ .., closure_kind_ty, sig_ty, tupled_upvars_ty] => {
-                let interner = DbInterner::conjure();
-                // This is stupid, but the next solver expects the first input to actually be a tuple
-                let sig_ty = match sig_ty.expect_ty().kind() {
-                    TyKind::FnPtr(sig_tys, header) => Ty::new(
-                        interner,
-                        TyKind::FnPtr(
-                            sig_tys.map_bound(|s| {
-                                let inputs = Ty::new_tup_from_iter(interner, s.inputs().iter());
-                                let output = s.output();
-                                FnSigTys {
-                                    inputs_and_output: Tys::new_from_iter(
-                                        interner,
-                                        [inputs, output],
-                                    ),
-                                }
-                            }),
-                            header,
-                        ),
-                    ),
-                    _ => unreachable!("sig_ty should be last"),
-                };
+    fn split_closure_args(self) -> rustc_type_ir::ClosureArgsParts<'a, DbInterner<'db>> {
+        match *self.as_slice() {
+            [ref parent_args @ .., closure_kind_ty, closure_sig_as_fn_ptr_ty, tupled_upvars_ty] => {
                 rustc_type_ir::ClosureArgsParts {
-                    parent_args: GenericArgs::new_from_iter(interner, parent_args.iter().cloned()),
-                    closure_sig_as_fn_ptr_ty: sig_ty,
+                    parent_args,
                     closure_kind_ty: closure_kind_ty.expect_ty(),
+                    closure_sig_as_fn_ptr_ty: closure_sig_as_fn_ptr_ty.expect_ty(),
                     tupled_upvars_ty: tupled_upvars_ty.expect_ty(),
                 }
             }
-            _ => {
-                unreachable!("unexpected closure sig");
-            }
+            _ => panic!("closure args missing synthetics"),
         }
     }
 
     fn split_coroutine_closure_args(
         self,
-    ) -> rustc_type_ir::CoroutineClosureArgsParts<DbInterner<'db>> {
-        match self.inner().as_slice() {
+    ) -> rustc_type_ir::CoroutineClosureArgsParts<'a, DbInterner<'db>> {
+        match *self.as_slice() {
             [
-                parent_args @ ..,
+                ref parent_args @ ..,
                 closure_kind_ty,
                 signature_parts_ty,
                 tupled_upvars_ty,
                 coroutine_captures_by_ref_ty,
             ] => rustc_type_ir::CoroutineClosureArgsParts {
-                parent_args: GenericArgs::new_from_iter(
-                    DbInterner::conjure(),
-                    parent_args.iter().cloned(),
-                ),
+                parent_args,
                 closure_kind_ty: closure_kind_ty.expect_ty(),
                 signature_parts_ty: signature_parts_ty.expect_ty(),
                 tupled_upvars_ty: tupled_upvars_ty.expect_ty(),
                 coroutine_captures_by_ref_ty: coroutine_captures_by_ref_ty.expect_ty(),
             },
-            _ => panic!("GenericArgs were likely not for a CoroutineClosure."),
+            _ => panic!("closure args missing synthetics"),
         }
     }
 
-    fn split_coroutine_args(self) -> rustc_type_ir::CoroutineArgsParts<DbInterner<'db>> {
-        let interner = DbInterner::conjure();
-        match self.inner().as_slice() {
-            [parent_args @ .., kind_ty, resume_ty, yield_ty, return_ty, tupled_upvars_ty] => {
+    fn split_coroutine_args(self) -> rustc_type_ir::CoroutineArgsParts<'a, DbInterner<'db>> {
+        match *self.as_slice() {
+            [ref parent_args @ .., kind_ty, resume_ty, yield_ty, return_ty, tupled_upvars_ty] => {
                 rustc_type_ir::CoroutineArgsParts {
-                    parent_args: GenericArgs::new_from_iter(interner, parent_args.iter().cloned()),
+                    parent_args,
                     kind_ty: kind_ty.expect_ty(),
                     resume_ty: resume_ty.expect_ty(),
                     yield_ty: yield_ty.expect_ty(),
@@ -486,76 +1091,36 @@ impl<'db> rustc_type_ir::inherent::GenericArgs<DbInterner<'db>> for GenericArgs<
                     tupled_upvars_ty: tupled_upvars_ty.expect_ty(),
                 }
             }
-            _ => panic!("GenericArgs were likely not for a Coroutine."),
+            _ => panic!("coroutine args missing synthetics"),
         }
     }
 }
 
-pub fn mk_param<'db>(interner: DbInterner<'db>, index: u32, id: GenericParamId) -> GenericArg<'db> {
+pub fn mk_param<'db>(index: u32, id: GenericParamId) -> GenericArg<'db> {
     match id {
         GenericParamId::LifetimeParamId(id) => {
-            Region::new_early_param(interner, EarlyParamRegion { index, id }).into()
+            Region::new_early_param(EarlyParamRegion { index, id }).into()
         }
-        GenericParamId::TypeParamId(id) => Ty::new_param(interner, id, index).into(),
-        GenericParamId::ConstParamId(id) => {
-            Const::new_param(interner, ParamConst { index, id }).into()
-        }
+        GenericParamId::TypeParamId(id) => Ty::new_param(ParamTy { id, index }).into(),
+        GenericParamId::ConstParamId(id) => Const::new_param(ParamConst { index, id }).into(),
     }
 }
 
-pub fn error_for_param_kind<'db>(id: GenericParamId, interner: DbInterner<'db>) -> GenericArg<'db> {
-    match id {
-        GenericParamId::LifetimeParamId(_) => Region::error(interner).into(),
-        GenericParamId::TypeParamId(_) => Ty::new_error(interner, ErrorGuaranteed).into(),
-        GenericParamId::ConstParamId(_) => Const::error(interner).into(),
+impl<'db> rustc_type_ir::inherent::Term<DbInterner<'db>> for Term<'db> {
+    #[inline]
+    fn into_type(self) -> Option<Ty<'db>> {
+        self.into_type()
+    }
+
+    fn into_const(self) -> Option<Const<'db>> {
+        self.into_const()
     }
 }
 
-impl<'db> IntoKind for Term<'db> {
-    type Kind = TermKind<DbInterner<'db>>;
-
-    fn kind(self) -> Self::Kind {
-        match self {
-            Term::Ty(ty) => TermKind::Ty(ty),
-            Term::Const(c) => TermKind::Const(c),
-        }
-    }
+impl<'a, 'db> rustc_type_ir::inherent::TermRef<'a, DbInterner<'db>> for TermRef<'a, 'db> where
+    'db: 'a
+{
 }
-
-impl<'db> From<Ty<'db>> for Term<'db> {
-    fn from(value: Ty<'db>) -> Self {
-        Self::Ty(value)
-    }
-}
-
-impl<'db> From<Const<'db>> for Term<'db> {
-    fn from(value: Const<'db>) -> Self {
-        Self::Const(value)
-    }
-}
-
-impl<'db> Relate<DbInterner<'db>> for Term<'db> {
-    fn relate<R: rustc_type_ir::relate::TypeRelation<DbInterner<'db>>>(
-        relation: &mut R,
-        a: Self,
-        b: Self,
-    ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
-        match (a.kind(), b.kind()) {
-            (TermKind::Ty(a_ty), TermKind::Ty(b_ty)) => Ok(relation.relate(a_ty, b_ty)?.into()),
-            (TermKind::Const(a_ct), TermKind::Const(b_ct)) => {
-                Ok(relation.relate(a_ct, b_ct)?.into())
-            }
-            (TermKind::Ty(unpacked), x) => {
-                unreachable!("impossible case reached: can't relate: {:?} with {:?}", unpacked, x)
-            }
-            (TermKind::Const(unpacked), x) => {
-                unreachable!("impossible case reached: can't relate: {:?} with {:?}", unpacked, x)
-            }
-        }
-    }
-}
-
-impl<'db> rustc_type_ir::inherent::Term<DbInterner<'db>> for Term<'db> {}
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum TermVid {
@@ -575,16 +1140,11 @@ impl From<ConstVid> for TermVid {
     }
 }
 
-impl<'db> DbInterner<'db> {
-    pub(super) fn mk_args(self, args: &[GenericArg<'db>]) -> GenericArgs<'db> {
-        GenericArgs::new_from_iter(self, args.iter().cloned())
-    }
+impl<'db> AsOwnedSlice for [GenericArgRef<'_, 'db>] {
+    type Owned = GenericArg<'db>;
 
-    pub(super) fn mk_args_from_iter<I, T>(self, iter: I) -> T::Output
-    where
-        I: Iterator<Item = T>,
-        T: rustc_type_ir::CollectAndApply<GenericArg<'db>, GenericArgs<'db>>,
-    {
-        T::collect_and_apply(iter, |xs| self.mk_args(xs))
+    #[inline(always)]
+    fn as_owned_slice(&self) -> &[Self::Owned] {
+        <[GenericArg<'_>]>::as_owned_slice(self)
     }
 }

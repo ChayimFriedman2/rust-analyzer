@@ -1,21 +1,16 @@
 //! Storage for type variables for the infer context the next-trait-solver.
 
-use std::cmp;
-use std::marker::PhantomData;
-use std::ops::Range;
+use std::{cmp, marker::PhantomData, ops::Range};
 
-use ena::snapshot_vec as sv;
-use ena::undo_log::Rollback;
-use ena::unify as ut;
+use ena::{snapshot_vec as sv, undo_log::Rollback, unify as ut};
 use rustc_index::IndexVec;
-use rustc_type_ir::TyVid;
-use rustc_type_ir::UniverseIndex;
-use rustc_type_ir::inherent::Ty as _;
+use rustc_type_ir::{TyVid, UniverseIndex};
 use tracing::debug;
 
-use crate::next_solver::SolverDefId;
-use crate::next_solver::Ty;
-use crate::next_solver::infer::{InferCtxtUndoLogs, iter_idx_range};
+use crate::next_solver::{
+    SolverDefId, Ty, TyRef,
+    infer::{InferCtxtUndoLogs, iter_idx_range},
+};
 
 /// Represents a single undo-able action that affects a type inference variable.
 #[derive(Clone)]
@@ -116,10 +111,10 @@ pub(crate) enum TypeVariableValue<'db> {
 impl<'db> TypeVariableValue<'db> {
     /// If this value is known, returns the type it is known to be.
     /// Otherwise, `None`.
-    pub(crate) fn known(&self) -> Option<Ty<'db>> {
+    pub(crate) fn known(&self) -> Option<TyRef<'_, 'db>> {
         match self {
             TypeVariableValue::Unknown { .. } => None,
-            TypeVariableValue::Known { value } => Some(*value),
+            TypeVariableValue::Known { value } => Some(value.r()),
         }
     }
 
@@ -185,7 +180,7 @@ impl<'db> TypeVariableTable<'_, 'db> {
     /// Precondition: `vid` must not have been previously instantiated.
     pub(crate) fn instantiate(&mut self, vid: TyVid, ty: Ty<'db>) {
         let vid = self.root_var(vid);
-        debug_assert!(!ty.is_ty_var(), "instantiating ty var with var: {vid:?} {ty:?}");
+        debug_assert!(!ty.r().is_ty_var(), "instantiating ty var with var: {vid:?} {ty:?}");
         debug_assert!(self.probe(vid).is_unknown());
         debug_assert!(
             self.eq_relations().probe_value(vid).is_unknown(),

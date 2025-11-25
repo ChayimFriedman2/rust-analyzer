@@ -3,7 +3,7 @@ use rustc_type_ir::{OutlivesPredicate, TypeVisitableExt};
 use tracing::{debug, instrument};
 
 use crate::next_solver::{
-    ArgOutlivesPredicate, GenericArg, Region, RegionOutlivesPredicate, Ty,
+    ArgOutlivesPredicate, OwnedGenericArgKind, Region, RegionOutlivesPredicate, Ty,
     infer::{InferCtxt, TypeOutlivesConstraint, snapshot::undo_log::UndoLog},
 };
 
@@ -12,14 +12,14 @@ impl<'db> InferCtxt<'db> {
         &self,
         OutlivesPredicate(arg, r2): ArgOutlivesPredicate<'db>,
     ) {
-        match arg {
-            GenericArg::Lifetime(r1) => {
+        match arg.into_kind() {
+            OwnedGenericArgKind::Lifetime(r1) => {
                 self.register_region_outlives_constraint(OutlivesPredicate(r1, r2));
             }
-            GenericArg::Ty(ty1) => {
+            OwnedGenericArgKind::Type(ty1) => {
                 self.register_type_outlives_constraint(ty1, r2);
             }
-            GenericArg::Const(_) => unreachable!(),
+            OwnedGenericArgKind::Const(_) => unreachable!(),
         }
     }
 
@@ -28,7 +28,7 @@ impl<'db> InferCtxt<'db> {
         OutlivesPredicate(r_a, r_b): RegionOutlivesPredicate<'db>,
     ) {
         // `'a: 'b` ==> `'b <= 'a`
-        self.sub_regions(r_b, r_a);
+        self.sub_regions(r_b.r(), r_a.r());
     }
 
     /// Registers that the given region obligation must be resolved

@@ -5,7 +5,6 @@ use std::collections::hash_map;
 use hir_def::{GenericParamId, TraitId, hir::ExprId, lang_item::LangItem};
 use intern::{Symbol, sym};
 use rustc_ast_ir::Mutability;
-use rustc_type_ir::inherent::{IntoKind, Ty as _};
 use syntax::ast::{ArithOp, BinaryOp, UnaryOp};
 use tracing::debug;
 
@@ -14,7 +13,7 @@ use crate::{
     infer::{AllowTwoPhase, AutoBorrowMutability, Expectation, InferenceContext, expr::ExprIsRead},
     method_resolution::{MethodCallee, TreatNotYetDefinedOpaques},
     next_solver::{
-        GenericArgs, TraitRef, Ty, TyKind,
+        GenericArgs, TraitRef, Ty, TyKind, TyRef,
         fulfill::NextSolverError,
         infer::traits::{Obligation, ObligationCause},
         obligation_ctxt::ObligationCtxt,
@@ -34,12 +33,12 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
             self.infer_overloaded_binop(expr, lhs, rhs, BinaryOp::Assignment { op: Some(op) });
 
         let category = BinOpCategory::from(op);
-        let ty = if !lhs_ty.is_ty_var()
-            && !rhs_ty.is_ty_var()
-            && is_builtin_binop(lhs_ty, rhs_ty, category)
+        let ty = if !lhs_ty.r().is_ty_var()
+            && !rhs_ty.r().is_ty_var()
+            && is_builtin_binop(lhs_ty.r(), rhs_ty.r(), category)
         {
-            self.enforce_builtin_binop_types(lhs_ty, rhs_ty, category);
-            self.types.unit
+            self.enforce_builtin_binop_types(lhs_ty.r(), rhs_ty.r(), category);
+            self.types.types.unit.clone()
         } else {
             return_ty
         };
@@ -67,20 +66,20 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 // && and || are a simple case.
                 self.infer_expr_coerce(
                     lhs_expr,
-                    &Expectation::HasType(self.types.bool),
+                    &Expectation::HasType(self.types.types.bool.clone()),
                     ExprIsRead::Yes,
                 );
                 let lhs_diverges = self.diverges;
                 self.infer_expr_coerce(
                     rhs_expr,
-                    &Expectation::HasType(self.types.bool),
+                    &Expectation::HasType(self.types.types.bool.clone()),
                     ExprIsRead::Yes,
                 );
 
                 // Depending on the LHS' value, the RHS can never execute.
                 self.diverges = lhs_diverges;
 
-                self.types.bool
+                self.types.types.bool.clone()
             }
             _ => {
                 // Otherwise, we always treat operators as if they are
@@ -102,14 +101,14 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 // though we don't know yet what type 2 has and hence
                 // can't pin this down to a specific impl.
                 let category = BinOpCategory::from(op);
-                if !lhs_ty.is_ty_var()
-                    && !rhs_ty.is_ty_var()
-                    && is_builtin_binop(lhs_ty, rhs_ty, category)
+                if !lhs_ty.r().is_ty_var()
+                    && !rhs_ty.r().is_ty_var()
+                    && is_builtin_binop(lhs_ty.r(), rhs_ty.r(), category)
                 {
                     let builtin_return_ty =
-                        self.enforce_builtin_binop_types(lhs_ty, rhs_ty, category);
-                    _ = self.demand_eqtype(expr.into(), builtin_return_ty, return_ty);
-                    builtin_return_ty
+                        self.enforce_builtin_binop_types(lhs_ty.r(), rhs_ty.r(), category);
+                    _ = self.demand_eqtype(expr.into(), builtin_return_ty, return_ty.r());
+                    builtin_return_ty.o()
                 } else {
                     return_ty
                 }
@@ -117,12 +116,12 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
         }
     }
 
-    fn enforce_builtin_binop_types(
+    fn enforce_builtin_binop_types<'b>(
         &mut self,
-        lhs_ty: Ty<'db>,
-        rhs_ty: Ty<'db>,
+        lhs_ty: TyRef<'b, 'db>,
+        rhs_ty: TyRef<'b, 'db>,
         category: BinOpCategory,
-    ) -> Ty<'db> {
+    ) -> TyRef<'b, 'db> {
         debug_assert!(is_builtin_binop(lhs_ty, rhs_ty, category));
 
         // Special-case a single layer of referencing, so that things like `5.0 + &6.0f32` work.
@@ -131,9 +130,9 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
 
         match category {
             BinOpCategory::Shortcircuit => {
-                self.demand_suptype(self.types.bool, lhs_ty);
-                self.demand_suptype(self.types.bool, rhs_ty);
-                self.types.bool
+                self.demand_suptype(self.types.types.bool.r(), lhs_ty);
+                self.demand_suptype(self.types.types.bool.r(), rhs_ty);
+                self.types.types.bool.r()
             }
 
             BinOpCategory::Shift => {
@@ -150,7 +149,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
             BinOpCategory::Comparison => {
                 // both LHS and RHS and result will have the same type
                 self.demand_suptype(lhs_ty, rhs_ty);
-                self.types.bool
+                self.types.types.bool.r()
             }
         }
     }
@@ -193,8 +192,8 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
         // particularly for things like `String + &String`.
         let rhs_ty_var = self.table.next_ty_var();
         let result = self.lookup_op_method(
-            lhs_ty,
-            Some((rhs_expr, rhs_ty_var)),
+            lhs_ty.r(),
+            Some((rhs_expr, rhs_ty_var.clone())),
             self.lang_item_for_bin_op(op),
         );
 
@@ -207,27 +206,23 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
             Ok(method) => {
                 let by_ref_binop = !is_op_by_value(op);
                 if (matches!(op, BinaryOp::Assignment { .. }) || by_ref_binop)
-                    && let TyKind::Ref(_, _, mutbl) =
-                        method.sig.inputs_and_output.inputs()[0].kind()
+                    && let TyKind::Ref(_, _, mutbl) = *method.sig.inputs()[0].kind()
                 {
                     let mutbl = AutoBorrowMutability::new(mutbl, AllowTwoPhase::Yes);
                     let autoref = Adjustment {
                         kind: Adjust::Borrow(AutoBorrow::Ref(mutbl)),
-                        target: method.sig.inputs_and_output.inputs()[0],
+                        target: method.sig.inputs()[0].o(),
                     };
                     self.write_expr_adj(lhs_expr, Box::new([autoref]));
                 }
-                if by_ref_binop
-                    && let TyKind::Ref(_, _, mutbl) =
-                        method.sig.inputs_and_output.inputs()[1].kind()
-                {
+                if by_ref_binop && let TyKind::Ref(_, _, mutbl) = *method.sig.inputs()[1].kind() {
                     // Allow two-phase borrows for binops in initial deployment
                     // since they desugar to methods
                     let mutbl = AutoBorrowMutability::new(mutbl, AllowTwoPhase::Yes);
 
                     let autoref = Adjustment {
                         kind: Adjust::Borrow(AutoBorrow::Ref(mutbl)),
-                        target: method.sig.inputs_and_output.inputs()[1],
+                        target: method.sig.inputs()[1].o(),
                     };
                     // HACK(eddyb) Bypass checks due to reborrows being in
                     // some cases applied on the RHS, on top of which we need
@@ -247,11 +242,11 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 }
                 self.write_method_resolution(expr, method.def_id, method.args);
 
-                method.sig.output()
+                method.sig.output().o()
             }
             Err(_errors) => {
                 // FIXME: Report diagnostic.
-                self.types.error
+                self.types.types.error.clone()
             }
         };
 
@@ -261,24 +256,24 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
     pub(crate) fn infer_user_unop(
         &mut self,
         ex: ExprId,
-        operand_ty: Ty<'db>,
+        operand_ty: TyRef<'_, 'db>,
         op: UnaryOp,
     ) -> Ty<'db> {
         match self.lookup_op_method(operand_ty, None, self.lang_item_for_unop(op)) {
             Ok(method) => {
                 self.write_method_resolution(ex, method.def_id, method.args);
-                method.sig.output()
+                method.sig.output().o()
             }
             Err(_errors) => {
                 // FIXME: Report diagnostic.
-                self.types.error
+                self.types.types.error.clone()
             }
         }
     }
 
     fn lookup_op_method(
         &mut self,
-        lhs_ty: Ty<'db>,
+        lhs_ty: TyRef<'_, 'db>,
         opt_rhs: Option<(ExprId, Ty<'db>)>,
         (opname, trait_did): (Symbol, Option<TraitId>),
     ) -> Result<MethodCallee<'db>, Vec<NextSolverError<'db>>> {
@@ -292,7 +287,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
             lhs_ty, opname, trait_did
         );
 
-        let opt_rhs_ty = opt_rhs.map(|it| it.1);
+        let mut opt_rhs_ty = opt_rhs.as_ref().map(|it| it.1.clone());
         let cause = ObligationCause::new();
 
         // We don't consider any other candidates if this lookup fails
@@ -304,7 +299,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
             opname,
             trait_did,
             lhs_ty,
-            opt_rhs_ty,
+            opt_rhs_ty.clone(),
             treat_opaques,
         );
         match method {
@@ -318,7 +313,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 // this will allow us to better error reporting, at the expense
                 // of making some error messages a bit more specific.
                 if let Some((rhs_expr, rhs_ty)) = opt_rhs
-                    && rhs_ty.is_ty_var()
+                    && rhs_ty.r().is_ty_var()
                 {
                     self.infer_expr_coerce(rhs_expr, &Expectation::HasType(rhs_ty), ExprIsRead::No);
                 }
@@ -333,9 +328,9 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                         }
                         GenericParamId::TypeParamId(_) => {
                             if param_idx == 0 {
-                                lhs_ty.into()
+                                lhs_ty.o().into()
                             } else {
-                                opt_rhs_ty.expect("expected RHS for binop").into()
+                                opt_rhs_ty.take().expect("expected RHS for binop").into()
                             }
                         }
                     },
@@ -343,7 +338,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 let obligation = Obligation::new(
                     self.interner(),
                     cause,
-                    self.table.trait_env.env,
+                    self.table.trait_env.env.clone(),
                     TraitRef::new_from_args(self.interner(), trait_did.into(), args),
                 );
                 let mut ocx = ObligationCtxt::new(self.infcx());
@@ -423,9 +418,9 @@ fn is_op_by_value(op: BinaryOp) -> bool {
 }
 
 /// Dereferences a single level of immutable referencing.
-fn deref_ty_if_possible(ty: Ty<'_>) -> Ty<'_> {
+fn deref_ty_if_possible<'a, 'db>(ty: TyRef<'a, 'db>) -> TyRef<'a, 'db> {
     match ty.kind() {
-        TyKind::Ref(_, ty, Mutability::Not) => ty,
+        TyKind::Ref(_, ty, Mutability::Not) => ty.r(),
         _ => ty,
     }
 }
@@ -446,7 +441,11 @@ fn deref_ty_if_possible(ty: Ty<'_>) -> Ty<'_> {
 /// Reason #2 is the killer. I tried for a while to always use
 /// overloaded logic and just check the types in constants/codegen after
 /// the fact, and it worked fine, except for SIMD types. -nmatsakis
-fn is_builtin_binop<'db>(lhs: Ty<'db>, rhs: Ty<'db>, category: BinOpCategory) -> bool {
+fn is_builtin_binop<'db>(
+    lhs: TyRef<'_, 'db>,
+    rhs: TyRef<'_, 'db>,
+    category: BinOpCategory,
+) -> bool {
     // Special-case a single layer of referencing, so that things like `5.0 + &6.0f32` work.
     // (See https://github.com/rust-lang/rust/issues/57447.)
     let (lhs, rhs) = (deref_ty_if_possible(lhs), deref_ty_if_possible(rhs));

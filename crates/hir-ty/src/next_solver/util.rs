@@ -8,14 +8,14 @@ use rustc_type_ir::{
     ConstKind, CoroutineArgs, DebruijnIndex, FloatTy, INNERMOST, IntTy, Interner,
     PredicatePolarity, RegionKind, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeSuperVisitable,
     TypeVisitableExt, TypeVisitor, UintTy, UniverseIndex, elaborate,
-    inherent::{AdtDef, GenericArg as _, IntoKind, ParamEnv as _, SliceLike, Ty as _},
+    inherent::{AdtDef, GenericArg as _},
     lang_items::SolverTraitLangItem,
     solve::SizedTraitKind,
 };
 
 use crate::next_solver::{
-    BoundConst, FxIndexMap, ParamEnv, Placeholder, PlaceholderConst, PlaceholderRegion,
-    PolyTraitRef,
+    AsBorrowedSlice, BoundConst, ConstRef, FxIndexMap, ParamEnvRef, Placeholder, PlaceholderConst,
+    PlaceholderRegion, PolyTraitRef, PredicateRef, RegionRef, TyRef, default_types,
     infer::{
         InferCtxt,
         traits::{Obligation, ObligationCause, PredicateObligation},
@@ -24,7 +24,7 @@ use crate::next_solver::{
 
 use super::{
     Binder, BoundRegion, BoundTy, Clause, ClauseKind, Const, DbInterner, EarlyBinder, GenericArgs,
-    Predicate, PredicateKind, Region, SolverDefId, Ty, TyKind,
+    PredicateKind, Region, SolverDefId, Ty, TyKind,
     fold::{BoundVarReplacer, FnMutDelegate},
 };
 
@@ -41,7 +41,7 @@ impl<'db> Discr<'db> {
         self.checked_add(interner, 1).0
     }
     pub fn checked_add(self, interner: DbInterner<'db>, n: u128) -> (Self, bool) {
-        let (size, signed) = self.ty.int_size_and_signed(interner);
+        let (size, signed) = self.ty.r().int_size_and_signed(interner);
         let (val, oflo) = if signed {
             let min = size.signed_int_min();
             let max = size.signed_int_max();
@@ -66,8 +66,8 @@ impl<'db> Discr<'db> {
 }
 
 pub trait IntegerTypeExt {
-    fn to_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db>;
-    fn initial_discriminant<'db>(&self, interner: DbInterner<'db>) -> Discr<'db>;
+    fn to_ty<'db>(&self) -> Ty<'db>;
+    fn initial_discriminant<'db>(&self) -> Discr<'db>;
     fn disr_incr<'db>(
         &self,
         interner: DbInterner<'db>,
@@ -76,16 +76,16 @@ pub trait IntegerTypeExt {
 }
 
 impl IntegerTypeExt for IntegerType {
-    fn to_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db> {
+    fn to_ty<'db>(&self) -> Ty<'db> {
         match self {
-            IntegerType::Pointer(true) => Ty::new(interner, TyKind::Int(IntTy::Isize)),
-            IntegerType::Pointer(false) => Ty::new(interner, TyKind::Uint(UintTy::Usize)),
-            IntegerType::Fixed(i, s) => i.to_ty(interner, *s),
+            IntegerType::Pointer(true) => default_types().types.isize.clone(),
+            IntegerType::Pointer(false) => default_types().types.usize.clone(),
+            IntegerType::Fixed(i, s) => i.to_ty(*s),
         }
     }
 
-    fn initial_discriminant<'db>(&self, interner: DbInterner<'db>) -> Discr<'db> {
-        Discr { val: 0, ty: self.to_ty(interner) }
+    fn initial_discriminant<'db>(&self) -> Discr<'db> {
+        Discr { val: 0, ty: self.to_ty() }
     }
 
     fn disr_incr<'db>(
@@ -94,17 +94,17 @@ impl IntegerTypeExt for IntegerType {
         val: Option<Discr<'db>>,
     ) -> Option<Discr<'db>> {
         if let Some(val) = val {
-            assert_eq!(self.to_ty(interner), val.ty);
+            assert_eq!(self.to_ty(), val.ty);
             let (new, oflo) = val.checked_add(interner, 1);
             if oflo { None } else { Some(new) }
         } else {
-            Some(self.initial_discriminant(interner))
+            Some(self.initial_discriminant())
         }
     }
 }
 
 pub trait IntegerExt {
-    fn to_ty<'db>(&self, interner: DbInterner<'db>, signed: bool) -> Ty<'db>;
+    fn to_ty<'db>(&self, signed: bool) -> Ty<'db>;
     fn from_int_ty<C: HasDataLayout>(cx: &C, ity: IntTy) -> Integer;
     fn from_uint_ty<C: HasDataLayout>(cx: &C, ity: UintTy) -> Integer;
     fn repr_discr<'db>(
@@ -118,20 +118,22 @@ pub trait IntegerExt {
 
 impl IntegerExt for Integer {
     #[inline]
-    fn to_ty<'db>(&self, interner: DbInterner<'db>, signed: bool) -> Ty<'db> {
+    fn to_ty<'db>(&self, signed: bool) -> Ty<'db> {
         use Integer::*;
-        match (*self, signed) {
-            (I8, false) => Ty::new(interner, TyKind::Uint(UintTy::U8)),
-            (I16, false) => Ty::new(interner, TyKind::Uint(UintTy::U16)),
-            (I32, false) => Ty::new(interner, TyKind::Uint(UintTy::U32)),
-            (I64, false) => Ty::new(interner, TyKind::Uint(UintTy::U64)),
-            (I128, false) => Ty::new(interner, TyKind::Uint(UintTy::U128)),
-            (I8, true) => Ty::new(interner, TyKind::Int(IntTy::I8)),
-            (I16, true) => Ty::new(interner, TyKind::Int(IntTy::I16)),
-            (I32, true) => Ty::new(interner, TyKind::Int(IntTy::I32)),
-            (I64, true) => Ty::new(interner, TyKind::Int(IntTy::I64)),
-            (I128, true) => Ty::new(interner, TyKind::Int(IntTy::I128)),
-        }
+        let types = default_types();
+        let ty = match (*self, signed) {
+            (I8, false) => &types.types.u8,
+            (I16, false) => &types.types.u16,
+            (I32, false) => &types.types.u32,
+            (I64, false) => &types.types.u64,
+            (I128, false) => &types.types.u128,
+            (I8, true) => &types.types.i8,
+            (I16, true) => &types.types.i16,
+            (I32, true) => &types.types.i32,
+            (I64, true) => &types.types.i64,
+            (I128, true) => &types.types.i128,
+        };
+        ty.clone()
     }
 
     fn from_int_ty<C: HasDataLayout>(cx: &C, ity: IntTy) -> Integer {
@@ -206,20 +208,22 @@ impl IntegerExt for Integer {
 }
 
 pub trait FloatExt {
-    fn to_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db>;
+    fn to_ty<'db>(&self) -> Ty<'db>;
     fn from_float_ty(fty: FloatTy) -> Self;
 }
 
 impl FloatExt for Float {
     #[inline]
-    fn to_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db> {
+    fn to_ty<'db>(&self) -> Ty<'db> {
         use Float::*;
-        match *self {
-            F16 => Ty::new(interner, TyKind::Float(FloatTy::F16)),
-            F32 => Ty::new(interner, TyKind::Float(FloatTy::F32)),
-            F64 => Ty::new(interner, TyKind::Float(FloatTy::F64)),
-            F128 => Ty::new(interner, TyKind::Float(FloatTy::F128)),
-        }
+        let types = default_types();
+        let ty = match *self {
+            F16 => &types.types.f16,
+            F32 => &types.types.f32,
+            F64 => &types.types.f64,
+            F128 => &types.types.f128,
+        };
+        ty.clone()
     }
 
     fn from_float_ty(fty: FloatTy) -> Self {
@@ -234,23 +238,19 @@ impl FloatExt for Float {
 }
 
 pub trait PrimitiveExt {
-    fn to_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db>;
+    fn to_ty<'db>(&self) -> Ty<'db>;
     fn to_int_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db>;
 }
 
 impl PrimitiveExt for Primitive {
     #[inline]
-    fn to_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db> {
+    fn to_ty<'db>(&self) -> Ty<'db> {
         match *self {
-            Primitive::Int(i, signed) => i.to_ty(interner, signed),
-            Primitive::Float(f) => f.to_ty(interner),
-            Primitive::Pointer(_) => Ty::new(
-                interner,
-                TyKind::RawPtr(
-                    Ty::new(interner, TyKind::Tuple(Default::default())),
-                    rustc_ast_ir::Mutability::Mut,
-                ),
-            ),
+            Primitive::Int(i, signed) => i.to_ty(signed),
+            Primitive::Float(f) => f.to_ty(),
+            Primitive::Pointer(_) => {
+                Ty::new(TyKind::RawPtr(Ty::new_unit(), rustc_ast_ir::Mutability::Mut))
+            }
         }
     }
 
@@ -259,10 +259,10 @@ impl PrimitiveExt for Primitive {
     #[inline]
     fn to_int_ty<'db>(&self, interner: DbInterner<'db>) -> Ty<'db> {
         match *self {
-            Primitive::Int(i, signed) => i.to_ty(interner, signed),
+            Primitive::Int(i, signed) => i.to_ty(signed),
             Primitive::Pointer(_) => {
                 let signed = false;
-                interner.data_layout().ptr_sized_integer().to_ty(interner, signed)
+                interner.data_layout().ptr_sized_integer().to_ty(signed)
             }
             Primitive::Float(_) => panic!("floats do not have an int type"),
         }
@@ -275,15 +275,15 @@ impl<'db> HasDataLayout for DbInterner<'db> {
     }
 }
 
-pub trait CoroutineArgsExt<'db> {
-    fn discr_ty(&self, interner: DbInterner<'db>) -> Ty<'db>;
+pub trait CoroutineArgsExt<'a, 'db> {
+    fn discr_ty(self) -> TyRef<'a, 'db>;
 }
 
-impl<'db> CoroutineArgsExt<'db> for CoroutineArgs<DbInterner<'db>> {
+impl<'a, 'db> CoroutineArgsExt<'a, 'db> for CoroutineArgs<'a, DbInterner<'db>> {
     /// The type of the state discriminant used in the coroutine type.
     #[inline]
-    fn discr_ty(&self, interner: DbInterner<'db>) -> Ty<'db> {
-        Ty::new(interner, TyKind::Uint(UintTy::U32))
+    fn discr_ty(self) -> TyRef<'a, 'db> {
+        default_types().types.u32.r()
     }
 }
 
@@ -311,7 +311,7 @@ impl MaxUniverse {
 impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse {
     type Result = ();
 
-    fn visit_ty(&mut self, t: Ty<'db>) {
+    fn visit_ty(&mut self, t: TyRef<'_, 'db>) {
         if let TyKind::Placeholder(placeholder) = t.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
@@ -321,7 +321,7 @@ impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse {
         t.super_visit_with(self)
     }
 
-    fn visit_const(&mut self, c: Const<'db>) {
+    fn visit_const(&mut self, c: ConstRef<'_, 'db>) {
         if let ConstKind::Placeholder(placeholder) = c.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
@@ -331,7 +331,7 @@ impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse {
         c.super_visit_with(self)
     }
 
-    fn visit_region(&mut self, r: Region<'db>) {
+    fn visit_region(&mut self, r: RegionRef<'_, 'db>) {
         if let RegionKind::RePlaceholder(placeholder) = r.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
@@ -383,7 +383,7 @@ where
 pub fn sizedness_constraint_for_ty<'db>(
     interner: DbInterner<'db>,
     sizedness: SizedTraitKind,
-    ty: Ty<'db>,
+    ty: TyRef<'_, 'db>,
 ) -> Option<Ty<'db>> {
     use rustc_type_ir::TyKind::*;
 
@@ -396,37 +396,37 @@ pub fn sizedness_constraint_for_ty<'db>(
         // these are never sized
         Str | Slice(..) | Dynamic(_, _) => match sizedness {
             // Never `Sized`
-            SizedTraitKind::Sized => Some(ty),
+            SizedTraitKind::Sized => Some(ty.o()),
             // Always `MetaSized`
             SizedTraitKind::MetaSized => None,
         },
 
         // Maybe `Sized` or `MetaSized`
-        Param(..) | Alias(..) | Error(_) => Some(ty),
+        Param(..) | Alias(..) | Error(_) => Some(ty.o()),
 
         // We cannot instantiate the binder, so just return the *original* type back,
         // but only if the inner type has a sized constraint. Thus we skip the binder,
         // but don't actually use the result from `sized_constraint_for_ty`.
         UnsafeBinder(inner_ty) => {
-            sizedness_constraint_for_ty(interner, sizedness, inner_ty.skip_binder()).map(|_| ty)
+            sizedness_constraint_for_ty(interner, sizedness, inner_ty.skip_binder_ref().r())
+                .map(|_| ty.o())
         }
 
         // Never `MetaSized` or `Sized`
-        Foreign(..) => Some(ty),
+        Foreign(..) => Some(ty.o()),
 
         // Recursive cases
-        Pat(ty, _) => sizedness_constraint_for_ty(interner, sizedness, ty),
+        Pat(ty, _) => sizedness_constraint_for_ty(interner, sizedness, ty.r()),
 
-        Tuple(tys) => tys
-            .into_iter()
-            .next_back()
-            .and_then(|ty| sizedness_constraint_for_ty(interner, sizedness, ty)),
+        Tuple(tys) => {
+            tys.r().last().and_then(|ty| sizedness_constraint_for_ty(interner, sizedness, *ty))
+        }
 
         Adt(adt, args) => {
             let tail_ty =
                 EarlyBinder::bind(adt.all_field_tys(interner).skip_binder().into_iter().last()?)
-                    .instantiate(interner, args);
-            sizedness_constraint_for_ty(interner, sizedness, tail_ty)
+                    .instantiate(interner, args.r());
+            sizedness_constraint_for_ty(interner, sizedness, tail_ty.r())
         }
 
         Placeholder(..) | Bound(..) | Infer(..) => {
@@ -440,9 +440,10 @@ pub fn apply_args_to_binder<'db, T: TypeFoldable<DbInterner<'db>>>(
     args: GenericArgs<'db>,
     interner: DbInterner<'db>,
 ) -> T {
-    let types = &mut |ty: BoundTy| args.as_slice()[ty.var.index()].expect_ty();
-    let regions = &mut |region: BoundRegion| args.as_slice()[region.var.index()].expect_region();
-    let consts = &mut |const_: BoundConst| args.as_slice()[const_.var.index()].expect_const();
+    let types = &mut |ty: BoundTy| args.as_slice()[ty.var.index()].expect_ty().o();
+    let regions =
+        &mut |region: BoundRegion| args.as_slice()[region.var.index()].expect_region().o();
+    let consts = &mut |const_: BoundConst| args.as_slice()[const_.var.index()].expect_const().o();
     let mut instantiate = BoundVarReplacer::new(interner, FnMutDelegate { types, regions, consts });
     b.skip_binder().fold_with(&mut instantiate)
 }
@@ -453,11 +454,13 @@ pub fn explicit_item_bounds<'db>(
 ) -> EarlyBinder<'db, impl DoubleEndedIterator<Item = Clause<'db>> + ExactSizeIterator> {
     let db = interner.db();
     let clauses = match def_id {
-        SolverDefId::TypeAliasId(type_alias) => crate::lower::type_alias_bounds(db, type_alias),
+        SolverDefId::TypeAliasId(type_alias) => {
+            crate::lower::type_alias_bounds(db, type_alias).map_bound(|it| it.as_borrowed_slice())
+        }
         SolverDefId::InternedOpaqueTyId(id) => id.predicates(db),
         _ => panic!("Unexpected GenericDefId"),
     };
-    clauses.map_bound(|clauses| clauses.iter().copied())
+    clauses.map_bound(|clauses| clauses.iter().map(|it| it.o()))
 }
 
 pub struct ContainsTypeErrors;
@@ -465,7 +468,7 @@ pub struct ContainsTypeErrors;
 impl<'db> TypeVisitor<DbInterner<'db>> for ContainsTypeErrors {
     type Result = ControlFlow<()>;
 
-    fn visit_ty(&mut self, t: Ty<'db>) -> Self::Result {
+    fn visit_ty(&mut self, t: TyRef<'_, 'db>) -> Self::Result {
         match t.kind() {
             rustc_type_ir::TyKind::Error(_) => ControlFlow::Break(()),
             _ => t.super_visit_with(self),
@@ -523,19 +526,19 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
     }
 
     fn fold_region(&mut self, r0: Region<'db>) -> Region<'db> {
-        let r1 = match r0.kind() {
+        let r1 = match *r0.kind() {
             RegionKind::ReVar(vid) => self
                 .infcx
                 .inner
                 .borrow_mut()
                 .unwrap_region_constraints()
-                .opportunistic_resolve_var(self.infcx.interner, vid),
+                .opportunistic_resolve_var(vid),
             _ => r0,
         };
 
         let r2 = match r1.kind() {
             RegionKind::RePlaceholder(p) => {
-                let replace_var = self.mapped_regions.get(&p);
+                let replace_var = self.mapped_regions.get(p);
                 match replace_var {
                     Some(replace_var) => {
                         let index = self
@@ -546,15 +549,13 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
                         let db = DebruijnIndex::from_usize(
                             self.universe_indices.len() - index + self.current_index.as_usize() - 1,
                         );
-                        Region::new_bound(self.cx(), db, *replace_var)
+                        Region::new_bound(db, *replace_var)
                     }
                     None => r1,
                 }
             }
             _ => r1,
         };
-
-        tracing::debug!(?r0, ?r1, ?r2, "fold_region");
 
         r2
     }
@@ -563,7 +564,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
         let ty = self.infcx.shallow_resolve(ty);
         match ty.kind() {
             TyKind::Placeholder(p) => {
-                let replace_var = self.mapped_types.get(&p);
+                let replace_var = self.mapped_types.get(p);
                 match replace_var {
                     Some(replace_var) => {
                         let index = self
@@ -574,7 +575,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
                         let db = DebruijnIndex::from_usize(
                             self.universe_indices.len() - index + self.current_index.as_usize() - 1,
                         );
-                        Ty::new_bound(self.infcx.interner, db, *replace_var)
+                        Ty::new_bound(db, *replace_var)
                     }
                     None => {
                         if ty.has_infer() {
@@ -594,7 +595,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
     fn fold_const(&mut self, ct: Const<'db>) -> Const<'db> {
         let ct = self.infcx.shallow_resolve_const(ct);
         if let ConstKind::Placeholder(p) = ct.kind() {
-            let replace_var = self.mapped_consts.get(&p);
+            let replace_var = self.mapped_consts.get(p);
             match replace_var {
                 Some(replace_var) => {
                     let index = self
@@ -605,7 +606,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
                     let db = DebruijnIndex::from_usize(
                         self.universe_indices.len() - index + self.current_index.as_usize() - 1,
                     );
-                    Const::new_bound(self.infcx.interner, db, *replace_var)
+                    Const::new_bound(db, *replace_var)
                 }
                 None => {
                     if ct.has_infer() {
@@ -623,13 +624,13 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
 
 pub fn sizedness_fast_path<'db>(
     tcx: DbInterner<'db>,
-    predicate: Predicate<'db>,
-    param_env: ParamEnv<'db>,
+    predicate: PredicateRef<'_, 'db>,
+    param_env: ParamEnvRef<'_, 'db>,
 ) -> bool {
     // Proving `Sized`/`MetaSized`, very often on "obviously sized" types like
     // `&T`, accounts for about 60% percentage of the predicates we have to prove. No need to
     // canonicalize and all that for such cases.
-    if let PredicateKind::Clause(ClauseKind::Trait(trait_pred)) = predicate.kind().skip_binder()
+    if let PredicateKind::Clause(ClauseKind::Trait(trait_pred)) = predicate.kind().skip_binder_ref()
         && trait_pred.polarity == PredicatePolarity::Positive
     {
         let sizedness = match tcx.as_trait_lang_item(trait_pred.def_id()) {
@@ -645,7 +646,7 @@ pub fn sizedness_fast_path<'db>(
             return true;
         }
 
-        if trait_pred.self_ty().has_trivial_sizedness(tcx, sizedness) {
+        if trait_pred.self_ty().has_trivial_sizedness(sizedness) {
             tracing::debug!("fast path -- trivial sizedness");
             return true;
         }
@@ -692,12 +693,12 @@ pub(crate) fn upcast_choices<'db>(
 pub(crate) fn clauses_as_obligations<'db>(
     clauses: impl IntoIterator<Item = Clause<'db>>,
     cause: ObligationCause,
-    param_env: ParamEnv<'db>,
+    param_env: ParamEnvRef<'_, 'db>,
 ) -> impl Iterator<Item = PredicateObligation<'db>> {
     clauses.into_iter().map(move |clause| Obligation {
         cause: cause.clone(),
-        param_env,
-        predicate: clause.as_predicate(),
+        param_env: param_env.o(),
+        predicate: clause.into_predicate(),
         recursion_depth: 0,
     })
 }

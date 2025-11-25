@@ -6,7 +6,7 @@ use ena::{
 };
 use rustc_type_ir::{
     ConstVid, FloatVid, IntVid, RegionKind, RegionVid, TyVid, TypeFoldable, TypeFolder,
-    TypeSuperFoldable, TypeVisitableExt, inherent::IntoKind,
+    TypeSuperFoldable, TypeVisitableExt,
 };
 
 use crate::next_solver::{
@@ -175,7 +175,7 @@ impl<'a, 'db> TypeFolder<DbInterner<'db>> for InferenceFudger<'a, 'db> {
     }
 
     fn fold_ty(&mut self, ty: Ty<'db>) -> Ty<'db> {
-        if let TyKind::Infer(infer_ty) = ty.kind() {
+        if let TyKind::Infer(infer_ty) = *ty.kind() {
             match infer_ty {
                 rustc_type_ir::TyVar(vid) => {
                     if self.snapshot_vars.type_vars.0.contains(&vid) {

@@ -4,7 +4,7 @@ use hir_def::{AdtId, hir::ExprId, signatures::TraitFlags};
 use rustc_ast_ir::Mutability;
 use rustc_type_ir::{
     Flags, InferTy, TypeFlags, UintTy,
-    inherent::{AdtDef, BoundExistentialPredicates as _, IntoKind, SliceLike, Ty as _},
+    inherent::{AdtDef, BoundExistentialPredicates as _, SliceLike},
 };
 use stdx::never;
 
@@ -12,7 +12,7 @@ use crate::{
     InferenceDiagnostic,
     db::HirDatabase,
     infer::{AllowTwoPhase, InferenceContext, expr::ExprIsRead},
-    next_solver::{BoundExistentialPredicates, DbInterner, ParamTy, Ty, TyKind},
+    next_solver::{BoundExistentialPredicates, DbInterner, ParamTy, Ty, TyKind, TyRef},
 };
 
 #[derive(Debug)]
@@ -35,8 +35,8 @@ pub(crate) enum CastTy<'db> {
 }
 
 impl<'db> CastTy<'db> {
-    pub(crate) fn from_ty(db: &dyn HirDatabase, t: Ty<'db>) -> Option<Self> {
-        match t.kind() {
+    pub(crate) fn from_ty(db: &dyn HirDatabase, t: TyRef<'_, 'db>) -> Option<Self> {
+        match *t.kind() {
             TyKind::Bool => Some(Self::Int(Int::Bool)),
             TyKind::Char => Some(Self::Int(Int::Char)),
             TyKind::Int(_) => Some(Self::Int(Int::I)),
@@ -51,7 +51,7 @@ impl<'db> CastTy<'db> {
                 let enum_data = id.enum_variants(db);
                 if enum_data.is_payload_free(db) { Some(Self::Int(Int::CEnum)) } else { None }
             }
-            TyKind::RawPtr(ty, m) => Some(Self::Ptr(ty, m)),
+            TyKind::RawPtr(ref ty, m) => Some(Self::Ptr(ty.clone(), m)),
             TyKind::FnPtr(..) => Some(Self::FnPtr),
             _ => None,
         }
@@ -110,15 +110,15 @@ impl<'db> CastCheck<'db> {
         &mut self,
         ctx: &mut InferenceContext<'_, 'db>,
     ) -> Result<(), InferenceDiagnostic<'db>> {
-        self.expr_ty = ctx.table.try_structurally_resolve_type(self.expr_ty);
-        self.cast_ty = ctx.table.try_structurally_resolve_type(self.cast_ty);
+        self.expr_ty = ctx.table.try_structurally_resolve_type(self.expr_ty.clone());
+        self.cast_ty = ctx.table.try_structurally_resolve_type(self.cast_ty.clone());
 
         // This should always come first so that we apply the coercion, which impacts infer vars.
         if ctx
             .coerce(
                 self.source_expr.into(),
-                self.expr_ty,
-                self.cast_ty,
+                self.expr_ty.clone(),
+                self.cast_ty.clone(),
                 AllowTwoPhase::No,
                 ExprIsRead::Yes,
             )
@@ -128,82 +128,86 @@ impl<'db> CastCheck<'db> {
             return Ok(());
         }
 
-        if self.expr_ty.references_non_lt_error() || self.cast_ty.references_non_lt_error() {
+        if self.expr_ty.r().references_non_lt_error() || self.cast_ty.r().references_non_lt_error()
+        {
             return Ok(());
         }
 
         if !self.cast_ty.flags().contains(TypeFlags::HAS_TY_INFER)
-            && !ctx.table.is_sized(self.cast_ty)
+            && !ctx.table.is_sized(self.cast_ty.clone())
         {
             return Err(InferenceDiagnostic::CastToUnsized {
                 expr: self.expr,
-                cast_ty: self.cast_ty,
+                cast_ty: self.cast_ty.clone(),
             });
         }
 
         // Chalk doesn't support trait upcasting and fails to solve some obvious goals
         // when the trait environment contains some recursive traits (See issue #18047)
         // We skip cast checks for such cases for now, until the next-gen solver.
-        if contains_dyn_trait(self.cast_ty) {
+        if contains_dyn_trait(self.cast_ty.r()) {
             return Ok(());
         }
 
-        self.do_check(ctx).map_err(|e| e.into_diagnostic(self.expr, self.expr_ty, self.cast_ty))
+        self.do_check(ctx)
+            .map_err(|e| e.into_diagnostic(self.expr, self.expr_ty.clone(), self.cast_ty.clone()))
     }
 
     fn do_check(&self, ctx: &mut InferenceContext<'_, 'db>) -> Result<(), CastError> {
-        let (t_from, t_cast) =
-            match (CastTy::from_ty(ctx.db, self.expr_ty), CastTy::from_ty(ctx.db, self.cast_ty)) {
-                (Some(t_from), Some(t_cast)) => (t_from, t_cast),
-                (None, Some(t_cast)) => match self.expr_ty.kind() {
-                    TyKind::FnDef(..) => {
-                        let sig =
-                            self.expr_ty.callable_sig(ctx.interner()).expect("FnDef had no sig");
-                        let sig = ctx.table.normalize_associated_types_in(sig);
-                        let fn_ptr = Ty::new_fn_ptr(ctx.interner(), sig);
-                        if ctx
-                            .coerce(
-                                self.source_expr.into(),
-                                self.expr_ty,
-                                fn_ptr,
-                                AllowTwoPhase::No,
-                                ExprIsRead::Yes,
-                            )
-                            .is_ok()
-                        {
-                        } else {
-                            return Err(CastError::IllegalCast);
-                        }
-
-                        (CastTy::FnPtr, t_cast)
+        let (t_from, t_cast) = match (
+            CastTy::from_ty(ctx.db, self.expr_ty.r()),
+            CastTy::from_ty(ctx.db, self.cast_ty.r()),
+        ) {
+            (Some(t_from), Some(t_cast)) => (t_from, t_cast),
+            (None, Some(t_cast)) => match self.expr_ty.kind() {
+                TyKind::FnDef(..) => {
+                    let sig =
+                        self.expr_ty.r().callable_sig(ctx.interner()).expect("FnDef had no sig");
+                    let sig = ctx.table.normalize_associated_types_in(sig);
+                    let fn_ptr = Ty::new_fn_ptr(sig);
+                    if ctx
+                        .coerce(
+                            self.source_expr.into(),
+                            self.expr_ty.clone(),
+                            fn_ptr,
+                            AllowTwoPhase::No,
+                            ExprIsRead::Yes,
+                        )
+                        .is_ok()
+                    {
+                    } else {
+                        return Err(CastError::IllegalCast);
                     }
-                    TyKind::Ref(_, inner_ty, mutbl) => {
-                        return match t_cast {
-                            CastTy::Int(_) | CastTy::Float => match inner_ty.kind() {
-                                TyKind::Int(_)
-                                | TyKind::Uint(_)
-                                | TyKind::Float(_)
-                                | TyKind::Infer(InferTy::IntVar(_) | InferTy::FloatVar(_)) => {
-                                    Err(CastError::NeedDeref)
-                                }
 
-                                _ => Err(CastError::NeedViaPtr),
-                            },
-                            // array-ptr-cast
-                            CastTy::Ptr(t, m) => {
-                                let t = ctx.table.try_structurally_resolve_type(t);
-                                if !ctx.table.is_sized(t) {
-                                    return Err(CastError::IllegalCast);
-                                }
-                                self.check_ref_cast(ctx, inner_ty, mutbl, t, m)
+                    (CastTy::FnPtr, t_cast)
+                }
+                TyKind::Ref(_, inner_ty, mutbl) => {
+                    return match t_cast {
+                        CastTy::Int(_) | CastTy::Float => match inner_ty.kind() {
+                            TyKind::Int(_)
+                            | TyKind::Uint(_)
+                            | TyKind::Float(_)
+                            | TyKind::Infer(InferTy::IntVar(_) | InferTy::FloatVar(_)) => {
+                                Err(CastError::NeedDeref)
                             }
-                            _ => Err(CastError::NonScalar),
-                        };
-                    }
-                    _ => return Err(CastError::NonScalar),
-                },
+
+                            _ => Err(CastError::NeedViaPtr),
+                        },
+                        // array-ptr-cast
+                        CastTy::Ptr(t, m) => {
+                            let t = ctx.table.try_structurally_resolve_type(t);
+                            if !ctx.table.is_sized(t.clone()) {
+                                return Err(CastError::IllegalCast);
+                            }
+                            self.check_ref_cast(ctx, inner_ty.clone(), *mutbl, t, m)
+                        }
+                        _ => Err(CastError::NonScalar),
+                    };
+                }
                 _ => return Err(CastError::NonScalar),
-            };
+            },
+            _ => return Err(CastError::NonScalar),
+        };
 
         // rustc checks whether the `expr_ty` is foreign adt with `non_exhaustive` sym
 
@@ -240,13 +244,14 @@ impl<'db> CastCheck<'db> {
         if m_expr <= m_cast
             && let TyKind::Array(ety, _) = t_expr.kind()
         {
+            let ety = ety.clone();
             // Coerce to a raw pointer so that we generate RawPtr in MIR.
-            let array_ptr_type = Ty::new_ptr(ctx.interner(), t_expr, m_expr);
+            let array_ptr_type = Ty::new_ptr(t_expr, m_expr);
             if ctx
                 .coerce(
                     self.source_expr.into(),
-                    self.expr_ty,
-                    array_ptr_type,
+                    self.expr_ty.clone(),
+                    array_ptr_type.clone(),
                     AllowTwoPhase::No,
                     ExprIsRead::Yes,
                 )
@@ -290,7 +295,7 @@ impl<'db> CastCheck<'db> {
             (_, Some(PointerKind::Thin)) => Ok(()),
             (Some(PointerKind::Thin), _) => Err(CastError::SizedUnsizedCast),
             (Some(PointerKind::VTable(src_tty)), Some(PointerKind::VTable(dst_tty))) => {
-                match (src_tty.principal_def_id(), dst_tty.principal_def_id()) {
+                match (src_tty.r().principal_def_id(), dst_tty.r().principal_def_id()) {
                     (Some(src_principal), Some(dst_principal)) => {
                         if src_principal == dst_principal {
                             return Ok(());
@@ -377,13 +382,13 @@ fn pointer_kind<'db>(
 ) -> Result<Option<PointerKind<'db>>, ()> {
     let ty = ctx.table.try_structurally_resolve_type(ty);
 
-    if ctx.table.is_sized(ty) {
+    if ctx.table.is_sized(ty.clone()) {
         return Ok(Some(PointerKind::Thin));
     }
 
     match ty.kind() {
         TyKind::Slice(_) | TyKind::Str => Ok(Some(PointerKind::Length)),
-        TyKind::Dynamic(bounds, _) => Ok(Some(PointerKind::VTable(bounds))),
+        TyKind::Dynamic(bounds, _) => Ok(Some(PointerKind::VTable(bounds.clone()))),
         TyKind::Adt(adt_def, subst) => {
             let id = adt_def.def_id().0;
             let AdtId::StructId(id) = id else {
@@ -393,21 +398,22 @@ fn pointer_kind<'db>(
 
             let struct_data = id.fields(ctx.db);
             if let Some((last_field, _)) = struct_data.fields().iter().last() {
-                let last_field_ty =
-                    ctx.db.field_types(id.into())[last_field].instantiate(ctx.interner(), subst);
+                let last_field_ty = ctx.db.field_types(id.into())[last_field]
+                    .clone()
+                    .instantiate(ctx.interner(), subst.r());
                 pointer_kind(last_field_ty, ctx)
             } else {
                 Ok(Some(PointerKind::Thin))
             }
         }
-        TyKind::Tuple(subst) => match subst.iter().next_back() {
+        TyKind::Tuple(subst) => match subst.r().iter().next_back() {
             None => Ok(Some(PointerKind::Thin)),
-            Some(ty) => pointer_kind(ty, ctx),
+            Some(ty) => pointer_kind(ty.o(), ctx),
         },
         TyKind::Foreign(_) => Ok(Some(PointerKind::Thin)),
         TyKind::Alias(..) => Ok(Some(PointerKind::OfAlias)),
         TyKind::Error(_) => Ok(Some(PointerKind::Error)),
-        TyKind::Param(idx) => Ok(Some(PointerKind::OfParam(idx))),
+        TyKind::Param(idx) => Ok(Some(PointerKind::OfParam(*idx))),
         TyKind::Bound(..) | TyKind::Placeholder(..) | TyKind::Infer(..) => Ok(None),
         TyKind::Int(_)
         | TyKind::Uint(_)
@@ -434,7 +440,7 @@ fn pointer_kind<'db>(
     }
 }
 
-fn contains_dyn_trait<'db>(ty: Ty<'db>) -> bool {
+fn contains_dyn_trait<'db>(ty: TyRef<'_, 'db>) -> bool {
     use std::ops::ControlFlow;
 
     use rustc_type_ir::{TypeSuperVisitable, TypeVisitable, TypeVisitor};
@@ -444,7 +450,7 @@ fn contains_dyn_trait<'db>(ty: Ty<'db>) -> bool {
     impl<'db> TypeVisitor<DbInterner<'db>> for DynTraitVisitor {
         type Result = ControlFlow<()>;
 
-        fn visit_ty(&mut self, ty: Ty<'db>) -> ControlFlow<()> {
+        fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> ControlFlow<()> {
             match ty.kind() {
                 TyKind::Dynamic(..) => ControlFlow::Break(()),
                 _ => ty.super_visit_with(self),

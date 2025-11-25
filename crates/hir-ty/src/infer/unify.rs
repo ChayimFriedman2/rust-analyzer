@@ -8,7 +8,7 @@ use intern::sym;
 use rustc_hash::FxHashSet;
 use rustc_type_ir::{
     TyVid, TypeFoldable, TypeVisitableExt, UpcastFrom,
-    inherent::{Const as _, GenericArg as _, IntoKind, SliceLike, Ty as _},
+    inherent::{GenericArg as _, SliceLike},
     solve::Certainty,
 };
 use smallvec::SmallVec;
@@ -18,9 +18,9 @@ use crate::{
     TraitEnvironment,
     db::HirDatabase,
     next_solver::{
-        AliasTy, Canonical, ClauseKind, Const, DbInterner, ErrorGuaranteed, GenericArg,
-        GenericArgs, Goal, Predicate, PredicateKind, Region, SolverDefId, Term, TraitRef, Ty,
-        TyKind, TypingMode,
+        AliasTy, Canonical, ClauseKind, Const, DbInterner, GenericArg, GenericArgs, GenericArgsRef,
+        Goal, IteratorOwnedExt, Predicate, PredicateKind, PredicateRef, Region, SolverDefId, Term,
+        TraitRef, Ty, TyKind, TyRef, TypingMode,
         fulfill::{FulfillmentCtxt, NextSolverError},
         infer::{
             DbInternerInferExt, InferCtxt, InferOk, InferResult,
@@ -62,12 +62,12 @@ impl<'a, 'db> ProofTreeVisitor<'db> for NestedObligationsForSelfTy<'a, 'db> {
 
         let db = self.ctx.interner();
         let goal = inspect_goal.goal();
-        if self.ctx.predicate_has_self_ty(goal.predicate, self.self_ty) {
+        if self.ctx.predicate_has_self_ty(goal.predicate.r(), self.self_ty) {
             self.obligations_for_self_ty.push(Obligation::new(
                 db,
                 self.root_cause.clone(),
-                goal.param_env,
-                goal.predicate,
+                goal.param_env.clone(),
+                goal.predicate.clone(),
             ));
         }
 
@@ -116,11 +116,11 @@ fn could_unify_impl<'db>(
     let interner = DbInterner::new_with(db, Some(env.krate), env.block);
     let infcx = interner.infer_ctxt().build(TypingMode::PostAnalysis);
     let cause = ObligationCause::dummy();
-    let at = infcx.at(&cause, env.env);
+    let at = infcx.at(&cause, env.env.r());
     let ((ty1_with_vars, ty2_with_vars), _) = infcx.instantiate_canonical(tys);
     let mut ctxt = ObligationCtxt::new(&infcx);
     let can_unify = at
-        .eq(ty1_with_vars, ty2_with_vars)
+        .eq(ty1_with_vars.r(), ty2_with_vars.r())
         .map(|infer_ok| ctxt.register_infer_ok_obligations(infer_ok))
         .is_ok();
     can_unify && select(&mut ctxt).is_empty()
@@ -170,7 +170,7 @@ impl<'db> InferenceTable<'db> {
     }
 
     pub(crate) fn type_is_copy_modulo_regions(&self, ty: Ty<'db>) -> bool {
-        self.infer_ctxt.type_is_copy_modulo_regions(self.trait_env.env, ty)
+        self.infer_ctxt.type_is_copy_modulo_regions(self.trait_env.env.clone(), ty)
     }
 
     pub(crate) fn type_var_is_sized(&self, self_ty: TyVid) -> bool {
@@ -178,7 +178,7 @@ impl<'db> InferenceTable<'db> {
             return true;
         };
         self.obligations_for_self_ty(self_ty).into_iter().any(|obligation| {
-            match obligation.predicate.kind().skip_binder() {
+            match obligation.predicate.kind().skip_binder_ref() {
                 PredicateKind::Clause(ClauseKind::Trait(data)) => data.def_id().0 == sized_did,
                 _ => false,
             }
@@ -199,24 +199,25 @@ impl<'db> InferenceTable<'db> {
                 root_cause: &obligation.cause,
             };
 
-            let goal = obligation.as_goal();
+            let goal = obligation.to_goal();
             self.infer_ctxt.visit_proof_tree(goal, &mut visitor);
         }
 
         obligations_for_self_ty.retain_mut(|obligation| {
-            obligation.predicate = self.infer_ctxt.resolve_vars_if_possible(obligation.predicate);
+            obligation.predicate =
+                self.infer_ctxt.resolve_vars_if_possible(obligation.predicate.clone());
             !obligation.predicate.has_placeholders()
         });
         obligations_for_self_ty
     }
 
-    fn predicate_has_self_ty(&self, predicate: Predicate<'db>, expected_vid: TyVid) -> bool {
-        match predicate.kind().skip_binder() {
+    fn predicate_has_self_ty(&self, predicate: PredicateRef<'_, 'db>, expected_vid: TyVid) -> bool {
+        match predicate.kind().skip_binder_ref() {
             PredicateKind::Clause(ClauseKind::Trait(data)) => {
-                self.type_matches_expected_vid(expected_vid, data.self_ty())
+                self.type_matches_expected_vid(expected_vid, data.self_ty().o())
             }
             PredicateKind::Clause(ClauseKind::Projection(data)) => {
-                self.type_matches_expected_vid(expected_vid, data.projection_term.self_ty())
+                self.type_matches_expected_vid(expected_vid, data.projection_term.self_ty().o())
             }
             PredicateKind::Clause(ClauseKind::ConstArgHasType(..))
             | PredicateKind::Subtype(..)
@@ -238,7 +239,7 @@ impl<'db> InferenceTable<'db> {
     fn type_matches_expected_vid(&self, expected_vid: TyVid, ty: Ty<'db>) -> bool {
         let ty = self.shallow_resolve(ty);
 
-        match ty.kind() {
+        match *ty.kind() {
             TyKind::Infer(rustc_type_ir::TyVar(found_vid)) => {
                 self.infer_ctxt.root_var(expected_vid) == self.infer_ctxt.root_var(found_vid)
             }
@@ -272,8 +273,8 @@ impl<'db> InferenceTable<'db> {
 
     pub(crate) fn normalize_alias_ty(&mut self, alias: Ty<'db>) -> Ty<'db> {
         self.infer_ctxt
-            .at(&ObligationCause::new(), self.trait_env.env)
-            .structurally_normalize_ty(alias, &mut self.fulfillment_cx)
+            .at(&ObligationCause::new(), self.trait_env.env.r())
+            .structurally_normalize_ty(alias.clone(), &mut self.fulfillment_cx)
             .unwrap_or(alias)
     }
 
@@ -295,7 +296,7 @@ impl<'db> InferenceTable<'db> {
 
     pub(crate) fn new_maybe_never_var(&mut self) -> Ty<'db> {
         let var = self.next_ty_var();
-        self.set_diverging(var);
+        self.set_diverging(var.clone());
         var
     }
 
@@ -332,7 +333,7 @@ impl<'db> InferenceTable<'db> {
     }
 
     pub(crate) fn at<'a>(&'a self, cause: &'a ObligationCause) -> At<'a, 'db> {
-        self.infer_ctxt.at(cause, self.trait_env.env)
+        self.infer_ctxt.at(cause, self.trait_env.env.r())
     }
 
     pub(crate) fn shallow_resolve(&self, ty: Ty<'db>) -> Ty<'db> {
@@ -374,11 +375,11 @@ impl<'db> InferenceTable<'db> {
             // in a reentrant borrow, causing an ICE.
             let result = self
                 .infer_ctxt
-                .at(&ObligationCause::misc(), self.trait_env.env)
+                .at(&ObligationCause::misc(), self.trait_env.env.r())
                 .structurally_normalize_ty(ty, &mut self.fulfillment_cx);
             match result {
                 Ok(normalized_ty) => normalized_ty,
-                Err(_errors) => Ty::new_error(self.interner(), ErrorGuaranteed),
+                Err(_errors) => Ty::new_error(),
             }
         } else {
             self.resolve_vars_with_obligations(ty)
@@ -422,20 +423,20 @@ impl<'db> InferenceTable<'db> {
     /// choice (during e.g. method resolution or deref).
     #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn try_obligation(&mut self, predicate: Predicate<'db>) -> NextTraitSolveResult {
-        let goal = Goal { param_env: self.trait_env.env, predicate };
+        let goal = Goal { param_env: self.trait_env.env.clone(), predicate };
         let canonicalized = self.canonicalize(goal);
 
         next_trait_solve_canonical_in_ctxt(&self.infer_ctxt, canonicalized)
     }
 
     pub(crate) fn register_obligation(&mut self, predicate: Predicate<'db>) {
-        let goal = Goal { param_env: self.trait_env.env, predicate };
+        let goal = Goal { param_env: self.trait_env.env.clone(), predicate };
         self.register_obligation_in_env(goal)
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
     fn register_obligation_in_env(&mut self, goal: Goal<'db, Predicate<'db>>) {
-        let result = next_trait_solve_in_ctxt(&self.infer_ctxt, goal);
+        let result = next_trait_solve_in_ctxt(&self.infer_ctxt, goal.clone());
         tracing::debug!(?result);
         match result {
             Ok((_, Certainty::Yes)) => {}
@@ -486,27 +487,27 @@ impl<'db> InferenceTable<'db> {
         self.register_predicate(Obligation::new(
             self.interner(),
             cause,
-            self.trait_env.env,
+            self.trait_env.env.clone(),
             ClauseKind::WellFormed(term),
         ));
     }
 
     /// Registers obligations that all `args` are well-formed.
-    pub(crate) fn add_wf_bounds(&mut self, args: GenericArgs<'db>) {
+    pub(crate) fn add_wf_bounds(&mut self, args: GenericArgsRef<'_, 'db>) {
         for term in args.iter().filter_map(|it| it.as_term()) {
-            self.register_wf_obligation(term, ObligationCause::new());
+            self.register_wf_obligation(term.o(), ObligationCause::new());
         }
     }
 
     pub(crate) fn callable_sig(
         &mut self,
-        ty: Ty<'db>,
+        ty: TyRef<'_, 'db>,
         num_args: usize,
     ) -> Option<(Option<FnTrait>, Vec<Ty<'db>>, Ty<'db>)> {
         match ty.callable_sig(self.interner()) {
             Some(sig) => {
                 let sig = sig.skip_binder();
-                Some((None, sig.inputs_and_output.inputs().to_vec(), sig.output()))
+                Some((None, sig.inputs().iter().owned().collect(), sig.output().o()))
             }
             None => {
                 let (f, args_ty, return_ty) = self.callable_sig_from_fn_trait(ty, num_args)?;
@@ -517,7 +518,7 @@ impl<'db> InferenceTable<'db> {
 
     fn callable_sig_from_fn_trait(
         &mut self,
-        ty: Ty<'db>,
+        ty: TyRef<'_, 'db>,
         num_args: usize,
     ) -> Option<(FnTrait, Vec<Ty<'db>>, Ty<'db>)> {
         for (fn_trait_name, output_assoc_name, subtraits) in [
@@ -533,33 +534,32 @@ impl<'db> InferenceTable<'db> {
 
             let mut arg_tys = Vec::with_capacity(num_args);
             let arg_ty = Ty::new_tup_from_iter(
-                self.interner(),
                 std::iter::repeat_with(|| {
                     let ty = self.next_ty_var();
-                    arg_tys.push(ty);
+                    arg_tys.push(ty.clone());
                     ty
                 })
                 .take(num_args),
             );
-            let args = [ty, arg_ty];
-            let trait_ref = TraitRef::new(self.interner(), fn_trait.into(), args);
+            let args = [ty.o(), arg_ty];
+            let trait_ref = TraitRef::new(self.interner(), fn_trait.into(), args.clone());
 
-            let proj_args = self
-                .infer_ctxt
-                .fill_rest_fresh_args(output_assoc_type.into(), args.into_iter().map(Into::into));
+            let proj_args = self.infer_ctxt.fill_rest_fresh_args(
+                output_assoc_type.into(),
+                args.clone().into_iter().map(Into::into),
+            );
             let projection = Ty::new_alias(
-                self.interner(),
                 rustc_type_ir::AliasTyKind::Projection,
-                AliasTy::new(self.interner(), output_assoc_type.into(), proj_args),
+                AliasTy::new_from_args(self.interner(), output_assoc_type.into(), proj_args),
             );
 
             let pred = Predicate::upcast_from(trait_ref, self.interner());
-            if !self.try_obligation(pred).no_solution() {
+            if !self.try_obligation(pred.clone()).no_solution() {
                 self.register_obligation(pred);
                 let return_ty = self.normalize_alias_ty(projection);
                 for &fn_x in subtraits {
                     let fn_x_trait = fn_x.get_id(self.db, krate)?;
-                    let trait_ref = TraitRef::new(self.interner(), fn_x_trait.into(), args);
+                    let trait_ref = TraitRef::new(self.interner(), fn_x_trait.into(), args.clone());
                     let pred = Predicate::upcast_from(trait_ref, self.interner());
                     if !self.try_obligation(pred).no_solution() {
                         return Some((fn_x, arg_tys, return_ty));
@@ -580,7 +580,7 @@ impl<'db> InferenceTable<'db> {
 
     /// Replaces `Ty::Error` by a new type var, so we can maybe still infer it.
     pub(super) fn insert_type_vars_shallow(&mut self, ty: Ty<'db>) -> Ty<'db> {
-        if ty.is_ty_error() { self.next_ty_var() } else { ty }
+        if ty.r().is_ty_error() { self.next_ty_var() } else { ty }
     }
 
     /// Whenever you lower a user-written type, you should call this.
@@ -602,12 +602,12 @@ impl<'db> InferenceTable<'db> {
 
     /// Replaces ConstScalar::Unknown by a new type var, so we can maybe still infer it.
     pub(super) fn insert_const_vars_shallow(&mut self, c: Const<'db>) -> Const<'db> {
-        if c.is_ct_error() { self.next_const_var() } else { c }
+        if c.r().is_ct_error() { self.next_const_var() } else { c }
     }
 
     /// Check if given type is `Sized` or not
     pub(crate) fn is_sized(&mut self, ty: Ty<'db>) -> bool {
-        fn short_circuit_trivial_tys(ty: Ty<'_>) -> Option<bool> {
+        fn short_circuit_trivial_tys(ty: TyRef<'_, '_>) -> Option<bool> {
             match ty.kind() {
                 TyKind::Bool
                 | TyKind::Char
@@ -627,7 +627,7 @@ impl<'db> InferenceTable<'db> {
 
         let mut ty = ty;
         ty = self.try_structurally_resolve_type(ty);
-        if let Some(sized) = short_circuit_trivial_tys(ty) {
+        if let Some(sized) = short_circuit_trivial_tys(ty.r()) {
             return sized;
         }
 
@@ -635,10 +635,11 @@ impl<'db> InferenceTable<'db> {
             let mut structs = SmallVec::<[_; 8]>::new();
             // Must use a loop here and not recursion because otherwise users will conduct completely
             // artificial examples of structs that have themselves as the tail field and complain r-a crashes.
-            while let Some((AdtId::StructId(id), subst)) = ty.as_adt() {
+            while let Some((AdtId::StructId(id), subst)) = ty.r().as_adt() {
                 let struct_data = id.fields(self.db);
                 if let Some((last_field, _)) = struct_data.fields().iter().next_back() {
                     let last_field_ty = self.db.field_types(id.into())[last_field]
+                        .clone()
                         .instantiate(self.interner(), subst);
                     if structs.contains(&ty) {
                         // A struct recursively contains itself as a tail field somewhere.
@@ -649,7 +650,7 @@ impl<'db> InferenceTable<'db> {
                     // as unsized by the chalk, so we do this manually.
                     ty = last_field_ty;
                     ty = self.try_structurally_resolve_type(ty);
-                    if let Some(sized) = short_circuit_trivial_tys(ty) {
+                    if let Some(sized) = short_circuit_trivial_tys(ty.r()) {
                         return sized;
                     }
                 } else {
@@ -712,14 +713,16 @@ mod resolve_completely {
             outer_exclusive_binder: impl FnOnce(T) -> DebruijnIndex,
         ) -> T
         where
-            T: Into<Term<'db>> + TypeSuperFoldable<DbInterner<'db>> + Copy,
+            T: Into<Term<'db>> + TypeSuperFoldable<DbInterner<'db>> + Clone,
         {
             let value = if self.should_normalize {
                 let cause = ObligationCause::new();
                 let at = self.ctx.at(&cause);
-                let universes = vec![None; outer_exclusive_binder(value).as_usize()];
+                let universes = vec![None; outer_exclusive_binder(value.clone()).as_usize()];
                 match deeply_normalize_with_skipped_universes_and_ambiguous_coroutine_goals(
-                    at, value, universes,
+                    at,
+                    value.clone(),
+                    universes,
                 ) {
                     Ok((value, goals)) => {
                         self.nested_goals.extend(goals);
@@ -744,7 +747,7 @@ mod resolve_completely {
         }
 
         fn fold_region(&mut self, r: Region<'db>) -> Region<'db> {
-            if r.is_var() { Region::error(self.ctx.interner()) } else { r }
+            if r.r().is_var() { Region::new_error() } else { r }
         }
 
         fn fold_ty(&mut self, ty: Ty<'db>) -> Ty<'db> {

@@ -87,8 +87,8 @@ use hir_ty::{
     },
     mir::{MutBorrowKind, interpret_mir},
     next_solver::{
-        AliasTy, ClauseKind, ConstKind, DbInterner, ErrorGuaranteed, GenericArg, GenericArgs,
-        PolyFnSig, Region, SolverDefId, Ty, TyKind, TypingMode,
+        AliasTy, ClauseKind, ConstKind, DbInterner, GenericArg, GenericArgs, ParamTy, PolyFnSig,
+        Region, SolverDefId, Ty, TyKind, TyRef, TypingMode,
         infer::{DbInternerInferExt, InferCtxt},
     },
     traits::{self, FnTrait, is_inherent_impl_coherent, structurally_normalize_ty},
@@ -97,7 +97,8 @@ use itertools::Itertools;
 use rustc_hash::FxHashSet;
 use rustc_type_ir::{
     AliasTyKind, TypeSuperVisitable, TypeVisitable, TypeVisitor, fast_reject,
-    inherent::{AdtDef, GenericArgs as _, IntoKind, SliceLike, Term as _, Ty as _},
+    inherent::{AdtDef, GenericArgsRef as _, SliceLike},
+    ir_traits::MyToOwned,
 };
 use smallvec::SmallVec;
 use span::{AstIdNode, Edition, FileId};
@@ -1273,7 +1274,7 @@ pub struct Field {
     pub(crate) id: LocalFieldId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InstantiatedField<'db> {
     pub(crate) inner: Field,
     pub(crate) args: GenericArgs<'db>,
@@ -1286,8 +1287,8 @@ impl<'db> InstantiatedField<'db> {
         let interner = DbInterner::new_with(db, Some(krate.base()), None);
 
         let var_id = self.inner.parent.into();
-        let field = db.field_types(var_id)[self.inner.id];
-        let ty = field.instantiate(interner, self.args);
+        let field = db.field_types(var_id)[self.inner.id].clone();
+        let ty = field.instantiate(interner, self.args.r());
         TypeNs::new(db, var_id, ty)
     }
 }
@@ -1305,14 +1306,13 @@ impl TupleField {
     }
 
     pub fn ty<'db>(&self, db: &'db dyn HirDatabase) -> Type<'db> {
-        let interner = DbInterner::new_with(db, None, None);
         let ty = db
             .infer(self.owner)
             .tuple_field_access_type(self.tuple)
             .as_slice()
             .get(self.index as usize)
-            .copied()
-            .unwrap_or_else(|| Ty::new_error(interner, ErrorGuaranteed));
+            .o()
+            .unwrap_or_else(|| Ty::new_error());
         Type { env: db.trait_environment_for_body(self.owner), ty }
     }
 }
@@ -1365,7 +1365,7 @@ impl Field {
     /// context of the field definition.
     pub fn ty<'db>(&self, db: &'db dyn HirDatabase) -> TypeNs<'db> {
         let var_id = self.parent.into();
-        let ty = db.field_types(var_id)[self.id].skip_binder();
+        let ty = db.field_types(var_id)[self.id].clone().skip_binder();
         TypeNs::new(db, var_id, ty)
     }
 
@@ -1383,7 +1383,7 @@ impl Field {
         };
         let interner = DbInterner::new_with(db, None, None);
         let args = generic_args_from_tys(interner, def_id.into(), generics.map(|ty| ty.ty));
-        let ty = db.field_types(var_id)[self.id].instantiate(interner, args);
+        let ty = db.field_types(var_id)[self.id].clone().instantiate(interner, args.r());
         Type::new(db, var_id, ty)
     }
 
@@ -1485,14 +1485,14 @@ impl HasVisibility for Struct {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InstantiatedStruct<'db> {
     pub(crate) inner: Struct,
     pub(crate) args: GenericArgs<'db>,
 }
 
 impl<'db> InstantiatedStruct<'db> {
-    pub fn fields(self, db: &dyn HirDatabase) -> Vec<InstantiatedField<'db>> {
+    pub fn fields(&self, db: &dyn HirDatabase) -> Vec<InstantiatedField<'db>> {
         self.inner
             .id
             .fields(db)
@@ -1500,17 +1500,17 @@ impl<'db> InstantiatedStruct<'db> {
             .iter()
             .map(|(id, _)| InstantiatedField {
                 inner: Field { parent: self.inner.into(), id },
-                args: self.args,
+                args: self.args.clone(),
             })
             .collect()
     }
 
-    pub fn ty(self, db: &'db dyn HirDatabase) -> TypeNs<'db> {
+    pub fn ty(&self, db: &'db dyn HirDatabase) -> TypeNs<'db> {
         let krate = self.inner.krate(db);
         let interner = DbInterner::new_with(db, Some(krate.base()), None);
 
         let ty = db.ty(self.inner.id.into());
-        TypeNs::new(db, self.inner.id, ty.instantiate(interner, self.args))
+        TypeNs::new(db, self.inner.id, ty.instantiate(interner, self.args.r()))
     }
 }
 
@@ -1605,35 +1605,28 @@ impl Enum {
 
     /// The type of the enum variant bodies.
     pub fn variant_body_ty<'db>(self, db: &'db dyn HirDatabase) -> Type<'db> {
-        let interner = DbInterner::new_with(db, None, None);
         Type::new_for_crate(
             self.id.lookup(db).container.krate(),
             match db.enum_signature(self.id).variant_body_type() {
                 layout::IntegerType::Pointer(sign) => match sign {
-                    true => Ty::new_int(interner, rustc_type_ir::IntTy::Isize),
-                    false => Ty::new_uint(interner, rustc_type_ir::UintTy::Usize),
+                    true => Ty::new_int(rustc_type_ir::IntTy::Isize),
+                    false => Ty::new_uint(rustc_type_ir::UintTy::Usize),
                 },
                 layout::IntegerType::Fixed(i, sign) => match sign {
-                    true => Ty::new_int(
-                        interner,
-                        match i {
-                            layout::Integer::I8 => rustc_type_ir::IntTy::I8,
-                            layout::Integer::I16 => rustc_type_ir::IntTy::I16,
-                            layout::Integer::I32 => rustc_type_ir::IntTy::I32,
-                            layout::Integer::I64 => rustc_type_ir::IntTy::I64,
-                            layout::Integer::I128 => rustc_type_ir::IntTy::I128,
-                        },
-                    ),
-                    false => Ty::new_uint(
-                        interner,
-                        match i {
-                            layout::Integer::I8 => rustc_type_ir::UintTy::U8,
-                            layout::Integer::I16 => rustc_type_ir::UintTy::U16,
-                            layout::Integer::I32 => rustc_type_ir::UintTy::U32,
-                            layout::Integer::I64 => rustc_type_ir::UintTy::U64,
-                            layout::Integer::I128 => rustc_type_ir::UintTy::U128,
-                        },
-                    ),
+                    true => Ty::new_int(match i {
+                        layout::Integer::I8 => rustc_type_ir::IntTy::I8,
+                        layout::Integer::I16 => rustc_type_ir::IntTy::I16,
+                        layout::Integer::I32 => rustc_type_ir::IntTy::I32,
+                        layout::Integer::I64 => rustc_type_ir::IntTy::I64,
+                        layout::Integer::I128 => rustc_type_ir::IntTy::I128,
+                    }),
+                    false => Ty::new_uint(match i {
+                        layout::Integer::I8 => rustc_type_ir::UintTy::U8,
+                        layout::Integer::I16 => rustc_type_ir::UintTy::U16,
+                        layout::Integer::I32 => rustc_type_ir::UintTy::U32,
+                        layout::Integer::I64 => rustc_type_ir::UintTy::U64,
+                        layout::Integer::I128 => rustc_type_ir::UintTy::U128,
+                    }),
                 },
             },
         )
@@ -1661,19 +1654,19 @@ impl HasVisibility for Enum {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InstantiatedEnum<'db> {
     pub(crate) inner: Enum,
     pub(crate) args: GenericArgs<'db>,
 }
 
 impl<'db> InstantiatedEnum<'db> {
-    pub fn ty(self, db: &'db dyn HirDatabase) -> TypeNs<'db> {
+    pub fn ty(&self, db: &'db dyn HirDatabase) -> TypeNs<'db> {
         let krate = self.inner.krate(db);
         let interner = DbInterner::new_with(db, Some(krate.base()), None);
 
         let ty = db.ty(self.inner.id.into());
-        TypeNs::new(db, self.inner.id, ty.instantiate(interner, self.args))
+        TypeNs::new(db, self.inner.id, ty.instantiate(interner, self.args.r()))
     }
 }
 
@@ -1761,18 +1754,18 @@ impl Variant {
 }
 
 // FIXME: Rename to `EnumVariant`
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InstantiatedVariant<'db> {
     pub(crate) inner: Variant,
     pub(crate) args: GenericArgs<'db>,
 }
 
 impl<'db> InstantiatedVariant<'db> {
-    pub fn parent_enum(self, db: &dyn HirDatabase) -> InstantiatedEnum<'db> {
-        InstantiatedEnum { inner: self.inner.id.lookup(db).parent.into(), args: self.args }
+    pub fn parent_enum(&self, db: &dyn HirDatabase) -> InstantiatedEnum<'db> {
+        InstantiatedEnum { inner: self.inner.id.lookup(db).parent.into(), args: self.args.clone() }
     }
 
-    pub fn fields(self, db: &dyn HirDatabase) -> Vec<InstantiatedField<'db>> {
+    pub fn fields(&self, db: &dyn HirDatabase) -> Vec<InstantiatedField<'db>> {
         self.inner
             .id
             .fields(db)
@@ -1780,7 +1773,7 @@ impl<'db> InstantiatedVariant<'db> {
             .iter()
             .map(|(id, _)| InstantiatedField {
                 inner: Field { parent: self.inner.into(), id },
-                args: self.args,
+                args: self.args.clone(),
             })
             .collect()
     }
@@ -1819,7 +1812,7 @@ impl Adt {
         let interner = DbInterner::new_with(db, Some(env.krate), env.block);
         let adt_id = AdtId::from(self);
         let args = GenericArgs::for_item_with_defaults(interner, adt_id.into(), |_, id, _| {
-            GenericArg::error_from_id(interner, id)
+            GenericArg::error_from_id(id)
         });
         db.layout_of_adt(adt_id, args, env)
             .map(|layout| Layout(layout, db.target_data_layout(self.krate(db).id).unwrap()))
@@ -1842,7 +1835,7 @@ impl Adt {
     ) -> Type<'db> {
         let id = AdtId::from(self);
         let interner = DbInterner::new_with(db, None, None);
-        let ty = Ty::new_adt(
+        let ty = Ty::new_adt_id(
             interner,
             id,
             generic_args_from_tys(interner, id.into(), args.into_iter().map(|ty| ty.ty)),
@@ -2056,8 +2049,8 @@ impl DefWithBody {
             acc.push(
                 TypeMismatch {
                     expr_or_pat,
-                    expected: Type::new(db, DefWithBodyId::from(self), mismatch.expected),
-                    actual: Type::new(db, DefWithBodyId::from(self), mismatch.actual),
+                    expected: Type::new(db, DefWithBodyId::from(self), mismatch.expected.clone()),
+                    actual: Type::new(db, DefWithBodyId::from(self), mismatch.actual.clone()),
                 }
                 .into(),
             );
@@ -2127,7 +2120,10 @@ impl DefWithBody {
                         }
                         mir::MirSpan::Unknown => continue,
                     };
-                    acc.push(MovedOutOfRef { ty: Type::new_for_crate(krate, moof.ty), span }.into())
+                    acc.push(
+                        MovedOutOfRef { ty: Type::new_for_crate(krate, moof.ty.clone()), span }
+                            .into(),
+                    )
                 }
                 let mol = &borrowck_result.mutability_of_locals;
                 for (binding_id, binding_data) in body.bindings() {
@@ -2277,10 +2273,9 @@ impl Function {
 
     pub fn fn_ptr_type(self, db: &dyn HirDatabase) -> Type<'_> {
         let resolver = self.id.resolver(db);
-        let interner = DbInterner::new_with(db, None, None);
         // FIXME: This shouldn't be `instantiate_identity()`, we shouldn't leak `TyKind::Param`s.
         let callable_sig = db.callable_item_signature(self.id.into()).instantiate_identity();
-        let ty = Ty::new_fn_ptr(interner, callable_sig);
+        let ty = Ty::new_fn_ptr(callable_sig);
         Type::new_with_resolver_inner(db, &resolver, ty)
     }
 
@@ -2294,7 +2289,8 @@ impl Function {
             .callable_item_signature(self.id.into())
             .instantiate_identity()
             .skip_binder()
-            .output();
+            .output()
+            .o();
         Type::new_with_resolver_inner(db, &resolver, ty)
     }
 
@@ -2311,9 +2307,10 @@ impl Function {
         let interner = DbInterner::new_with(db, None, None);
         let ty = db
             .callable_item_signature(self.id.into())
-            .instantiate(interner, args)
+            .instantiate(interner, args.r())
             .skip_binder()
-            .output();
+            .output()
+            .o();
         Type::new_with_resolver_inner(db, &resolver, ty)
     }
 
@@ -2327,12 +2324,13 @@ impl Function {
             .callable_item_signature(self.id.into())
             .instantiate_identity()
             .skip_binder()
-            .output();
-        for pred in ret_ty.impl_trait_bounds(db).into_iter().flatten() {
-            if let ClauseKind::Projection(projection) = pred.kind().skip_binder()
-                && let Some(output_ty) = projection.term.as_type()
+            .output()
+            .o();
+        for pred in ret_ty.r().impl_trait_bounds(db).into_iter().flatten() {
+            if let ClauseKind::Projection(projection) = pred.kind_skip_binder()
+                && let Some(output_ty) = projection.term.r().ty()
             {
-                return Type::new_with_resolver_inner(db, &resolver, output_ty).into();
+                return Type::new_with_resolver_inner(db, &resolver, output_ty.o()).into();
             }
         }
         None
@@ -2356,7 +2354,7 @@ impl Function {
             .iter()
             .enumerate()
             .map(|(idx, ty)| {
-                let ty = Type { env: environment.clone(), ty };
+                let ty = Type { env: environment.clone(), ty: ty.o() };
                 Param { func: Callee::Def(CallableDefId::FunctionId(self.id)), ty, idx }
             })
             .collect()
@@ -2383,7 +2381,7 @@ impl Function {
             .enumerate()
             .skip(skip)
             .map(|(idx, ty)| {
-                let ty = Type { env: environment.clone(), ty };
+                let ty = Type { env: environment.clone(), ty: ty.o() };
                 Param { func: Callee::Def(CallableDefId::FunctionId(self.id)), ty, idx }
             })
             .collect()
@@ -2398,8 +2396,10 @@ impl Function {
         let environment = db.trait_environment(self.id.into());
         let interner = DbInterner::new_with(db, None, None);
         let args = generic_args_from_tys(interner, self.id.into(), generics.map(|ty| ty.ty));
-        let callable_sig =
-            db.callable_item_signature(self.id.into()).instantiate(interner, args).skip_binder();
+        let callable_sig = db
+            .callable_item_signature(self.id.into())
+            .instantiate(interner, args.r())
+            .skip_binder();
         let skip = if db.function_signature(self.id).has_self_param() { 1 } else { 0 };
         callable_sig
             .inputs()
@@ -2407,7 +2407,7 @@ impl Function {
             .enumerate()
             .skip(skip)
             .map(|(idx, ty)| {
-                let ty = Type { env: environment.clone(), ty };
+                let ty = Type { env: environment.clone(), ty: ty.o() };
                 Param { func: Callee::Def(CallableDefId::FunctionId(self.id)), ty, idx }
             })
             .collect()
@@ -2547,10 +2547,9 @@ impl Function {
         db: &dyn HirDatabase,
         span_formatter: impl Fn(FileId, TextRange) -> String,
     ) -> Result<String, ConstEvalError<'_>> {
-        let interner = DbInterner::new_with(db, None, None);
         let body = db.monomorphized_mir_body(
             self.id.into(),
-            GenericArgs::new_from_iter(interner, []),
+            GenericArgs::default(),
             db.trait_environment(self.id.into()),
         )?;
         let (result, output) = interpret_mir(db, body, false, None)?;
@@ -2695,7 +2694,7 @@ impl SelfParam {
             db.callable_item_signature(self.func.into()).instantiate_identity().skip_binder();
         let environment = db.trait_environment(self.func.into());
         let ty = callable_sig.inputs().as_slice()[0];
-        Type { env: environment, ty }
+        Type { env: environment, ty: ty.o() }
     }
 
     // FIXME: Find better API to also handle const generics
@@ -2706,11 +2705,13 @@ impl SelfParam {
     ) -> Type<'db> {
         let interner = DbInterner::new_with(db, None, None);
         let args = generic_args_from_tys(interner, self.func.into(), generics.map(|ty| ty.ty));
-        let callable_sig =
-            db.callable_item_signature(self.func.into()).instantiate(interner, args).skip_binder();
+        let callable_sig = db
+            .callable_item_signature(self.func.into())
+            .instantiate(interner, args.r())
+            .skip_binder();
         let environment = db.trait_environment(self.func.into());
         let ty = callable_sig.inputs().as_slice()[0];
-        Type { env: environment, ty }
+        Type { env: environment, ty: ty.o() }
     }
 }
 
@@ -2804,10 +2805,12 @@ impl Const {
 
     /// Evaluate the constant.
     pub fn eval(self, db: &dyn HirDatabase) -> Result<EvaluatedConst<'_>, ConstEvalError<'_>> {
-        let interner = DbInterner::new_with(db, None, None);
         let ty = db.value_ty(self.id.into()).unwrap().instantiate_identity();
-        db.const_eval(self.id, GenericArgs::new_from_iter(interner, []), None)
-            .map(|it| EvaluatedConst { const_: it, def: self.id.into(), ty })
+        db.const_eval(self.id, GenericArgs::default(), None).map(|it| EvaluatedConst {
+            const_: it,
+            def: self.id.into(),
+            ty,
+        })
     }
 }
 
@@ -2834,7 +2837,7 @@ impl<'db> EvaluatedConst<'db> {
             && let ty = c.ty.kind()
             && let TyKind::Int(_) | TyKind::Uint(_) = ty
         {
-            let b = &c.value.inner().memory;
+            let b = &c.value.bytes().memory;
             let value = u128::from_le_bytes(mir::pad16(b, false));
             let value_signed = i128::from_le_bytes(mir::pad16(b, matches!(ty, TyKind::Int(_))));
             let mut result =
@@ -2846,7 +2849,7 @@ impl<'db> EvaluatedConst<'db> {
                 return Ok(result);
             }
         }
-        mir::render_const_using_debug_impl(db, self.def, self.const_, self.ty)
+        mir::render_const_using_debug_impl(db, self.def, self.const_.clone(), self.ty.clone())
     }
 }
 
@@ -3076,8 +3079,7 @@ impl BuiltinType {
 
     pub fn ty<'db>(self, db: &'db dyn HirDatabase) -> Type<'db> {
         let core = Crate::core(db).map(|core| core.id).unwrap_or_else(|| db.all_crates()[0]);
-        let interner = DbInterner::new_with(db, None, None);
-        Type::new_for_crate(core, Ty::from_builtin_type(interner, self.inner))
+        Type::new_for_crate(core, Ty::from_builtin_type(self.inner))
     }
 
     pub fn name(self) -> Name {
@@ -3798,7 +3800,7 @@ impl<'db> GenericSubstitution<'db> {
             TypeOrConstParamData::TypeParamData(param) => Some(param.name.clone()),
             TypeOrConstParamData::ConstParamData(_) => None,
         });
-        let parent_len = self.subst.len()
+        let parent_len = self.subst.r().len()
             - generics
                 .iter_type_or_consts()
                 .filter(|g| matches!(g.1, TypeOrConstParamData::TypeParamData(..)))
@@ -3814,7 +3816,7 @@ impl<'db> GenericSubstitution<'db> {
         container_params
             .chain(self_params)
             .filter_map(|(ty, name)| {
-                Some((name?.symbol().clone(), Type { ty, env: self.env.clone() }))
+                Some((name?.symbol().clone(), Type { ty: ty.o(), env: self.env.clone() }))
             })
             .collect()
     }
@@ -3920,7 +3922,7 @@ impl Local {
     pub fn ty(self, db: &dyn HirDatabase) -> Type<'_> {
         let def = self.parent;
         let infer = db.infer(def);
-        let ty = infer[self.binding_id];
+        let ty = infer[self.binding_id].clone();
         Type::new(db, def, ty)
     }
 
@@ -4137,7 +4139,7 @@ impl GenericParam {
             GenericParam::ConstParam(_) => return None,
             GenericParam::LifetimeParam(it) => generics.lifetime_idx(it.id)?,
         };
-        db.variances_of(parent).get(index).map(Into::into)
+        db.variances_of(parent).as_slice().get(index).copied().map(Into::into)
     }
 }
 
@@ -4208,9 +4210,8 @@ impl TypeParam {
 
     pub fn ty(self, db: &dyn HirDatabase) -> Type<'_> {
         let resolver = self.id.parent().resolver(db);
-        let interner = DbInterner::new_with(db, None, None);
         let index = hir_ty::param_idx(db, self.id.into()).unwrap();
-        let ty = Ty::new_param(interner, self.id, index as u32);
+        let ty = Ty::new_param(ParamTy { id: self.id, index: index as u32 });
         Type::new_with_resolver_inner(db, &resolver, ty)
     }
 
@@ -4221,8 +4222,8 @@ impl TypeParam {
         let self_ty = self.ty(db).ty;
         GenericPredicates::query_explicit(db, self.id.parent())
             .iter_identity_copied()
-            .filter_map(|pred| match &pred.kind().skip_binder() {
-                ClauseKind::Trait(trait_ref) if trait_ref.self_ty() == self_ty => {
+            .filter_map(|pred| match pred.kind_skip_binder() {
+                ClauseKind::Trait(trait_ref) if trait_ref.self_ty() == self_ty.r() => {
                     Some(Trait::from(trait_ref.def_id().0))
                 }
                 _ => None,
@@ -4233,9 +4234,9 @@ impl TypeParam {
     pub fn default(self, db: &dyn HirDatabase) -> Option<Type<'_>> {
         let ty = generic_arg_from_param(db, self.id.into())?;
         let resolver = self.id.parent().resolver(db);
-        match ty {
-            GenericArg::Ty(it) if !it.is_ty_error() => {
-                Some(Type::new_with_resolver_inner(db, &resolver, it))
+        match ty.kind() {
+            hir_ty::next_solver::GenericArgKind::Type(it) if !it.is_ty_error() => {
+                Some(Type::new_with_resolver_inner(db, &resolver, it.o()))
             }
             _ => None,
         }
@@ -4305,7 +4306,7 @@ impl ConstParam {
         display_target: DisplayTarget,
     ) -> Option<ast::ConstArg> {
         let arg = generic_arg_from_param(db, self.id.into())?;
-        known_const_to_ast(arg.konst()?, db, display_target)
+        known_const_to_ast(arg.into_const()?, db, display_target)
     }
 }
 
@@ -4416,7 +4417,7 @@ impl Impl {
         let mut result = Vec::new();
         let interner = DbInterner::new_with(db, Some(env.krate), env.block);
         let Some(simplified_ty) =
-            fast_reject::simplify_type(interner, ty, fast_reject::TreatParams::AsRigid)
+            fast_reject::simplify_type(interner, ty.r(), fast_reject::TreatParams::AsRigid)
         else {
             return Vec::new();
         };
@@ -4561,7 +4562,7 @@ impl<'db> TraitRef<'db> {
     }
 
     pub fn self_ty(&self) -> TypeNs<'_> {
-        let ty = self.trait_ref.self_ty();
+        let ty = self.trait_ref.self_ty().o();
         TypeNs { env: self.env.clone(), ty }
     }
 
@@ -4573,7 +4574,7 @@ impl<'db> TraitRef<'db> {
             .as_slice()
             .get(idx)
             .and_then(|arg| arg.ty())
-            .map(|ty| TypeNs { env: self.env.clone(), ty })
+            .map(|ty| TypeNs { env: self.env.clone(), ty: ty.o() })
     }
 }
 
@@ -4590,12 +4591,11 @@ pub struct Closure<'db> {
 }
 
 impl<'db> Closure<'db> {
-    fn as_ty(&self, db: &'db dyn HirDatabase) -> Ty<'db> {
-        let interner = DbInterner::new_with(db, None, None);
+    fn as_ty(&self, _db: &'db dyn HirDatabase) -> Ty<'db> {
         match self.id {
-            AnyClosureId::ClosureId(id) => Ty::new_closure(interner, id.into(), self.subst),
+            AnyClosureId::ClosureId(id) => Ty::new_closure(id.into(), self.subst.clone()),
             AnyClosureId::CoroutineClosureId(id) => {
-                Ty::new_coroutine_closure(interner, id.into(), self.subst)
+                Ty::new_coroutine_closure(id.into(), self.subst.clone())
             }
         }
     }
@@ -4640,7 +4640,7 @@ impl<'db> Closure<'db> {
         let env = db.trait_environment_for_body(owner);
         captures
             .iter()
-            .map(|capture| Type { env: env.clone(), ty: capture.ty(db, self.subst) })
+            .map(|capture| Type { env: env.clone(), ty: capture.ty(db, self.subst.r()) })
             .collect()
     }
 
@@ -4654,7 +4654,7 @@ impl<'db> Closure<'db> {
             }
             AnyClosureId::CoroutineClosureId(_id) => {
                 // FIXME: Infer kind for coroutine closures.
-                match self.subst.as_coroutine_closure().kind() {
+                match self.subst.r().as_coroutine_closure().kind() {
                     rustc_type_ir::ClosureKind::Fn => FnTrait::AsyncFn,
                     rustc_type_ir::ClosureKind::FnMut => FnTrait::AsyncFnMut,
                     rustc_type_ir::ClosureKind::FnOnce => FnTrait::AsyncFnOnce,
@@ -4831,7 +4831,7 @@ impl<'db> Type<'db> {
             }
         };
         let args = GenericArgs::error_for_item(interner, def.into());
-        Type::new(db, def, ty.instantiate(interner, args))
+        Type::new(db, def, ty.instantiate(interner, args.r()))
     }
 
     // FIXME: We shouldn't leak `TyKind::Param`s.
@@ -4846,7 +4846,7 @@ impl<'db> Type<'db> {
     ) -> Self {
         let interner = DbInterner::new_with(db, None, None);
         let Some(ty) = db.value_ty(def.into()) else {
-            return Type::new(db, def, Ty::new_error(interner, ErrorGuaranteed));
+            return Type::new(db, def, Ty::new_error());
         };
         let def = match def.into() {
             ValueTyDefId::ConstId(it) => GenericDefId::ConstId(it),
@@ -4861,22 +4861,20 @@ impl<'db> Type<'db> {
             }
         };
         let args = GenericArgs::error_for_item(interner, def.into());
-        Type::new(db, def, ty.instantiate(interner, args))
+        Type::new(db, def, ty.instantiate(interner, args.r()))
     }
 
     pub fn new_slice(ty: Self) -> Self {
-        let interner = DbInterner::conjure();
-        Type { env: ty.env, ty: Ty::new_slice(interner, ty.ty) }
+        Type { env: ty.env, ty: Ty::new_slice(ty.ty) }
     }
 
     pub fn new_tuple(krate: base_db::Crate, tys: &[Self]) -> Self {
-        let tys = tys.iter().map(|it| it.ty);
-        let interner = DbInterner::conjure();
-        Type { env: TraitEnvironment::empty(krate), ty: Ty::new_tup_from_iter(interner, tys) }
+        let tys = tys.iter().map(|it| it.ty.clone());
+        Type { env: TraitEnvironment::empty(krate), ty: Ty::new_tup_from_iter(tys) }
     }
 
     pub fn is_unit(&self) -> bool {
-        self.ty.is_unit()
+        self.ty.r().is_unit()
     }
 
     pub fn is_bool(&self) -> bool {
@@ -4920,7 +4918,7 @@ impl<'db> Type<'db> {
         impl<'db> TypeVisitor<DbInterner<'db>> for Visitor<'db> {
             type Result = ControlFlow<()>;
 
-            fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
+            fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
                 match ty.kind() {
                     // Reference itself
                     TyKind::Ref(..) => ControlFlow::Break(()),
@@ -4939,9 +4937,11 @@ impl<'db> Type<'db> {
                                     .fields()
                                     .iter()
                                     .map(|(idx, _)| {
-                                        field_types[idx].instantiate(self.interner, args)
+                                        field_types[idx]
+                                            .clone()
+                                            .instantiate(self.interner, args.r())
                                     })
-                                    .filter(|it| !it.references_non_lt_error())
+                                    .filter(|it| !it.r().references_non_lt_error())
                                     .collect()
                             }
                         };
@@ -4978,16 +4978,15 @@ impl<'db> Type<'db> {
     pub fn as_reference(&self) -> Option<(Type<'db>, Mutability)> {
         let TyKind::Ref(_lt, ty, m) = self.ty.kind() else { return None };
         let m = Mutability::from_mutable(matches!(m, hir_ty::next_solver::Mutability::Mut));
-        Some((self.derived(ty), m))
+        Some((self.derived(ty.clone()), m))
     }
 
     pub fn add_reference(&self, mutability: Mutability) -> Self {
-        let interner = DbInterner::conjure();
         let ty_mutability = match mutability {
             Mutability::Shared => hir_ty::next_solver::Mutability::Not,
             Mutability::Mut => hir_ty::next_solver::Mutability::Mut,
         };
-        self.derived(Ty::new_ref(interner, Region::error(interner), self.ty, ty_mutability))
+        self.derived(Ty::new_ref(Region::new_error(), self.ty.clone(), ty_mutability))
     }
 
     pub fn is_slice(&self) -> bool {
@@ -5023,29 +5022,29 @@ impl<'db> Type<'db> {
 
     pub fn remove_ref(&self) -> Option<Type<'db>> {
         match self.ty.kind() {
-            TyKind::Ref(_, ty, _) => Some(self.derived(ty)),
+            TyKind::Ref(_, ty, _) => Some(self.derived(ty.clone())),
             _ => None,
         }
     }
 
     pub fn as_slice(&self) -> Option<Type<'db>> {
         match self.ty.kind() {
-            TyKind::Slice(ty) => Some(self.derived(ty)),
+            TyKind::Slice(ty) => Some(self.derived(ty.clone())),
             _ => None,
         }
     }
 
     pub fn strip_references(&self) -> Self {
-        self.derived(self.ty.strip_references())
+        self.derived(self.ty.r().strip_references().o())
     }
 
     // FIXME: This is the same as `remove_ref()`, remove one of these methods.
     pub fn strip_reference(&self) -> Self {
-        self.derived(self.ty.strip_reference())
+        self.derived(self.ty.r().strip_reference().o())
     }
 
     pub fn is_unknown(&self) -> bool {
-        self.ty.is_ty_error()
+        self.ty.r().is_ty_error()
     }
 
     /// Checks that particular type `ty` implements `std::future::IntoFuture` or
@@ -5061,7 +5060,7 @@ impl<'db> Type<'db> {
             })
             .or_else(|| LangItem::Future.resolve_trait(db, self.env.krate))?;
 
-        if !traits::implements_trait_unique(self.ty, db, self.env.clone(), trait_) {
+        if !traits::implements_trait_unique(self.ty.r(), db, self.env.clone(), trait_) {
             return None;
         }
 
@@ -5089,7 +5088,7 @@ impl<'db> Type<'db> {
         let Some(iterator_trait) = LangItem::Iterator.resolve_trait(db, self.env.krate) else {
             return false;
         };
-        traits::implements_trait_unique(self.ty, db, self.env.clone(), iterator_trait)
+        traits::implements_trait_unique(self.ty.r(), db, self.env.clone(), iterator_trait)
     }
 
     /// Resolves the projection `<Self as IntoIterator>::IntoIter` and returns the resulting type
@@ -5102,7 +5101,7 @@ impl<'db> Type<'db> {
             },
         )?;
 
-        if !traits::implements_trait_unique(self.ty, db, self.env.clone(), trait_) {
+        if !traits::implements_trait_unique(self.ty.r(), db, self.env.clone(), trait_) {
             return None;
         }
 
@@ -5122,7 +5121,7 @@ impl<'db> Type<'db> {
             None => return false,
         };
 
-        traits::implements_trait_unique(self.ty, db, self.env.clone(), fnonce_trait)
+        traits::implements_trait_unique(self.ty.r(), db, self.env.clone(), fnonce_trait)
     }
 
     // FIXME: Find better API that also handles const generics
@@ -5131,9 +5130,9 @@ impl<'db> Type<'db> {
         let args = generic_args_from_tys(
             interner,
             trait_.id.into(),
-            std::iter::once(self.ty).chain(args.iter().map(|ty| ty.ty)),
+            std::iter::once(self.ty.clone()).chain(args.iter().map(|ty| ty.ty.clone())),
         );
-        traits::implements_trait_unique_with_args(db, self.env.clone(), trait_.id, args)
+        traits::implements_trait_unique_with_args(db, self.env.clone(), trait_.id, args.r())
     }
 
     pub fn normalize_trait_assoc_type(
@@ -5146,18 +5145,17 @@ impl<'db> Type<'db> {
         let args = generic_args_from_tys(
             interner,
             alias.id.into(),
-            std::iter::once(self.ty).chain(args.iter().map(|ty| ty.ty)),
+            std::iter::once(self.ty.clone()).chain(args.iter().map(|ty| ty.ty.clone())),
         );
         // FIXME: We don't handle GATs yet.
         let projection = Ty::new_alias(
-            interner,
             AliasTyKind::Projection,
-            AliasTy::new(interner, alias.id.into(), args),
+            AliasTy::new_from_args(interner, alias.id.into(), args),
         );
 
         let infcx = interner.infer_ctxt().build(TypingMode::PostAnalysis);
         let ty = structurally_normalize_ty(&infcx, projection, self.env.clone());
-        if ty.is_ty_error() { None } else { Some(self.derived(ty)) }
+        if ty.r().is_ty_error() { None } else { Some(self.derived(ty)) }
     }
 
     pub fn is_copy(&self, db: &'db dyn HirDatabase) -> bool {
@@ -5170,15 +5168,15 @@ impl<'db> Type<'db> {
     pub fn as_callable(&self, db: &'db dyn HirDatabase) -> Option<Callable<'db>> {
         let interner = DbInterner::new_with(db, None, None);
         let callee = match self.ty.kind() {
-            TyKind::Closure(id, subst) => Callee::Closure(id.0, subst),
-            TyKind::CoroutineClosure(id, subst) => Callee::CoroutineClosure(id.0, subst),
+            TyKind::Closure(id, subst) => Callee::Closure(id.0, subst.clone()),
+            TyKind::CoroutineClosure(id, subst) => Callee::CoroutineClosure(id.0, subst.clone()),
             TyKind::FnPtr(..) => Callee::FnPtr,
             TyKind::FnDef(id, _) => Callee::Def(id.0),
             // This will happen when it implements fn or fn mut, since we add an autoborrow adjustment
-            TyKind::Ref(_, inner_ty, _) => return self.derived(inner_ty).as_callable(db),
+            TyKind::Ref(_, inner_ty, _) => return self.derived(inner_ty.clone()).as_callable(db),
             _ => {
                 let (fn_trait, sig) =
-                    hir_ty::callable_sig_from_fn_trait(self.ty, self.env.clone(), db)?;
+                    hir_ty::callable_sig_from_fn_trait(self.ty.clone(), self.env.clone(), db)?;
                 return Some(Callable {
                     ty: self.clone(),
                     sig,
@@ -5188,7 +5186,7 @@ impl<'db> Type<'db> {
             }
         };
 
-        let sig = self.ty.callable_sig(interner)?;
+        let sig = self.ty.r().callable_sig(interner)?;
         Some(Callable { ty: self.clone(), sig, callee, is_bound_method: false })
     }
 
@@ -5199,10 +5197,10 @@ impl<'db> Type<'db> {
     pub fn as_closure(&self) -> Option<Closure<'db>> {
         match self.ty.kind() {
             TyKind::Closure(id, subst) => {
-                Some(Closure { id: AnyClosureId::ClosureId(id.0), subst })
+                Some(Closure { id: AnyClosureId::ClosureId(id.0), subst: subst.clone() })
             }
             TyKind::CoroutineClosure(id, subst) => {
-                Some(Closure { id: AnyClosureId::CoroutineClosureId(id.0), subst })
+                Some(Closure { id: AnyClosureId::CoroutineClosureId(id.0), subst: subst.clone() })
             }
             _ => None,
         }
@@ -5234,11 +5232,15 @@ impl<'db> Type<'db> {
     }
 
     pub fn remove_raw_ptr(&self) -> Option<Type<'db>> {
-        if let TyKind::RawPtr(ty, _) = self.ty.kind() { Some(self.derived(ty)) } else { None }
+        if let TyKind::RawPtr(ty, _) = self.ty.kind() {
+            Some(self.derived(ty.clone()))
+        } else {
+            None
+        }
     }
 
     pub fn contains_unknown(&self) -> bool {
-        self.ty.references_non_lt_error()
+        self.ty.r().references_non_lt_error()
     }
 
     pub fn fields(&self, db: &'db dyn HirDatabase) -> Vec<(Field, Self)> {
@@ -5259,7 +5261,7 @@ impl<'db> Type<'db> {
             .iter()
             .map(|(local_id, ty)| {
                 let def = Field { parent: variant_id.into(), id: local_id };
-                let ty = ty.instantiate(interner, substs);
+                let ty = ty.clone().instantiate(interner, substs.r());
                 (def, self.derived(ty))
             })
             .collect()
@@ -5267,7 +5269,7 @@ impl<'db> Type<'db> {
 
     pub fn tuple_fields(&self, _db: &'db dyn HirDatabase) -> Vec<Self> {
         if let TyKind::Tuple(substs) = self.ty.kind() {
-            substs.iter().map(|ty| self.derived(ty)).collect()
+            substs.r().iter().map(|ty| self.derived(ty.o())).collect()
         } else {
             Vec::new()
         }
@@ -5275,7 +5277,7 @@ impl<'db> Type<'db> {
 
     pub fn as_array(&self, db: &'db dyn HirDatabase) -> Option<(Self, usize)> {
         if let TyKind::Array(ty, len) = self.ty.kind() {
-            try_const_usize(db, len).map(|it| (self.derived(ty), it as usize))
+            try_const_usize(db, len.r()).map(|it| (self.derived(ty.clone()), it as usize))
         } else {
             None
         }
@@ -5284,7 +5286,7 @@ impl<'db> Type<'db> {
     pub fn fingerprint_for_trait_impl(&self) -> Option<SimplifiedType> {
         fast_reject::simplify_type(
             DbInterner::conjure(),
-            self.ty,
+            self.ty.r(),
             fast_reject::TreatParams::AsRigid,
         )
     }
@@ -5337,7 +5339,7 @@ impl<'db> Type<'db> {
 
         let interner = DbInterner::new_with(db, None, None);
         let Some(simplified_type) =
-            fast_reject::simplify_type(interner, self.ty, fast_reject::TreatParams::AsRigid)
+            fast_reject::simplify_type(interner, self.ty.r(), fast_reject::TreatParams::AsRigid)
         else {
             return;
         };
@@ -5375,10 +5377,12 @@ impl<'db> Type<'db> {
     /// - "U"
     /// ```
     pub fn type_arguments(&self) -> impl Iterator<Item = Type<'db>> + '_ {
-        match self.ty.strip_references().kind() {
-            TyKind::Adt(_, substs) => Either::Left(substs.types().map(move |ty| self.derived(ty))),
+        match self.ty.r().strip_references().kind() {
+            TyKind::Adt(_, substs) => {
+                Either::Left(substs.r().types().map(move |ty| self.derived(ty.o())))
+            }
             TyKind::Tuple(substs) => {
-                Either::Right(Either::Left(substs.iter().map(move |ty| self.derived(ty))))
+                Either::Right(Either::Left(substs.r().iter().map(move |ty| self.derived(ty.o()))))
             }
             _ => Either::Right(Either::Right(std::iter::empty())),
         }
@@ -5408,16 +5412,19 @@ impl<'db> Type<'db> {
         display_target: DisplayTarget,
     ) -> impl Iterator<Item = SmolStr> + 'a {
         self.ty
+            .r()
             .strip_references()
             .as_adt()
             .into_iter()
             .flat_map(|(_, substs)| substs.iter())
-            .filter_map(move |arg| match arg {
-                GenericArg::Ty(ty) => Some(format_smolstr!("{}", ty.display(db, display_target))),
-                GenericArg::Const(const_) => {
+            .filter_map(move |arg| match arg.kind() {
+                hir_ty::next_solver::GenericArgKind::Type(ty) => {
+                    Some(format_smolstr!("{}", ty.display(db, display_target)))
+                }
+                hir_ty::next_solver::GenericArgKind::Const(const_) => {
                     Some(format_smolstr!("{}", const_.display(db, display_target)))
                 }
-                GenericArg::Lifetime(_) => None,
+                hir_ty::next_solver::GenericArgKind::Lifetime(_) => None,
             })
     }
 
@@ -5684,16 +5691,16 @@ impl<'db> Type<'db> {
     }
 
     pub fn as_adt(&self) -> Option<Adt> {
-        let (adt, _subst) = self.ty.as_adt()?;
+        let (adt, _subst) = self.ty.r().as_adt()?;
         Some(adt.into())
     }
 
     pub fn as_builtin(&self) -> Option<BuiltinType> {
-        self.ty.as_builtin().map(|inner| BuiltinType { inner })
+        self.ty.r().as_builtin().map(|inner| BuiltinType { inner })
     }
 
     pub fn as_dyn_trait(&self) -> Option<Trait> {
-        self.ty.dyn_trait().map(Into::into)
+        self.ty.r().dyn_trait().map(Into::into)
     }
 
     /// If a type can be represented as `dyn Trait`, returns all traits accessible via this type,
@@ -5704,7 +5711,7 @@ impl<'db> Type<'db> {
     ) -> impl Iterator<Item = Trait> {
         let _p = tracing::info_span!("applicable_inherent_traits").entered();
         self.autoderef_(db)
-            .filter_map(|ty| ty.dyn_trait())
+            .filter_map(|ty| ty.r().dyn_trait())
             .flat_map(move |dyn_trait_id| hir_ty::all_super_traits(db, dyn_trait_id))
             .map(Trait::from)
     }
@@ -5722,7 +5729,7 @@ impl<'db> Type<'db> {
     }
 
     pub fn as_impl_traits(&self, db: &'db dyn HirDatabase) -> Option<impl Iterator<Item = Trait>> {
-        self.ty.impl_trait_bounds(db).map(|it| {
+        self.ty.r().impl_trait_bounds(db).map(|it| {
             it.into_iter().filter_map(|pred| match pred.kind().skip_binder() {
                 ClauseKind::Trait(trait_ref) => Some(Trait::from(trait_ref.def_id().0)),
                 _ => None,
@@ -5757,12 +5764,12 @@ impl<'db> Type<'db> {
         {
             type Result = ();
 
-            fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
-                if !self.visited.insert(ty) {
+            fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
+                if !self.visited.insert(ty.o()) {
                     return;
                 }
 
-                (self.callback)(Type { env: self.env.clone(), ty });
+                (self.callback)(Type { env: self.env.clone(), ty: ty.o() });
 
                 if let Some(bounds) = ty.impl_trait_bounds(self.db) {
                     bounds.visit_with(self);
@@ -5782,7 +5789,8 @@ impl<'db> Type<'db> {
     /// For example `Option<T>` and `Option<U>` unify although there is unresolved goal `T = U`.
     pub fn could_unify_with(&self, db: &'db dyn HirDatabase, other: &Type<'db>) -> bool {
         let interner = DbInterner::new_with(db, None, None);
-        let tys = hir_ty::replace_errors_with_variables(interner, &(self.ty, other.ty));
+        let tys =
+            hir_ty::replace_errors_with_variables(interner, &(self.ty.clone(), other.ty.clone()));
         hir_ty::could_unify(db, self.env.clone(), &tys)
     }
 
@@ -5792,13 +5800,15 @@ impl<'db> Type<'db> {
     /// them. For example `Option<T>` and `Option<U>` do not unify as we cannot show that `T = U`
     pub fn could_unify_with_deeply(&self, db: &'db dyn HirDatabase, other: &Type<'db>) -> bool {
         let interner = DbInterner::new_with(db, None, None);
-        let tys = hir_ty::replace_errors_with_variables(interner, &(self.ty, other.ty));
+        let tys =
+            hir_ty::replace_errors_with_variables(interner, &(self.ty.clone(), other.ty.clone()));
         hir_ty::could_unify_deeply(db, self.env.clone(), &tys)
     }
 
     pub fn could_coerce_to(&self, db: &'db dyn HirDatabase, to: &Type<'db>) -> bool {
         let interner = DbInterner::new_with(db, None, None);
-        let tys = hir_ty::replace_errors_with_variables(interner, &(self.ty, to.ty));
+        let tys =
+            hir_ty::replace_errors_with_variables(interner, &(self.ty.clone(), to.ty.clone()));
         hir_ty::could_coerce(db, self.env.clone(), &tys)
     }
 
@@ -5818,14 +5828,14 @@ impl<'db> Type<'db> {
     }
 
     pub fn layout(&self, db: &'db dyn HirDatabase) -> Result<Layout, LayoutError> {
-        db.layout_of_ty(self.ty, self.env.clone())
+        db.layout_of_ty(self.ty.clone(), self.env.clone())
             .map(|layout| Layout(layout, db.target_data_layout(self.env.krate).unwrap()))
     }
 
     pub fn drop_glue(&self, db: &'db dyn HirDatabase) -> DropGlue {
         let interner = DbInterner::new_with(db, Some(self.env.krate), self.env.block);
         let infcx = interner.infer_ctxt().build(TypingMode::PostAnalysis);
-        hir_ty::drop::has_drop_glue(&infcx, self.ty, self.env.clone())
+        hir_ty::drop::has_drop_glue(&infcx, self.ty.clone(), self.env.clone())
     }
 }
 
@@ -5845,16 +5855,19 @@ impl<'db> TypeNs<'db> {
     }
 
     pub fn to_type(&self, _db: &'db dyn HirDatabase) -> Type<'db> {
-        Type { env: self.env.clone(), ty: self.ty }
+        Type { env: self.env.clone(), ty: self.ty.clone() }
     }
 
     // FIXME: Find better API that also handles const generics
     pub fn impls_trait(&self, infcx: InferCtxt<'db>, trait_: Trait, args: &[TypeNs<'db>]) -> bool {
         let args = GenericArgs::new_from_iter(
-            infcx.interner,
-            [self.ty].into_iter().chain(args.iter().map(|t| t.ty)).map(|t| t.into()),
+            [self.ty.clone()]
+                .into_iter()
+                .chain(args.iter().map(|t| t.ty.clone()))
+                .map(|t| GenericArg::from(t)),
         );
-        let trait_ref = hir_ty::next_solver::TraitRef::new(infcx.interner, trait_.id.into(), args);
+        let trait_ref =
+            hir_ty::next_solver::TraitRef::new_from_args(infcx.interner, trait_.id.into(), args);
 
         let pred_kind = rustc_type_ir::Binder::dummy(rustc_type_ir::PredicateKind::Clause(
             rustc_type_ir::ClauseKind::Trait(rustc_type_ir::TraitPredicate {
@@ -5862,7 +5875,7 @@ impl<'db> TypeNs<'db> {
                 polarity: rustc_type_ir::PredicatePolarity::Positive,
             }),
         ));
-        let predicate = hir_ty::next_solver::Predicate::new(infcx.interner, pred_kind);
+        let predicate = hir_ty::next_solver::Predicate::new(pred_kind);
         let goal = hir_ty::next_solver::Goal::new(
             infcx.interner,
             hir_ty::next_solver::ParamEnv::empty(),
@@ -5933,12 +5946,14 @@ impl<'db> Callable<'db> {
             Callee::Def(CallableDefId::EnumVariantId(it)) => {
                 CallableKind::TupleEnumVariant(it.into())
             }
-            Callee::Closure(id, subst) => {
-                CallableKind::Closure(Closure { id: AnyClosureId::ClosureId(id), subst })
-            }
-            Callee::CoroutineClosure(id, subst) => {
-                CallableKind::Closure(Closure { id: AnyClosureId::CoroutineClosureId(id), subst })
-            }
+            Callee::Closure(id, ref subst) => CallableKind::Closure(Closure {
+                id: AnyClosureId::ClosureId(id),
+                subst: subst.clone(),
+            }),
+            Callee::CoroutineClosure(id, ref subst) => CallableKind::Closure(Closure {
+                id: AnyClosureId::CoroutineClosureId(id),
+                subst: subst.clone(),
+            }),
             Callee::FnPtr => CallableKind::FnPtr,
             Callee::FnImpl(fn_) => CallableKind::FnImpl(fn_),
         }
@@ -5949,29 +5964,24 @@ impl<'db> Callable<'db> {
             _ => return None,
         };
         let func = Function { id: func };
-        Some((
-            func.self_param(db)?,
-            self.ty.derived(self.sig.skip_binder().inputs_and_output.inputs()[0]),
-        ))
+        Some((func.self_param(db)?, self.ty.derived(self.sig.skip_binder_ref().inputs()[0].o())))
     }
     pub fn n_params(&self) -> usize {
-        self.sig.skip_binder().inputs_and_output.inputs().len()
-            - if self.is_bound_method { 1 } else { 0 }
+        self.sig.skip_binder_ref().inputs().len() - if self.is_bound_method { 1 } else { 0 }
     }
     pub fn params(&self) -> Vec<Param<'db>> {
         self.sig
-            .skip_binder()
-            .inputs_and_output
+            .skip_binder_ref()
             .inputs()
             .iter()
             .enumerate()
             .skip(if self.is_bound_method { 1 } else { 0 })
-            .map(|(idx, ty)| (idx, self.ty.derived(*ty)))
+            .map(|(idx, ty)| (idx, self.ty.derived(ty.o())))
             .map(|(idx, ty)| Param { func: self.callee.clone(), idx, ty })
             .collect()
     }
     pub fn return_type(&self) -> Type<'db> {
-        self.ty.derived(self.sig.skip_binder().output())
+        self.ty.derived(self.sig.skip_binder_ref().output().o())
     }
     pub fn sig(&self) -> impl Eq {
         &self.sig
@@ -6537,7 +6547,7 @@ fn generic_args_from_tys<'db>(
         {
             arg.into()
         } else {
-            next_solver::GenericArg::error_from_id(interner, id)
+            next_solver::GenericArg::error_from_id(id)
         }
     })
 }

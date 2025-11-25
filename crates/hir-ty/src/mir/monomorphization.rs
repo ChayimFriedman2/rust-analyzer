@@ -8,9 +8,9 @@
 //! So the monomorphization should be called even if the substitution is empty.
 
 use hir_def::DefWithBodyId;
-use rustc_type_ir::inherent::{IntoKind, SliceLike};
 use rustc_type_ir::{
     FallibleTypeFolder, TypeFlags, TypeFoldable, TypeSuperFoldable, TypeVisitableExt,
+    ir_traits::MyToOwned,
 };
 use triomphe::Arc;
 
@@ -53,7 +53,11 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for Filler<'db> {
 
                 let mut ocx = ObligationCtxt::new(&self.infcx);
                 let ty = ocx
-                    .structurally_normalize_ty(&ObligationCause::dummy(), self.trait_env.env, ty)
+                    .structurally_normalize_ty(
+                        &ObligationCause::dummy(),
+                        self.trait_env.env.r(),
+                        ty,
+                    )
                     .map_err(|_| MirLowerError::NotSupported("can't normalize alias".to_owned()))?;
                 ty.try_super_fold_with(self)
             }
@@ -61,9 +65,9 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for Filler<'db> {
                 .subst
                 .as_slice()
                 .get(param.index as usize)
-                .and_then(|arg| arg.ty())
+                .and_then(|arg| arg.ty().o())
                 .ok_or_else(|| {
-                    MirLowerError::GenericArgNotProvided(param.id.into(), self.subst)
+                    MirLowerError::GenericArgNotProvided(param.id.into(), self.subst.clone())
                 })?),
             _ => ty.try_super_fold_with(self),
         }
@@ -73,22 +77,18 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for Filler<'db> {
         let ConstKind::Param(param) = ct.kind() else {
             return ct.try_super_fold_with(self);
         };
-        self.subst
-            .as_slice()
-            .get(param.index as usize)
-            .and_then(|arg| arg.konst())
-            .ok_or_else(|| MirLowerError::GenericArgNotProvided(param.id.into(), self.subst))
+        self.subst.as_slice().get(param.index as usize).and_then(|arg| arg.konst().o()).ok_or_else(
+            || MirLowerError::GenericArgNotProvided(param.id.into(), self.subst.clone()),
+        )
     }
 
     fn try_fold_region(&mut self, region: Region<'db>) -> Result<Region<'db>, Self::Error> {
         let RegionKind::ReEarlyParam(param) = region.kind() else {
             return Ok(region);
         };
-        self.subst
-            .as_slice()
-            .get(param.index as usize)
-            .and_then(|arg| arg.region())
-            .ok_or_else(|| MirLowerError::GenericArgNotProvided(param.id.into(), self.subst))
+        self.subst.as_slice().get(param.index as usize).and_then(|arg| arg.region().o()).ok_or_else(
+            || MirLowerError::GenericArgNotProvided(param.id.into(), self.subst.clone()),
+        )
     }
 }
 
@@ -103,12 +103,12 @@ impl<'db> Filler<'db> {
         Self { infcx, trait_env: env, subst }
     }
 
-    fn fill<T: TypeFoldable<DbInterner<'db>> + Copy>(
+    fn fill<T: TypeFoldable<DbInterner<'db>> + Clone>(
         &mut self,
         t: &mut T,
     ) -> Result<(), MirLowerError<'db>> {
         // Can't deep normalized as that'll try to normalize consts and fail.
-        *t = t.try_fold_with(self)?;
+        *t = t.clone().try_fold_with(self)?;
         if references_non_lt_error(t) {
             Err(MirLowerError::NotSupported("monomorphization resulted in errors".to_owned()))
         } else {

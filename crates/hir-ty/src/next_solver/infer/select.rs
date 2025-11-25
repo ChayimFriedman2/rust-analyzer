@@ -262,7 +262,7 @@ impl<'db> InferCtxt<'db> {
         obligation: &TraitObligation<'db>,
     ) -> SelectionResult<'db, Selection<'db>> {
         self.visit_proof_tree(
-            Goal::new(self.interner, obligation.param_env, obligation.predicate),
+            Goal::new(self.interner, obligation.param_env.clone(), obligation.predicate.clone()),
             &mut Select {},
         )
         .break_value()
@@ -328,10 +328,10 @@ fn candidate_should_be_dropped_in_favor_of<'db>(
         return false;
     }
 
-    let ProbeKind::TraitCandidate { source: victim_source, result: _ } = victim.kind() else {
+    let ProbeKind::TraitCandidate { source: victim_source, result: _ } = *victim.kind() else {
         return false;
     };
-    let ProbeKind::TraitCandidate { source: other_source, result: _ } = other.kind() else {
+    let ProbeKind::TraitCandidate { source: other_source, result: _ } = *other.kind() else {
         return false;
     };
 
@@ -382,8 +382,8 @@ fn to_selection<'db>(cand: InspectCandidate<'_, 'db>) -> Option<Selection<'db>> 
                 Obligation::new(
                     nested.infcx().interner,
                     ObligationCause::dummy(),
-                    nested.goal().param_env,
-                    nested.goal().predicate,
+                    nested.goal().param_env.clone(),
+                    nested.goal().predicate.clone(),
                 )
             })
             .collect(),
@@ -400,7 +400,7 @@ fn to_selection<'db>(cand: InspectCandidate<'_, 'db>) -> Option<Selection<'db>> 
                     nested,
                 })
             }
-            CandidateSource::BuiltinImpl(builtin) => ImplSource::Builtin(builtin, nested),
+            CandidateSource::BuiltinImpl(builtin) => ImplSource::Builtin(*builtin, nested),
             CandidateSource::ParamEnv(_) | CandidateSource::AliasBound(_) => {
                 ImplSource::Param(nested)
             }

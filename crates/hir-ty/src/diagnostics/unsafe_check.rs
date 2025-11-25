@@ -12,7 +12,6 @@ use hir_def::{
     signatures::StaticFlags,
     type_ref::Rawness,
 };
-use rustc_type_ir::inherent::IntoKind;
 use span::Edition;
 
 use crate::{
@@ -260,7 +259,7 @@ impl<'db> UnsafeVisitor<'db> {
 
         match pat {
             Pat::Record { .. } => {
-                if let Some((AdtId::UnionId(_), _)) = self.infer[current].as_adt() {
+                if let Some((AdtId::UnionId(_), _)) = self.infer[current].r().as_adt() {
                     let old_inside_union_destructure =
                         mem::replace(&mut self.inside_union_destructure, true);
                     self.body.walk_pats_shallow(current, |pat| self.walk_pat(pat));
@@ -286,9 +285,9 @@ impl<'db> UnsafeVisitor<'db> {
         let inside_assignment = mem::replace(&mut self.inside_assignment, false);
         match expr {
             &Expr::Call { callee, .. } => {
-                let callee = self.infer[callee];
+                let callee = self.infer[callee].r();
                 if let TyKind::FnDef(CallableIdWrapper(CallableDefId::FunctionId(func)), _) =
-                    callee.kind()
+                    *callee.kind()
                 {
                     self.check_call(current, func);
                 }

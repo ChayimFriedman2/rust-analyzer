@@ -3,13 +3,12 @@
 use rustc_type_ir::{
     ConstVid, FloatVarValue, FloatVid, GenericArgKind, InferConst, InferTy, IntVarValue, IntVid,
     RegionVid, TyVid, TypeFoldable, TypingMode, UniverseIndex,
-    inherent::{Const as _, IntoKind, Ty as _},
     relate::combine::PredicateEmittingRelation,
 };
 
 use crate::next_solver::{
-    Binder, Const, ConstKind, DbInterner, ErrorGuaranteed, GenericArgs, OpaqueTypeKey, Region,
-    SolverDefId, Span, Ty, TyKind,
+    Binder, Const, ConstKind, DbInterner, ErrorGuaranteed, GenericArgRef, GenericArgs,
+    OpaqueTypeKey, Region, SolverDefId, Span, Ty, TyKind,
     infer::opaque_types::{OpaqueHiddenType, table::OpaqueTypeStorageEntries},
 };
 
@@ -26,7 +25,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
         true
     }
 
-    fn typing_mode(&self) -> TypingMode<DbInterner<'db>> {
+    fn typing_mode(&self) -> &TypingMode<DbInterner<'db>> {
         self.typing_mode()
     }
 
@@ -61,7 +60,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
     fn opportunistic_resolve_ty_var(&self, vid: TyVid) -> Ty<'db> {
         match self.probe_ty_var(vid) {
             Ok(ty) => ty,
-            Err(_) => Ty::new_var(self.interner, self.root_var(vid)),
+            Err(_) => Ty::new_var(self.root_var(vid)),
         }
     }
 
@@ -76,25 +75,22 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
     fn opportunistic_resolve_ct_var(&self, vid: ConstVid) -> Const<'db> {
         match self.probe_const_var(vid) {
             Ok(ct) => ct,
-            Err(_) => Const::new_var(self.interner, self.root_const_var(vid)),
+            Err(_) => Const::new_var(self.root_const_var(vid)),
         }
     }
 
     fn opportunistic_resolve_lt_var(&self, vid: RegionVid) -> Region<'db> {
-        self.inner
-            .borrow_mut()
-            .unwrap_region_constraints()
-            .opportunistic_resolve_var(self.interner, vid)
+        self.inner.borrow_mut().unwrap_region_constraints().opportunistic_resolve_var(vid)
     }
 
-    fn is_changed_arg(&self, arg: <Self::Interner as rustc_type_ir::Interner>::GenericArg) -> bool {
+    fn is_changed_arg(&self, arg: GenericArgRef<'_, 'db>) -> bool {
         match arg.kind() {
             GenericArgKind::Lifetime(_) => {
                 // Lifetimes should not change affect trait selection.
                 false
             }
             GenericArgKind::Type(ty) => {
-                if let TyKind::Infer(infer_ty) = ty.kind() {
+                if let TyKind::Infer(infer_ty) = *ty.kind() {
                     match infer_ty {
                         InferTy::TyVar(vid) => {
                             !self.probe_ty_var(vid).is_err_and(|_| self.root_var(vid) == vid)
@@ -124,7 +120,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
                 }
             }
             GenericArgKind::Const(ct) => {
-                if let ConstKind::Infer(infer_ct) = ct.kind() {
+                if let ConstKind::Infer(infer_ct) = *ct.kind() {
                     match infer_ct {
                         InferConst::Var(vid) => !self
                             .probe_const_var(vid)
@@ -198,7 +194,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
             target_is_expected,
             target_vid,
             instantiation_variance,
-            source_ty,
+            source_ty.r(),
         )
     }
 
@@ -225,7 +221,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
         target_vid: rustc_type_ir::ConstVid,
         source_ct: Const<'db>,
     ) -> RelateResult<'db, ()> {
-        self.instantiate_const_var(relation, target_is_expected, target_vid, source_ct)
+        self.instantiate_const_var(relation, target_is_expected, target_vid, source_ct.r())
     }
 
     fn set_tainted_by_errors(&self, e: ErrorGuaranteed) {
@@ -251,11 +247,11 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
     }
 
     fn sub_regions(&self, sub: Region<'db>, sup: Region<'db>, _span: Span) {
-        self.inner.borrow_mut().unwrap_region_constraints().make_subregion(sub, sup);
+        self.inner.borrow_mut().unwrap_region_constraints().make_subregion(sub.r(), sup.r());
     }
 
     fn equate_regions(&self, a: Region<'db>, b: Region<'db>, _span: Span) {
-        self.inner.borrow_mut().unwrap_region_constraints().make_eqregion(a, b);
+        self.inner.borrow_mut().unwrap_region_constraints().make_eqregion(a.r(), b.r());
     }
 
     fn register_ty_outlives(&self, _ty: Ty<'db>, _r: Region<'db>, _span: Span) {
@@ -292,7 +288,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
 
     fn register_hidden_type_in_storage(
         &self,
-        opaque_type_key: OpaqueTypeKey<'db>,
+        opaque_type_key: &OpaqueTypeKey<'db>,
         hidden_ty: Ty<'db>,
         _span: Span,
     ) -> Option<Ty<'db>> {
@@ -300,14 +296,14 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
     }
     fn add_duplicate_opaque_type(
         &self,
-        opaque_type_key: OpaqueTypeKey<'db>,
+        opaque_type_key: &OpaqueTypeKey<'db>,
         hidden_ty: Ty<'db>,
         _span: Span,
     ) {
         self.inner
             .borrow_mut()
             .opaque_types()
-            .add_duplicate(opaque_type_key, OpaqueHiddenType { ty: hidden_ty })
+            .add_duplicate(opaque_type_key.clone(), OpaqueHiddenType { ty: hidden_ty })
     }
 
     fn reset_opaque_types(&self) {

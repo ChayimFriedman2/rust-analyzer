@@ -1,7 +1,5 @@
 //! Fulfill loop for next-solver.
 
-mod errors;
-
 use std::ops::ControlFlow;
 
 use rustc_hash::FxHashSet;
@@ -11,12 +9,12 @@ use rustc_next_trait_solver::{
 };
 use rustc_type_ir::{
     Interner, TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor,
-    inherent::{IntoKind, Span as _},
+    inherent::Span as _,
     solve::{Certainty, NoSolution},
 };
 
 use crate::next_solver::{
-    DbInterner, SolverContext, SolverDefId, Span, Ty, TyKind, TypingMode,
+    DbInterner, SolverContext, SolverDefId, Span, Ty, TyKind, TyRef, TypingMode,
     infer::{
         InferCtxt,
         traits::{PredicateObligation, PredicateObligations},
@@ -96,7 +94,7 @@ impl<'db> ObligationStorage<'db> {
             self.overflowed.extend(
                 self.pending
                     .extract_if(.., |(o, stalled_on)| {
-                        let goal = o.as_goal();
+                        let goal = o.to_goal();
                         let result = <&SolverContext<'db>>::from(infcx).evaluate_root_goal(
                             goal,
                             Span::dummy(),
@@ -174,9 +172,9 @@ impl<'db> FulfillmentCtxt<'db> {
                     return errors;
                 }
 
-                let goal = obligation.as_goal();
+                let goal = obligation.to_goal();
                 let delegate = <&SolverContext<'db>>::from(infcx);
-                if let Some(certainty) = delegate.compute_goal_fast_path(goal, Span::dummy()) {
+                if let Some(certainty) = delegate.compute_goal_fast_path(&goal, Span::dummy()) {
                     match certainty {
                         Certainty::Yes => {}
                         Certainty::Maybe { .. } => {
@@ -249,7 +247,7 @@ impl<'db> FulfillmentCtxt<'db> {
             | TypingMode::PostBorrowckAnalysis { defined_opaque_types: _ }
             | TypingMode::PostAnalysis => return Default::default(),
         };
-        let stalled_coroutines = stalled_coroutines.inner();
+        let stalled_coroutines = stalled_coroutines.as_slice();
 
         if stalled_coroutines.is_empty() {
             return Default::default();
@@ -260,7 +258,7 @@ impl<'db> FulfillmentCtxt<'db> {
                 infcx.probe(|_| {
                     infcx
                         .visit_proof_tree(
-                            obl.as_goal(),
+                            obl.to_goal(),
                             &mut StalledOnCoroutines {
                                 stalled_coroutines,
                                 cache: Default::default(),
@@ -304,12 +302,12 @@ impl<'db> ProofTreeVisitor<'db> for StalledOnCoroutines<'_, 'db> {
 impl<'db> TypeVisitor<DbInterner<'db>> for StalledOnCoroutines<'_, 'db> {
     type Result = ControlFlow<()>;
 
-    fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
-        if !self.cache.insert(ty) {
+    fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
+        if !self.cache.insert(ty.o()) {
             return ControlFlow::Continue(());
         }
 
-        if let TyKind::Coroutine(def_id, _) = ty.kind()
+        if let TyKind::Coroutine(def_id, _) = *ty.kind()
             && self.stalled_coroutines.contains(&def_id.into())
         {
             ControlFlow::Break(())

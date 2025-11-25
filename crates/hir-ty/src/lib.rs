@@ -62,8 +62,7 @@ use intern::{Symbol, sym};
 use mir::{MirEvalError, VTableMap};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use rustc_type_ir::{
-    BoundVarIndexKind, TypeSuperVisitable, TypeVisitableExt, UpcastFrom,
-    inherent::{IntoKind, SliceLike, Ty as _},
+    BoundVarIndexKind, TypeSuperVisitable, TypeVisitableExt, UpcastFrom, inherent::SliceLike,
 };
 use syntax::ast::{ConstArg, make};
 use traits::FnTrait;
@@ -75,8 +74,9 @@ use crate::{
     infer::unify::InferenceTable,
     next_solver::{
         AliasTy, Binder, BoundConst, BoundRegion, BoundRegionKind, BoundTy, BoundTyKind, Canonical,
-        CanonicalVarKind, CanonicalVars, Const, ConstKind, DbInterner, FnSig, PolyFnSig, Predicate,
-        Region, RegionKind, TraitRef, Ty, TyKind, Tys, abi,
+        CanonicalVarKind, CanonicalVars, Const, ConstKind, ConstRef, DbInterner, FnSig,
+        IteratorOwnedExt, PolyFnSig, Predicate, Region, RegionKind, TraitRef, Ty, TyKind, TyRef,
+        Tys, abi,
     },
 };
 
@@ -383,20 +383,16 @@ where
             #[cfg(debug_assertions)]
             let error = || Err(());
             #[cfg(not(debug_assertions))]
-            let error = || Ok(Ty::new_error(self.interner, crate::next_solver::ErrorGuaranteed));
+            let error = || Ok(Ty::new_error());
 
-            match t.kind() {
+            match *t.kind() {
                 TyKind::Error(_) => {
                     let var = rustc_type_ir::BoundVar::from_usize(self.vars.len());
                     self.vars.push(CanonicalVarKind::Ty {
                         ui: rustc_type_ir::UniverseIndex::ZERO,
                         sub_root: var,
                     });
-                    Ok(Ty::new_bound(
-                        self.interner,
-                        self.binder,
-                        BoundTy { var, kind: BoundTyKind::Anon },
-                    ))
+                    Ok(Ty::new_bound(self.binder, BoundTy { var, kind: BoundTyKind::Anon }))
                 }
                 TyKind::Infer(_) => error(),
                 TyKind::Bound(BoundVarIndexKind::Bound(index), _) if index > self.binder => error(),
@@ -417,13 +413,13 @@ where
             #[cfg(debug_assertions)]
             let error = || Err(());
             #[cfg(not(debug_assertions))]
-            let error = || Ok(Const::error(self.interner));
+            let error = || Ok(Const::new_error());
 
-            match ct.kind() {
+            match *ct.kind() {
                 ConstKind::Error(_) => {
                     let var = rustc_type_ir::BoundVar::from_usize(self.vars.len());
                     self.vars.push(CanonicalVarKind::Const(rustc_type_ir::UniverseIndex::ZERO));
-                    Ok(Const::new_bound(self.interner, self.binder, BoundConst { var }))
+                    Ok(Const::new_bound(self.binder, BoundConst { var }))
                 }
                 ConstKind::Infer(_) => error(),
                 ConstKind::Bound(BoundVarIndexKind::Bound(index), _) if index > self.binder => {
@@ -437,14 +433,13 @@ where
             #[cfg(debug_assertions)]
             let error = || Err(());
             #[cfg(not(debug_assertions))]
-            let error = || Ok(Region::error(self.interner));
+            let error = || Ok(Region::new_error());
 
-            match region.kind() {
+            match *region.kind() {
                 RegionKind::ReError(_) => {
                     let var = rustc_type_ir::BoundVar::from_usize(self.vars.len());
                     self.vars.push(CanonicalVarKind::Region(rustc_type_ir::UniverseIndex::ZERO));
                     Ok(Region::new_bound(
-                        self.interner,
                         self.binder,
                         BoundRegion { var, kind: BoundRegionKind::Anon },
                     ))
@@ -467,7 +462,7 @@ where
     Canonical {
         value,
         max_universe: rustc_type_ir::UniverseIndex::ZERO,
-        variables: CanonicalVars::new_from_iter(interner, error_replacer.vars),
+        variables: CanonicalVars::new_from_vec(error_replacer.vars),
     }
 }
 
@@ -489,34 +484,31 @@ pub fn callable_sig_from_fn_trait<'db>(
     // - Self: FnOnce<?args_ty>
     // - <Self as FnOnce<?args_ty>>::Output == ?ret_ty
     let args_ty = table.next_ty_var();
-    let args = [self_ty, args_ty];
-    let trait_ref = TraitRef::new(table.interner(), fn_once_trait.into(), args);
+    let args = [self_ty, args_ty.clone()];
+    let trait_ref = TraitRef::new(table.interner(), fn_once_trait.into(), args.clone());
     let projection = Ty::new_alias(
-        table.interner(),
         rustc_type_ir::AliasTyKind::Projection,
-        AliasTy::new(table.interner(), output_assoc_type.into(), args),
+        AliasTy::new(table.interner(), output_assoc_type.into(), args.clone()),
     );
 
     let pred = Predicate::upcast_from(trait_ref, table.interner());
-    if !table.try_obligation(pred).no_solution() {
+    if !table.try_obligation(pred.clone()).no_solution() {
         table.register_obligation(pred);
         let return_ty = table.normalize_alias_ty(projection);
         for fn_x in [FnTrait::Fn, FnTrait::FnMut, FnTrait::FnOnce] {
             let fn_x_trait = fn_x.get_id(db, krate)?;
-            let trait_ref = TraitRef::new(table.interner(), fn_x_trait.into(), args);
+            let trait_ref = TraitRef::new(table.interner(), fn_x_trait.into(), args.clone());
             if !table
                 .try_obligation(Predicate::upcast_from(trait_ref, table.interner()))
                 .no_solution()
             {
                 let ret_ty = table.resolve_completely(return_ty);
-                let args_ty = table.resolve_completely(args_ty);
+                let args_ty = table.resolve_completely(args_ty.clone());
                 let TyKind::Tuple(params) = args_ty.kind() else {
                     return None;
                 };
-                let inputs_and_output = Tys::new_from_iter(
-                    table.interner(),
-                    params.iter().chain(std::iter::once(ret_ty)),
-                );
+                let inputs_and_output =
+                    Tys::new_from_iter(params.r().iter().owned().chain(std::iter::once(ret_ty)));
 
                 return Some((
                     fn_x,
@@ -542,16 +534,16 @@ struct ParamCollector {
 impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for ParamCollector {
     type Result = ();
 
-    fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
-        if let TyKind::Param(param) = ty.kind() {
+    fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
+        if let TyKind::Param(param) = *ty.kind() {
             self.params.insert(param.id.into());
         }
 
         ty.super_visit_with(self);
     }
 
-    fn visit_const(&mut self, konst: Const<'db>) -> Self::Result {
-        if let ConstKind::Param(param) = konst.kind() {
+    fn visit_const(&mut self, konst: ConstRef<'_, 'db>) -> Self::Result {
+        if let ConstKind::Param(param) = *konst.kind() {
             self.params.insert(param.id.into());
         }
 

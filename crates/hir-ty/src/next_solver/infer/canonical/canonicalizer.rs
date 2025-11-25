@@ -7,19 +7,19 @@
 
 use rustc_hash::FxHashMap;
 use rustc_index::Idx;
-use rustc_type_ir::InferTy::{self, FloatVar, IntVar, TyVar};
-use rustc_type_ir::inherent::{Const as _, IntoKind as _, Region as _, SliceLike, Ty as _};
 use rustc_type_ir::{
-    BoundVar, BoundVarIndexKind, DebruijnIndex, Flags, InferConst, RegionKind, TyVid, TypeFlags,
-    TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitableExt, UniverseIndex,
+    BoundVar, BoundVarIndexKind, DebruijnIndex, Flags, InferConst,
+    InferTy::{self, FloatVar, IntVar, TyVar},
+    RegionKind, TyVid, TypeFlags, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitableExt,
+    UniverseIndex,
+    inherent::SliceLike,
 };
 use smallvec::SmallVec;
 use tracing::debug;
 
-use crate::next_solver::infer::InferCtxt;
 use crate::next_solver::{
     Binder, Canonical, CanonicalVarKind, CanonicalVars, Const, ConstKind, DbInterner, GenericArg,
-    Placeholder, Region, Ty, TyKind,
+    Placeholder, Region, Ty, TyKind, infer::InferCtxt,
 };
 
 /// When we canonicalize a value to form a query, we wind up replacing
@@ -165,19 +165,15 @@ impl CanonicalizeMode for CanonicalizeQueryResponse {
     ) -> Region<'db> {
         let infcx = canonicalizer.infcx;
 
-        if let RegionKind::ReVar(vid) = r.kind() {
-            r = infcx
-                .inner
-                .borrow_mut()
-                .unwrap_region_constraints()
-                .opportunistic_resolve_var(canonicalizer.tcx, vid);
+        if let RegionKind::ReVar(vid) = *r.kind() {
+            r = infcx.inner.borrow_mut().unwrap_region_constraints().opportunistic_resolve_var(vid);
             debug!(
                 "canonical: region var found with vid {vid:?}, \
                      opportunistically resolved to {r:?}",
             );
         };
 
-        match r.kind() {
+        match *r.kind() {
             RegionKind::ReLateParam(_)
             | RegionKind::ReErased
             | RegionKind::ReStatic
@@ -326,14 +322,14 @@ impl<'cx, 'db> TypeFolder<DbInterner<'db>> for Canonicalizer<'cx, 'db> {
     }
 
     fn fold_ty(&mut self, mut t: Ty<'db>) -> Ty<'db> {
-        match t.kind() {
+        match *t.kind() {
             TyKind::Infer(TyVar(mut vid)) => {
                 // We need to canonicalize the *root* of our ty var.
                 // This is so that our canonical response correctly reflects
                 // any equated inference vars correctly!
                 let root_vid = self.infcx.root_var(vid);
                 if root_vid != vid {
-                    t = Ty::new_var(self.tcx, root_vid);
+                    t = Ty::new_var(root_vid);
                     vid = root_vid;
                 }
 
@@ -430,14 +426,14 @@ impl<'cx, 'db> TypeFolder<DbInterner<'db>> for Canonicalizer<'cx, 'db> {
     }
 
     fn fold_const(&mut self, mut ct: Const<'db>) -> Const<'db> {
-        match ct.kind() {
+        match *ct.kind() {
             ConstKind::Infer(InferConst::Var(mut vid)) => {
                 // We need to canonicalize the *root* of our const var.
                 // This is so that our canonical response correctly reflects
                 // any equated inference vars correctly!
                 let root_vid = self.infcx.root_const_var(vid);
                 if root_vid != vid {
-                    ct = Const::new_var(self.tcx, root_vid);
+                    ct = Const::new_var(root_vid);
                     vid = root_vid;
                 }
 
@@ -498,7 +494,7 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
     {
         let base = Canonical {
             max_universe: UniverseIndex::ROOT,
-            variables: CanonicalVars::new_from_iter(tcx, []),
+            variables: CanonicalVars::default(),
             value: (),
         };
         Canonicalizer::canonicalize_with_base(
@@ -551,7 +547,7 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
                 .var_values
                 .iter()
                 .enumerate()
-                .map(|(i, &kind)| (kind, BoundVar::from(i)))
+                .map(|(i, kind)| (kind.clone(), BoundVar::from(i)))
                 .collect();
         }
         let out_value = value.fold_with(&mut canonicalizer);
@@ -562,9 +558,10 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
         debug_assert!(!out_value.has_infer() && !out_value.has_placeholders());
 
         let canonical_variables =
-            CanonicalVars::new_from_iter(tcx, canonicalizer.universe_canonicalized_variables());
+            CanonicalVars::new_from_smallvec(canonicalizer.universe_canonicalized_variables());
 
         let max_universe = canonical_variables
+            .r()
             .iter()
             .map(|cvar| cvar.universe())
             .max()
@@ -603,7 +600,7 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
         if !var_values.spilled() {
             // `var_values` is stack-allocated. `indices` isn't used yet. Do a
             // direct linear search of `var_values`.
-            if let Some(idx) = var_values.iter().position(|&k| k == kind) {
+            if let Some(idx) = var_values.iter().position(|k| *k == kind) {
                 // `kind` is already present in `var_values`.
                 BoundVar::new(idx)
             } else {
@@ -620,7 +617,7 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
                     *indices = var_values
                         .iter()
                         .enumerate()
-                        .map(|(i, &kind)| (kind, BoundVar::new(i)))
+                        .map(|(i, kind)| (kind.clone(), BoundVar::new(i)))
                         .collect();
                 }
                 // The cv is the index of the appended element.
@@ -628,7 +625,7 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
             }
         } else {
             // `var_values` is large. Do a hashmap search via `indices`.
-            *indices.entry(kind).or_insert_with(|| {
+            *indices.entry(kind.clone()).or_insert_with(|| {
                 variables.push(info);
                 var_values.push(kind);
                 assert_eq!(variables.len(), var_values.len());
@@ -716,7 +713,7 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
         r: Region<'db>,
     ) -> Region<'db> {
         let var = self.canonical_var(info, r.into());
-        Region::new_canonical_bound(self.cx(), var)
+        Region::new_canonical_bound(var)
     }
 
     /// Given a type variable `ty_var` of the given kind, first check
@@ -724,9 +721,9 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
     /// *that*. Otherwise, create a new canonical variable for
     /// `ty_var`.
     fn canonicalize_ty_var(&mut self, info: CanonicalVarKind<'db>, ty_var: Ty<'db>) -> Ty<'db> {
-        debug_assert_eq!(ty_var, self.infcx.shallow_resolve(ty_var));
+        debug_assert_eq!(ty_var, self.infcx.shallow_resolve(ty_var.clone()));
         let var = self.canonical_var(info, ty_var.into());
-        Ty::new_canonical_bound(self.cx(), var)
+        Ty::new_canonical_bound(var)
     }
 
     /// Given a type variable `const_var` of the given kind, first check
@@ -738,8 +735,8 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
         info: CanonicalVarKind<'db>,
         const_var: Const<'db>,
     ) -> Const<'db> {
-        debug_assert_eq!(const_var, self.infcx.shallow_resolve_const(const_var));
+        debug_assert_eq!(const_var, self.infcx.shallow_resolve_const(const_var.clone()));
         let var = self.canonical_var(info, const_var.into());
-        Const::new_canonical_bound(self.cx(), var)
+        Const::new_canonical_bound(var)
     }
 }

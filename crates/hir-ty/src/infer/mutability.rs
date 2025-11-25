@@ -27,8 +27,8 @@ impl<'db> InferenceContext<'_, 'db> {
                     Adjust::Deref(Some(d)) => {
                         if mutability == Mutability::Mut {
                             let source_ty = match adjustments.peek() {
-                                Some(prev_adj) => prev_adj.target,
-                                None => self.result.type_of_expr[tgt_expr],
+                                Some(prev_adj) => prev_adj.target.r(),
+                                None => self.result.type_of_expr[tgt_expr].r(),
                             };
                             if let Some(infer_ok) = Self::try_mutable_overloaded_place_op(
                                 &self.table,

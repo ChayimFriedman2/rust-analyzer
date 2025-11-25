@@ -1,5 +1,4 @@
 //! ABI-related things in the next-trait-solver.
-use rustc_type_ir::{error::TypeError, relate::Relate};
 
 use crate::FnAbi;
 
@@ -9,20 +8,6 @@ use super::interner::DbInterner;
 pub enum Safety {
     Unsafe,
     Safe,
-}
-
-impl<'db> Relate<DbInterner<'db>> for Safety {
-    fn relate<R: rustc_type_ir::relate::TypeRelation<DbInterner<'db>>>(
-        _relation: &mut R,
-        a: Self,
-        b: Self,
-    ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
-        if a != b {
-            Err(TypeError::SafetyMismatch(rustc_type_ir::error::ExpectedFound::new(a, b)))
-        } else {
-            Ok(a)
-        }
-    }
 }
 
 impl<'db> rustc_type_ir::inherent::Safety<DbInterner<'db>> for Safety {
@@ -38,20 +23,6 @@ impl<'db> rustc_type_ir::inherent::Safety<DbInterner<'db>> for Safety {
         match self {
             Self::Unsafe => "unsafe ",
             Self::Safe => "",
-        }
-    }
-}
-
-impl<'db> Relate<DbInterner<'db>> for FnAbi {
-    fn relate<R: rustc_type_ir::relate::TypeRelation<DbInterner<'db>>>(
-        _relation: &mut R,
-        a: Self,
-        b: Self,
-    ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
-        if a == b {
-            Ok(a)
-        } else {
-            Err(TypeError::AbiMismatch(rustc_type_ir::error::ExpectedFound::new(a, b)))
         }
     }
 }

@@ -10,14 +10,9 @@
 
 use std::iter;
 
-use hir_ty::{
-    db::HirDatabase,
-    mir::BorrowKind,
-    next_solver::{DbInterner, Ty},
-};
+use hir_ty::{db::HirDatabase, mir::BorrowKind, next_solver::Ty};
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
-use rustc_type_ir::inherent::Ty as _;
 use span::Edition;
 
 use crate::{
@@ -597,11 +592,10 @@ pub(super) fn famous_types<'a, 'lt, 'db, DB: HirDatabase>(
 ) -> impl Iterator<Item = Expr<'db>> + use<'a, 'db, 'lt, DB> {
     let db = ctx.sema.db;
     let module = ctx.scope.module();
-    let interner = DbInterner::new_with(db, None, None);
-    let bool_ty = Ty::new_bool(interner);
-    let unit_ty = Ty::new_unit(interner);
+    let bool_ty = Ty::new_bool();
+    let unit_ty = Ty::new_unit();
     [
-        Expr::FamousType { ty: Type::new(db, module.id, bool_ty), value: "true" },
+        Expr::FamousType { ty: Type::new(db, module.id, bool_ty.clone()), value: "true" },
         Expr::FamousType { ty: Type::new(db, module.id, bool_ty), value: "false" },
         Expr::FamousType { ty: Type::new(db, module.id, unit_ty), value: "()" },
     ]

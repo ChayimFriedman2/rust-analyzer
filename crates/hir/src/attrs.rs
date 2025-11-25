@@ -283,7 +283,7 @@ fn resolve_impl_trait_item<'db>(
         edition: krate.edition(db),
         unstable_features: &unstable_features,
     };
-    let resolution = ctx.probe_for_name(method_resolution::Mode::Path, name.clone(), ty.ty);
+    let resolution = ctx.probe_for_name(method_resolution::Mode::Path, name.clone(), ty.ty.clone());
     let resolution = match resolution {
         Ok(resolution) => resolution.item,
         Err(MethodError::PrivateMatch(resolution)) => resolution.item,

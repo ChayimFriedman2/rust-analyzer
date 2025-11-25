@@ -14,7 +14,7 @@ use rustc_type_ir::elaborate::Elaboratable;
 use tracing::debug;
 
 use crate::next_solver::{
-    Clause, DbInterner, Goal, ParamEnv, PolyTraitPredicate, Predicate, Span, TraitPredicate,
+    Binder, Clause, DbInterner, Goal, ParamEnv, Predicate, PredicateRef, Span, TraitPredicate,
     TraitRef, Ty,
 };
 
@@ -86,16 +86,16 @@ pub struct Obligation<'db, T> {
 /// For [`Obligation`], a sub-obligation is combined with the current obligation's
 /// param-env and cause code.
 impl<'db> Elaboratable<DbInterner<'db>> for PredicateObligation<'db> {
-    fn predicate(&self) -> Predicate<'db> {
-        self.predicate
+    fn predicate(&self) -> PredicateRef<'_, 'db> {
+        self.predicate.r()
     }
 
     fn child(&self, clause: Clause<'db>) -> Self {
         Obligation {
             cause: self.cause.clone(),
-            param_env: self.param_env,
+            param_env: self.param_env.clone(),
             recursion_depth: 0,
-            predicate: clause.as_predicate(),
+            predicate: clause.into_predicate(),
         }
     }
 
@@ -103,22 +103,31 @@ impl<'db> Elaboratable<DbInterner<'db>> for PredicateObligation<'db> {
         &self,
         clause: Clause<'db>,
         _span: Span,
-        _parent_trait_pred: PolyTraitPredicate<'db>,
+        _parent_trait_pred: Binder<'db, &TraitPredicate<'db>>,
         _index: usize,
     ) -> Self {
         let cause = ObligationCause::new();
         Obligation {
             cause,
-            param_env: self.param_env,
+            param_env: self.param_env.clone(),
             recursion_depth: 0,
-            predicate: clause.as_predicate(),
+            predicate: clause.into_predicate(),
         }
     }
 }
 
-impl<'db, T: Copy> Obligation<'db, T> {
-    pub fn as_goal(&self) -> Goal<'db, T> {
+impl<'db, T> Obligation<'db, T> {
+    #[inline]
+    pub fn into_goal(self) -> Goal<'db, T> {
         Goal { param_env: self.param_env, predicate: self.predicate }
+    }
+
+    #[inline]
+    pub fn to_goal(&self) -> Goal<'db, T>
+    where
+        T: Clone,
+    {
+        Goal { param_env: self.param_env.clone(), predicate: self.predicate.clone() }
     }
 }
 
@@ -158,11 +167,11 @@ impl<'db> PredicateObligation<'db> {
     /// Flips the polarity of the inner predicate.
     ///
     /// Given `T: Trait` predicate it returns `T: !Trait` and given `T: !Trait` returns `T: Trait`.
-    pub fn flip_polarity(&self, _interner: DbInterner<'db>) -> Option<PredicateObligation<'db>> {
+    pub fn flip_polarity(self, _interner: DbInterner<'db>) -> Option<PredicateObligation<'db>> {
         Some(PredicateObligation {
-            cause: self.cause.clone(),
+            cause: self.cause,
             param_env: self.param_env,
-            predicate: self.predicate.flip_polarity()?,
+            predicate: self.predicate.r().flip_polarity()?,
             recursion_depth: self.recursion_depth,
         })
     }
@@ -202,7 +211,13 @@ impl<'db, O> Obligation<'db, O> {
         tcx: DbInterner<'db>,
         value: impl Upcast<DbInterner<'db>, P>,
     ) -> Obligation<'db, P> {
-        Obligation::with_depth(tcx, self.cause.clone(), self.recursion_depth, self.param_env, value)
+        Obligation::with_depth(
+            tcx,
+            self.cause.clone(),
+            self.recursion_depth,
+            self.param_env.clone(),
+            value,
+        )
     }
 }
 

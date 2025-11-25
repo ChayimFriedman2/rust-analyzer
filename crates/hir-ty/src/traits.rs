@@ -15,7 +15,7 @@ use intern::sym;
 use rustc_next_trait_solver::solve::{HasChanged, SolverDelegateEvalExt};
 use rustc_type_ir::{
     TypingMode,
-    inherent::{AdtDef, BoundExistentialPredicates, IntoKind, Span as _},
+    inherent::{AdtDef, BoundExistentialPredicates, Span as _},
     solve::Certainty,
 };
 use triomphe::Arc;
@@ -23,8 +23,8 @@ use triomphe::Arc;
 use crate::{
     db::HirDatabase,
     next_solver::{
-        Canonical, DbInterner, GenericArgs, Goal, ParamEnv, Predicate, SolverContext, Span, Ty,
-        TyKind,
+        Canonical, DbInterner, GenericArgs, GenericArgsRef, Goal, ParamEnv, Predicate,
+        SolverContext, Span, Ty, TyKind, TyRef,
         infer::{DbInternerInferExt, InferCtxt, traits::ObligationCause},
         obligation_ctxt::ObligationCtxt,
     },
@@ -83,7 +83,9 @@ pub fn structurally_normalize_ty<'db>(
 ) -> Ty<'db> {
     let TyKind::Alias(..) = ty.kind() else { return ty };
     let mut ocx = ObligationCtxt::new(infcx);
-    let ty = ocx.structurally_normalize_ty(&ObligationCause::dummy(), env.env, ty).unwrap_or(ty);
+    let ty = ocx
+        .structurally_normalize_ty(&ObligationCause::dummy(), env.env.r(), ty.clone())
+        .unwrap_or(ty);
     ty.replace_infer_with_error(infcx.interner)
 }
 
@@ -124,8 +126,6 @@ pub fn next_trait_solve_canonical_in_ctxt<'db>(
 
         let res = res.map(|r| (r.has_changed, r.certainty));
 
-        tracing::debug!("solve_nextsolver({:?}) => {:?}", goal, res);
-
         match res {
             Err(_) => NextTraitSolveResult::NoSolution,
             Ok((_, Certainty::Yes)) => NextTraitSolveResult::Certain,
@@ -146,8 +146,6 @@ pub fn next_trait_solve_in_ctxt<'db, 'a>(
     let res = context.evaluate_root_goal(goal, Span::dummy(), None);
 
     let res = res.map(|r| (r.has_changed, r.certainty));
-
-    tracing::debug!("solve_nextsolver({:?}) => {:?}", goal, res);
 
     res
 }
@@ -231,13 +229,13 @@ impl FnTrait {
 
 /// This should not be used in `hir-ty`, only in `hir`.
 pub fn implements_trait_unique<'db>(
-    ty: Ty<'db>,
+    ty: TyRef<'_, 'db>,
     db: &'db dyn HirDatabase,
     env: Arc<TraitEnvironment<'db>>,
     trait_: TraitId,
 ) -> bool {
     implements_trait_unique_impl(db, env, trait_, &mut |infcx| {
-        infcx.fill_rest_fresh_args(trait_.into(), [ty.into()])
+        infcx.fill_rest_fresh_args(trait_.into(), [ty.o().into()])
     })
 }
 
@@ -246,9 +244,9 @@ pub fn implements_trait_unique_with_args<'db>(
     db: &'db dyn HirDatabase,
     env: Arc<TraitEnvironment<'db>>,
     trait_: TraitId,
-    args: GenericArgs<'db>,
+    args: GenericArgsRef<'_, 'db>,
 ) -> bool {
-    implements_trait_unique_impl(db, env, trait_, &mut |_| args)
+    implements_trait_unique_impl(db, env, trait_, &mut |_| args.o())
 }
 
 fn implements_trait_unique_impl<'db>(
@@ -263,7 +261,7 @@ fn implements_trait_unique_impl<'db>(
 
     let args = create_args(&infcx);
     let trait_ref = rustc_type_ir::TraitRef::new_from_args(interner, trait_.into(), args);
-    let goal = Goal::new(interner, env.env, trait_ref);
+    let goal = Goal::new(interner, env.env.clone(), trait_ref);
 
     let result = crate::traits::next_trait_solve_in_ctxt(&infcx, goal);
     matches!(result, Ok((_, Certainty::Yes)))
@@ -289,6 +287,7 @@ pub fn is_inherent_impl_coherent(db: &dyn HirDatabase, def_map: &DefMap, impl_id
 
         TyKind::Adt(adt_def, _) => adt_def.def_id().0.module(db).krate() == def_map.krate(),
         TyKind::Dynamic(it, _) => it
+            .r()
             .principal_def_id()
             .is_some_and(|trait_id| trait_id.0.module(db).krate() == def_map.krate()),
 
@@ -324,7 +323,7 @@ pub fn is_inherent_impl_coherent(db: &dyn HirDatabase, def_map: &DefMap, impl_id
                     .flags
                     .contains(EnumFlags::RUSTC_HAS_INCOHERENT_INHERENT_IMPLS),
             },
-            TyKind::Dynamic(it, _) => it.principal_def_id().is_some_and(|trait_id| {
+            TyKind::Dynamic(it, _) => it.r().principal_def_id().is_some_and(|trait_id| {
                 db.trait_signature(trait_id.0)
                     .flags
                     .contains(TraitFlags::RUSTC_HAS_INCOHERENT_INHERENT_IMPLS)
@@ -377,16 +376,16 @@ pub fn check_orphan_rules<'db>(db: &'db dyn HirDatabase, impl_: ImplId) -> bool 
         // Unwrap all layers of fundamental types with a loop.
         loop {
             match ty.kind() {
-                TyKind::Ref(_, referenced, _) => ty = referenced,
+                TyKind::Ref(_, referenced, _) => ty = referenced.clone(),
                 TyKind::Adt(adt_def, subs) => {
                     let AdtId::StructId(s) = adt_def.def_id().0 else {
                         break ty;
                     };
                     let struct_signature = db.struct_signature(s);
                     if struct_signature.flags.contains(StructFlags::FUNDAMENTAL) {
-                        let next = subs.types().next();
+                        let next = subs.r().types().next();
                         match next {
-                            Some(it) => ty = it,
+                            Some(it) => ty = it.o(),
                             None => break ty,
                         }
                     } else {
@@ -401,14 +400,16 @@ pub fn check_orphan_rules<'db>(db: &'db dyn HirDatabase, impl_: ImplId) -> bool 
 
     // FIXME: param coverage
     //   - No uncovered type parameters `P1..=Pn` may appear in `T0..Ti`` (excluding `Ti`)
-    let is_not_orphan = trait_ref.args.types().any(|ty| match unwrap_fundamental(ty).kind() {
-        TyKind::Adt(adt_def, _) => is_local(adt_def.def_id().0.module(db).krate()),
-        TyKind::Error(_) => true,
-        TyKind::Dynamic(it, _) => {
-            it.principal_def_id().is_some_and(|trait_id| is_local(trait_id.0.module(db).krate()))
-        }
-        _ => false,
-    });
+    let is_not_orphan =
+        trait_ref.args.r().types().any(|ty| match unwrap_fundamental(ty.o()).kind() {
+            TyKind::Adt(adt_def, _) => is_local(adt_def.def_id().0.module(db).krate()),
+            TyKind::Error(_) => true,
+            TyKind::Dynamic(it, _) => it
+                .r()
+                .principal_def_id()
+                .is_some_and(|trait_id| is_local(trait_id.0.module(db).krate())),
+            _ => false,
+        });
     #[allow(clippy::let_and_return)]
     is_not_orphan
 }

@@ -4,9 +4,9 @@ use std::cmp;
 use std::marker::PhantomData;
 
 use ena::unify::{NoError, UnifyKey, UnifyValue};
-use rustc_type_ir::{ConstVid, RegionKind, RegionVid, UniverseIndex, inherent::IntoKind};
+use rustc_type_ir::{ConstVid, RegionKind, RegionVid, UniverseIndex};
 
-use crate::next_solver::{Const, Region};
+use crate::next_solver::{Const, ConstRef, Region};
 
 #[derive(Clone, Debug)]
 pub(crate) enum RegionVariableValue<'db> {
@@ -66,7 +66,7 @@ impl<'db> UnifyValue for RegionVariableValue<'db> {
                 };
 
                 if universe.can_name(universe_of_value) {
-                    Ok(RegionVariableValue::Known { value: *value })
+                    Ok(RegionVariableValue::Known { value: value.clone() })
                 } else {
                     Err(RegionUnificationError)
                 }
@@ -101,10 +101,10 @@ pub(crate) enum ConstVariableValue<'db> {
 impl<'db> ConstVariableValue<'db> {
     /// If this value is known, returns the const it is known to be.
     /// Otherwise, `None`.
-    pub(crate) fn known(&self) -> Option<Const<'db>> {
+    pub(crate) fn known(&self) -> Option<ConstRef<'_, 'db>> {
         match self {
             ConstVariableValue::Unknown { .. } => None,
-            ConstVariableValue::Known { value } => Some(*value),
+            ConstVariableValue::Known { value } => Some(value.r()),
         }
     }
 }

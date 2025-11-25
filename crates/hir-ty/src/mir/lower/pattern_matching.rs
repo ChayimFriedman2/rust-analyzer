@@ -1,7 +1,7 @@
 //! MIR lowering for patterns
 
 use hir_def::{hir::ExprId, signatures::VariantFields};
-use rustc_type_ir::inherent::{IntoKind, SliceLike, Ty as _};
+use rustc_type_ir::inherent::SliceLike;
 
 use crate::{
     BindingMode,
@@ -148,7 +148,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
                     current_else,
                     args,
                     *ellipsis,
-                    (0..subst.len()).map(|i| {
+                    (0..subst.r().len()).map(|i| {
                         PlaceElem::Field(Either::Right(TupleFieldId {
                             tuple: TupleId(!0), // Dummy as it is unused
                             index: i as u32,
@@ -209,11 +209,12 @@ impl<'db> MirLowerCtx<'_, 'db> {
             }
             Pat::Range { start, end, range_type: _ } => {
                 let mut add_check = |l: &ExprId, binop| -> Result<'db, ()> {
-                    let lv = self.lower_literal_or_const_to_operand(self.infer[pattern], l)?;
+                    let lv =
+                        self.lower_literal_or_const_to_operand(self.infer[pattern].clone(), l)?;
                     let else_target = *current_else.get_or_insert_with(|| self.new_basic_block());
                     let next = self.new_basic_block();
                     let discr: Place<'db> =
-                        self.temp(Ty::new_bool(self.interner()), current, pattern.into())?.into();
+                        self.temp(Ty::new_bool(), current, pattern.into())?.into();
                     self.push_assignment(
                         current,
                         discr,
@@ -251,9 +252,8 @@ impl<'db> MirLowerCtx<'_, 'db> {
                     // emit runtime length check for slice
                     if let TyKind::Slice(_) = self.infer[pattern].kind() {
                         let pattern_len = prefix.len() + suffix.len();
-                        let place_len: Place<'db> = self
-                            .temp(Ty::new_usize(self.interner()), current, pattern.into())?
-                            .into();
+                        let place_len: Place<'db> =
+                            self.temp(Ty::new_usize(), current, pattern.into())?.into();
                         self.push_assignment(
                             current,
                             place_len,
@@ -283,11 +283,10 @@ impl<'db> MirLowerCtx<'_, 'db> {
                             let c = Operand::from_concrete_const(
                                 pattern_len.to_le_bytes().into(),
                                 MemoryMap::default(),
-                                Ty::new_usize(self.interner()),
+                                Ty::new_usize(),
                             );
-                            let discr: Place<'db> = self
-                                .temp(Ty::new_bool(self.interner()), current, pattern.into())?
-                                .into();
+                            let discr: Place<'db> =
+                                self.temp(Ty::new_bool(), current, pattern.into())?.into();
                             self.push_assignment(
                                 current,
                                 discr,
@@ -395,19 +394,19 @@ impl<'db> MirLowerCtx<'_, 'db> {
                         if let Some(x) = self.infer.assoc_resolutions_for_pat(pattern)
                             && let CandidateId::ConstId(c) = x.0
                         {
-                            break 'b (c, x.1);
+                            break 'b (c, x.1.o());
                         }
                         if let ResolveValueResult::ValueNs(ValueNs::ConstId(c), _) = pr {
-                            break 'b (c, GenericArgs::new_from_iter(self.interner(), []));
+                            break 'b (c, GenericArgs::default());
                         }
                         not_supported!("path in pattern position that is not const or variant")
                     };
                     let tmp: Place<'db> =
-                        self.temp(self.infer[pattern], current, pattern.into())?.into();
+                        self.temp(self.infer[pattern].clone(), current, pattern.into())?.into();
                     let span = pattern.into();
                     self.lower_const(c.into(), current, tmp, subst, span)?;
                     let tmp2: Place<'db> =
-                        self.temp(Ty::new_bool(self.interner()), current, pattern.into())?.into();
+                        self.temp(Ty::new_bool(), current, pattern.into())?.into();
                     self.push_assignment(
                         current,
                         tmp2,
@@ -434,7 +433,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
             Pat::Lit(l) => match &self.body[*l] {
                 Expr::Literal(l) => {
                     if mode == MatchingMode::Check {
-                        let c = self.lower_literal_to_operand(self.infer[pattern], l)?;
+                        let c = self.lower_literal_to_operand(self.infer[pattern].clone(), l)?;
                         self.pattern_match_const(current_else, current, c, cond_place, pattern)?
                     } else {
                         (current, current_else)
@@ -553,8 +552,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
     ) -> Result<'db, (BasicBlockId<'db>, Option<BasicBlockId<'db>>)> {
         let then_target = self.new_basic_block();
         let else_target = current_else.unwrap_or_else(|| self.new_basic_block());
-        let discr: Place<'db> =
-            self.temp(Ty::new_bool(self.interner()), current, pattern.into())?.into();
+        let discr: Place<'db> = self.temp(Ty::new_bool(), current, pattern.into())?.into();
         self.push_assignment(
             current,
             discr,

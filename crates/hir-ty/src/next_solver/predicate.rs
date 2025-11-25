@@ -1,21 +1,27 @@
 //! Things related to predicates.
 
-use std::cmp::Ordering;
+use core::fmt;
+use std::{iter, marker::PhantomData, ops::Deref};
 
+use intern::{Interned, InternedRef, InternedSlice, InternedSliceRef};
 use macros::{TypeFoldable, TypeVisitable};
 use rustc_type_ir::{
-    self as ty, CollectAndApply, DebruijnIndex, EarlyBinder, FlagComputation, Flags,
-    PredicatePolarity, TypeFlags, TypeFoldable, TypeSuperFoldable, TypeSuperVisitable,
-    TypeVisitable, Upcast, UpcastFrom, WithCachedTypeInfo,
+    self as ty, EarlyBinder, FallibleTypeFolder, FlagComputation, Flags, PredicatePolarity,
+    TypeFoldable, TypeFolder, TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitor,
+    Upcast, UpcastFrom, WithCachedTypeInfo,
     elaborate::Elaboratable,
     error::{ExpectedFound, TypeError},
-    inherent::{IntoKind, SliceLike},
+    inherent::{AsKind, AsKindRef, AsOwnedKindRef, SliceLike},
+    relate::{Relate, TypeRelation},
 };
-use smallvec::SmallVec;
 
-use crate::next_solver::{GenericArg, InternedWrapperNoDebug, TraitIdWrapper};
+use crate::next_solver::{
+    AsBorrowedSlice, AsOwnedSlice, GenericArg, SameRepr, Span, TraitIdWrapper, default_types,
+    impl_foldable_for_interned_slice_without_borrowed, infer::relate::RelateResult,
+    interned_slice_without_borrowed,
+};
 
-use super::{Binder, BoundVarKinds, DbInterner, Region, Ty, interned_vec_db};
+use super::{Binder, BoundVarKinds, DbInterner, Region, Ty, interned_slice};
 
 pub type BoundExistentialPredicate<'db> = Binder<'db, ExistentialPredicate<'db>>;
 
@@ -45,36 +51,36 @@ pub type PolyExistentialTraitRef<'db> = Binder<'db, ExistentialTraitRef<'db>>;
 pub type PolyExistentialProjection<'db> = Binder<'db, ExistentialProjection<'db>>;
 pub type ArgOutlivesPredicate<'db> = OutlivesPredicate<'db, GenericArg<'db>>;
 
-/// Compares via an ordering that will not change if modules are reordered or other changes are
-/// made to the tree. In particular, this ordering is preserved across incremental compilations.
-fn stable_cmp_existential_predicate<'db>(
-    a: &ExistentialPredicate<'db>,
-    b: &ExistentialPredicate<'db>,
-) -> Ordering {
-    // FIXME: this is actual unstable - see impl in predicate.rs in `rustc_middle`
-    match (a, b) {
-        (ExistentialPredicate::Trait(_), ExistentialPredicate::Trait(_)) => Ordering::Equal,
-        (ExistentialPredicate::Projection(_a), ExistentialPredicate::Projection(_b)) => {
-            // Should sort by def path hash
-            Ordering::Equal
-        }
-        (ExistentialPredicate::AutoTrait(_a), ExistentialPredicate::AutoTrait(_b)) => {
-            // Should sort by def path hash
-            Ordering::Equal
-        }
-        (ExistentialPredicate::Trait(_), _) => Ordering::Less,
-        (ExistentialPredicate::Projection(_), ExistentialPredicate::Trait(_)) => Ordering::Greater,
-        (ExistentialPredicate::Projection(_), _) => Ordering::Less,
-        (ExistentialPredicate::AutoTrait(_), _) => Ordering::Greater,
-    }
-}
-interned_vec_db!(BoundExistentialPredicates, BoundExistentialPredicate);
+interned_slice!(
+    BoundExistentialPredicatesStorage,
+    BoundExistentialPredicates,
+    BoundExistentialPredicatesRef,
+    BoundExistentialPredicate<'db>,
+    BoundExistentialPredicate<'db>,
+    BoundExistentialPredicate<'static>,
+    bound_existential_predicates,
+);
+interned_slice_without_borrowed!(
+    BoundExistentialPredicates,
+    BoundExistentialPredicatesRef,
+    BoundExistentialPredicate<'db>,
+    BoundExistentialPredicate<'static>,
+);
+impl_foldable_for_interned_slice_without_borrowed!(
+    BoundExistentialPredicates,
+    BoundExistentialPredicatesRef,
+);
 
-impl<'db> rustc_type_ir::inherent::BoundExistentialPredicates<DbInterner<'db>>
-    for BoundExistentialPredicates<'db>
+impl<'a, 'db> rustc_type_ir::inherent::BoundExistentialPredicates<'a, DbInterner<'db>>
+    for BoundExistentialPredicatesRef<'a, 'db>
+where
+    'db: 'a,
 {
     fn principal_def_id(self) -> Option<TraitIdWrapper> {
-        self.principal().map(|trait_ref| trait_ref.skip_binder().def_id)
+        match self.as_slice()[0].skip_binder_ref() {
+            ExistentialPredicate::Trait(tr) => Some(tr.def_id),
+            _ => None,
+        }
     }
 
     fn principal(
@@ -82,158 +88,125 @@ impl<'db> rustc_type_ir::inherent::BoundExistentialPredicates<DbInterner<'db>>
     ) -> Option<
         rustc_type_ir::Binder<DbInterner<'db>, rustc_type_ir::ExistentialTraitRef<DbInterner<'db>>>,
     > {
-        self.inner()[0]
-            .map_bound(|this| match this {
-                ExistentialPredicate::Trait(tr) => Some(tr),
-                _ => None,
-            })
-            .transpose()
+        let principal = &self.as_slice()[0];
+        match principal.skip_binder_ref() {
+            ExistentialPredicate::Trait(tr) => Some(principal.rebind(tr.clone())),
+            _ => None,
+        }
     }
 
     fn auto_traits(self) -> impl IntoIterator<Item = TraitIdWrapper> {
-        self.iter().filter_map(|predicate| match predicate.skip_binder() {
-            ExistentialPredicate::AutoTrait(did) => Some(did),
+        self.as_slice().iter().filter_map(|predicate| match predicate.skip_binder_ref() {
+            ExistentialPredicate::AutoTrait(did) => Some(*did),
             _ => None,
         })
     }
 
     fn projection_bounds(
         self,
-    ) -> impl IntoIterator<
-        Item = rustc_type_ir::Binder<
-            DbInterner<'db>,
-            rustc_type_ir::ExistentialProjection<DbInterner<'db>>,
-        >,
-    > {
-        self.iter().filter_map(|predicate| {
-            predicate
-                .map_bound(|pred| match pred {
-                    ExistentialPredicate::Projection(projection) => Some(projection),
-                    _ => None,
-                })
-                .transpose()
+    ) -> impl IntoIterator<Item = Binder<'db, ExistentialProjection<'db>>> {
+        self.as_slice().iter().filter_map(|predicate| match predicate.skip_binder_ref() {
+            ExistentialPredicate::Projection(projection) => {
+                Some(predicate.rebind(projection.clone()))
+            }
+            _ => None,
         })
     }
 }
 
-impl<'db> rustc_type_ir::relate::Relate<DbInterner<'db>> for BoundExistentialPredicates<'db> {
-    fn relate<R: rustc_type_ir::relate::TypeRelation<DbInterner<'db>>>(
+impl<'db> Relate<DbInterner<'db>> for BoundExistentialPredicatesRef<'_, 'db> {
+    type RelateResult = BoundExistentialPredicates<'db>;
+
+    #[inline]
+    fn into_relate_result(self) -> Self::RelateResult {
+        self.o()
+    }
+
+    fn relate<R: TypeRelation<DbInterner<'db>>>(
         relation: &mut R,
         a: Self,
         b: Self,
-    ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self> {
-        let interner = relation.cx();
-
-        // We need to perform this deduplication as we sometimes generate duplicate projections in `a`.
-        let mut a_v: Vec<_> = a.into_iter().collect();
-        let mut b_v: Vec<_> = b.into_iter().collect();
-        // `skip_binder` here is okay because `stable_cmp` doesn't look at binders
-        a_v.sort_by(|a, b| {
-            stable_cmp_existential_predicate(a.as_ref().skip_binder(), b.as_ref().skip_binder())
-        });
-        a_v.dedup();
-        b_v.sort_by(|a, b| {
-            stable_cmp_existential_predicate(a.as_ref().skip_binder(), b.as_ref().skip_binder())
-        });
-        b_v.dedup();
-        if a_v.len() != b_v.len() {
-            return Err(TypeError::ExistentialMismatch(ExpectedFound::new(a, b)));
+    ) -> RelateResult<'db, Self::RelateResult> {
+        // Fast path for when the auto traits do not match, or if the principals
+        // are from different traits and therefore the projections definitely don't
+        // match up.
+        if a.len() != b.len() {
+            return Err(TypeError::ExistentialMismatch(ExpectedFound::new(a.o(), b.o())));
         }
-
-        let v = std::iter::zip(a_v, b_v).map(
-            |(ep_a, ep_b): (
-                Binder<'_, ty::ExistentialPredicate<_>>,
-                Binder<'_, ty::ExistentialPredicate<_>>,
-            )| {
-                match (ep_a.skip_binder(), ep_b.skip_binder()) {
-                    (ty::ExistentialPredicate::Trait(a), ty::ExistentialPredicate::Trait(b)) => {
-                        Ok(ep_a.rebind(ty::ExistentialPredicate::Trait(
-                            relation.relate(ep_a.rebind(a), ep_b.rebind(b))?.skip_binder(),
-                        )))
-                    }
-                    (
-                        ty::ExistentialPredicate::Projection(a),
-                        ty::ExistentialPredicate::Projection(b),
-                    ) => Ok(ep_a.rebind(ty::ExistentialPredicate::Projection(
-                        relation.relate(ep_a.rebind(a), ep_b.rebind(b))?.skip_binder(),
-                    ))),
-                    (
-                        ty::ExistentialPredicate::AutoTrait(a),
-                        ty::ExistentialPredicate::AutoTrait(b),
-                    ) if a == b => Ok(ep_a.rebind(ty::ExistentialPredicate::AutoTrait(a))),
-                    _ => Err(TypeError::ExistentialMismatch(ExpectedFound::new(a, b))),
+        let v = iter::zip(a, b).map(|(ep_a, ep_b)| {
+            match (ep_a.skip_binder_ref(), ep_b.skip_binder_ref()) {
+                (ty::ExistentialPredicate::Trait(a), ty::ExistentialPredicate::Trait(b)) => {
+                    Ok(ep_a.rebind(ty::ExistentialPredicate::Trait(
+                        relation
+                            .relate(&ep_a.rebind(a.clone()), &ep_b.rebind(b.clone()))?
+                            .skip_binder(),
+                    )))
                 }
-            },
-        );
-
-        CollectAndApply::collect_and_apply(v, |g| {
-            BoundExistentialPredicates::new_from_iter(interner, g.iter().cloned())
-        })
+                (
+                    ty::ExistentialPredicate::Projection(a),
+                    ty::ExistentialPredicate::Projection(b),
+                ) => Ok(ep_a.rebind(ty::ExistentialPredicate::Projection(
+                    relation
+                        .relate(&ep_a.rebind(a.clone()), &ep_b.rebind(b.clone()))?
+                        .skip_binder(),
+                ))),
+                (
+                    ty::ExistentialPredicate::AutoTrait(a),
+                    ty::ExistentialPredicate::AutoTrait(b),
+                ) if a == b => Ok(ep_a.rebind(ty::ExistentialPredicate::AutoTrait(*a))),
+                _ => Err(TypeError::ExistentialMismatch(ExpectedFound::new(a.o(), b.o()))),
+            }
+        });
+        let v = v.collect::<Result<_, _>>()?;
+        Ok(BoundExistentialPredicates::new_from_vec(v))
     }
 }
 
-#[salsa::interned(constructor = new_)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct Predicate<'db> {
-    #[returns(ref)]
-    kind_: InternedWrapperNoDebug<WithCachedTypeInfo<Binder<'db, PredicateKind<'db>>>>,
+    interned: Interned<PredicateInterned>,
+    _marker: PhantomData<fn() -> &'db ()>,
 }
 
-impl<'db> std::fmt::Debug for Predicate<'db> {
+#[derive(PartialEq, Eq, Hash)]
+struct PredicateInterned(WithCachedTypeInfo<Binder<'static, PredicateKind<'static>>>);
+
+intern::impl_internable!(PredicateInterned);
+
+impl std::fmt::Debug for PredicateInterned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.inner().internee.fmt(f)
+        self.0.internee.fmt(f)
     }
 }
 
-impl<'db> std::fmt::Debug
-    for InternedWrapperNoDebug<WithCachedTypeInfo<Binder<'db, PredicateKind<'db>>>>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Binder<")?;
-        match self.0.internee.skip_binder() {
-            rustc_type_ir::PredicateKind::Clause(clause_kind) => {
-                write!(f, "{clause_kind:?}")
-            }
-            rustc_type_ir::PredicateKind::DynCompatible(trait_def_id) => {
-                write!(f, "the trait `{trait_def_id:?}` is dyn-compatible")
-            }
-            rustc_type_ir::PredicateKind::Subtype(subtype_predicate) => {
-                write!(f, "{subtype_predicate:?}")
-            }
-            rustc_type_ir::PredicateKind::Coerce(coerce_predicate) => {
-                write!(f, "{coerce_predicate:?}")
-            }
-            rustc_type_ir::PredicateKind::ConstEquate(c1, c2) => {
-                write!(f, "the constant `{c1:?}` equals `{c2:?}`")
-            }
-            rustc_type_ir::PredicateKind::Ambiguous => write!(f, "ambiguous"),
-            rustc_type_ir::PredicateKind::NormalizesTo(data) => write!(f, "{data:?}"),
-            rustc_type_ir::PredicateKind::AliasRelate(t1, t2, dir) => {
-                write!(f, "{t1:?} {dir:?} {t2:?}")
-            }
-        }?;
-        write!(f, ", [{:?}]>", self.0.internee.bound_vars())?;
-        Ok(())
-    }
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct PredicateRef<'a, 'db> {
+    interned: InternedRef<'a, PredicateInterned>,
+    _marker: PhantomData<(fn() -> &'db (), &'a &'db ())>,
 }
 
-impl<'db> Predicate<'db> {
-    pub fn new(interner: DbInterner<'db>, kind: Binder<'db, PredicateKind<'db>>) -> Self {
-        let flags = FlagComputation::for_predicate(kind);
-        let cached = WithCachedTypeInfo {
-            internee: kind,
-            flags: flags.flags,
-            outer_exclusive_binder: flags.outer_exclusive_binder,
-        };
-        Predicate::new_(interner.db(), InternedWrapperNoDebug(cached))
+impl<'a, 'db> PredicateRef<'a, 'db> {
+    #[inline]
+    pub fn o(self) -> Predicate<'db> {
+        Predicate { interned: self.interned.o(), _marker: PhantomData }
     }
 
-    pub fn inner(&self) -> &WithCachedTypeInfo<Binder<'db, PredicateKind<'db>>> {
-        crate::with_attached_db(|db| {
-            let inner = &self.kind_(db).0;
-            // SAFETY: The caller already has access to a `Predicate<'db>`, so borrowchecking will
-            // make sure that our returned value is valid for the lifetime `'db`.
-            unsafe { std::mem::transmute(inner) }
-        })
+    #[inline]
+    pub fn inner(self) -> &'a WithCachedTypeInfo<Binder<'db, PredicateKind<'db>>> {
+        // SAFETY: FIXME
+        unsafe {
+            std::mem::transmute::<
+                &WithCachedTypeInfo<Binder<'_, PredicateKind<'_>>>,
+                &WithCachedTypeInfo<Binder<'db, PredicateKind<'db>>>,
+            >(&self.interned.get().0)
+        }
+    }
+
+    #[inline]
+    pub fn kind(self) -> &'a Binder<'db, PredicateKind<'db>> {
+        &self.inner().internee
     }
 
     /// Flips the polarity of a Predicate.
@@ -242,12 +215,12 @@ impl<'db> Predicate<'db> {
     pub fn flip_polarity(self) -> Option<Predicate<'db>> {
         let kind = self
             .kind()
-            .map_bound(|kind| match kind {
+            .map_bound_ref(|kind| match kind {
                 PredicateKind::Clause(ClauseKind::Trait(TraitPredicate {
                     trait_ref,
                     polarity,
                 })) => Some(PredicateKind::Clause(ClauseKind::Trait(TraitPredicate {
-                    trait_ref,
+                    trait_ref: trait_ref.clone(),
                     polarity: polarity.flip(),
                 }))),
 
@@ -255,182 +228,368 @@ impl<'db> Predicate<'db> {
             })
             .transpose()?;
 
-        Some(Predicate::new(DbInterner::conjure(), kind))
+        Some(Predicate::new(kind))
     }
 }
 
-// FIXME: should make a "header" in interned_vec
+impl<'db> Predicate<'db> {
+    #[inline]
+    pub fn new(kind: Binder<'db, PredicateKind<'db>>) -> Self {
+        // SAFETY: FIXME
+        let kind = unsafe {
+            std::mem::transmute::<
+                Binder<'db, PredicateKind<'db>>,
+                Binder<'static, PredicateKind<'static>>,
+            >(kind)
+        };
+        let flags = FlagComputation::for_predicate(&kind);
+        let cached = WithCachedTypeInfo {
+            internee: kind,
+            flags: flags.flags,
+            outer_exclusive_binder: flags.outer_exclusive_binder,
+        };
+        Predicate { interned: Interned::new(PredicateInterned(cached)), _marker: PhantomData }
+    }
 
-#[derive(Debug, Clone)]
-pub struct InternedClausesWrapper<'db>(SmallVec<[Clause<'db>; 2]>, TypeFlags, DebruijnIndex);
+    #[inline]
+    pub fn inner(&self) -> &WithCachedTypeInfo<Binder<'db, PredicateKind<'db>>> {
+        self.r().inner()
+    }
 
-impl<'db> PartialEq for InternedClausesWrapper<'db> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.eq(&other.0)
+    #[inline]
+    pub fn kind(&self) -> &Binder<'db, PredicateKind<'db>> {
+        self.r().kind()
+    }
+
+    #[inline(always)]
+    pub fn r(&self) -> PredicateRef<'_, 'db> {
+        PredicateRef { interned: self.interned.r(), _marker: PhantomData }
     }
 }
 
-impl<'db> Eq for InternedClausesWrapper<'db> {}
-
-impl<'db> std::hash::Hash for InternedClausesWrapper<'db> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.hash(state)
+impl<'db> std::fmt::Debug for Predicate<'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind().fmt(f)
     }
 }
 
-#[salsa::interned(constructor = new_)]
+impl<'db> std::fmt::Debug for PredicateRef<'_, 'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind().fmt(f)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Clauses<'db> {
-    #[returns(ref)]
-    inner_: InternedClausesWrapper<'db>,
+    interned: InternedSlice<ClausesStorage>,
+    _marker: PhantomData<fn() -> &'db ()>,
+}
+
+intern::impl_slice_internable!(ClausesStorage, WithCachedTypeInfo<()>, Clause<'static>);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClausesRef<'a, 'db> {
+    interned: InternedSliceRef<'a, ClausesStorage>,
+    _marker: PhantomData<(fn() -> &'db (), &'a &'db ())>,
+}
+
+impl<'a, 'db> ClausesRef<'a, 'db> {
+    #[inline]
+    pub fn o(self) -> Clauses<'db> {
+        Clauses { interned: self.interned.o(), _marker: PhantomData }
+    }
+
+    #[inline]
+    pub fn as_slice(self) -> &'a [ClauseRef<'a, 'db>] {
+        let clauses = self.interned.get().slice.as_borrowed_slice();
+        // SAFETY: FIXME
+        unsafe {
+            std::mem::transmute::<&'a [ClauseRef<'a, 'static>], &'a [ClauseRef<'a, 'db>]>(clauses)
+        }
+    }
 }
 
 impl<'db> Clauses<'db> {
-    pub fn new_from_iter(
-        interner: DbInterner<'db>,
-        data: impl IntoIterator<Item = Clause<'db>>,
-    ) -> Self {
-        let clauses: SmallVec<_> = data.into_iter().collect();
-        let flags = FlagComputation::<DbInterner<'db>>::for_clauses(&clauses);
-        let wrapper = InternedClausesWrapper(clauses, flags.flags, flags.outer_exclusive_binder);
-        Clauses::new_(interner.db(), wrapper)
+    #[inline]
+    pub fn new_from_slice(slice: &[ClauseRef<'_, 'db>]) -> Self {
+        let flags = FlagComputation::<DbInterner<'db>>::for_clauses(slice);
+        // SAFETY: FIXME
+        let slice =
+            unsafe { std::mem::transmute::<&[ClauseRef<'_, 'db>], &[Clause<'static>]>(slice) };
+        let cached = WithCachedTypeInfo {
+            internee: (),
+            flags: flags.flags,
+            outer_exclusive_binder: flags.outer_exclusive_binder,
+        };
+        Clauses {
+            interned: InternedSlice::from_header_and_slice(cached, slice),
+            _marker: PhantomData,
+        }
     }
 
-    pub fn inner(&self) -> &InternedClausesWrapper<'db> {
-        crate::with_attached_db(|db| {
-            let inner = self.inner_(db);
-            // SAFETY: The caller already has access to a `Clauses<'db>`, so borrowchecking will
-            // make sure that our returned value is valid for the lifetime `'db`.
-            unsafe { std::mem::transmute(inner) }
-        })
+    #[inline]
+    pub fn new_from_vec(vec: Vec<Clause<'db>>) -> Self {
+        let flags = FlagComputation::<DbInterner<'db>>::for_clauses(vec.as_borrowed_slice());
+        // SAFETY: FIXME
+        let vec = unsafe { std::mem::transmute::<Vec<Clause<'db>>, Vec<Clause<'static>>>(vec) };
+        let cached = WithCachedTypeInfo {
+            internee: (),
+            flags: flags.flags,
+            outer_exclusive_binder: flags.outer_exclusive_binder,
+        };
+        Clauses { interned: InternedSlice::from_header_and_vec(cached, vec), _marker: PhantomData }
+    }
+
+    #[inline]
+    pub fn new_from_iter(iter: impl IntoIterator<Item = Clause<'db>>) -> Self {
+        let vec = iter.into_iter().collect();
+        Self::new_from_vec(vec)
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[ClauseRef<'_, 'db>] {
+        self.r().as_slice()
+    }
+
+    #[inline(always)]
+    pub fn r(&self) -> ClausesRef<'_, 'db> {
+        ClausesRef { interned: self.interned.r(), _marker: PhantomData }
     }
 }
 
 impl<'db> std::fmt::Debug for Clauses<'db> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.inner().0.fmt(f)
+        self.as_slice().fmt(f)
     }
 }
 
-impl<'db> rustc_type_ir::inherent::Clauses<DbInterner<'db>> for Clauses<'db> {}
-
-impl<'db> rustc_type_ir::inherent::SliceLike for Clauses<'db> {
-    type Item = Clause<'db>;
-
-    type IntoIter = <smallvec::SmallVec<[Clause<'db>; 2]> as IntoIterator>::IntoIter;
-
-    fn iter(self) -> Self::IntoIter {
-        self.inner().0.clone().into_iter()
-    }
-
-    fn as_slice(&self) -> &[Self::Item] {
-        self.inner().0.as_slice()
+impl<'db> std::fmt::Debug for ClausesRef<'_, 'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_slice().fmt(f)
     }
 }
 
-impl<'db> IntoIterator for Clauses<'db> {
-    type Item = Clause<'db>;
-    type IntoIter = <Self as rustc_type_ir::inherent::SliceLike>::IntoIter;
+impl<'a, 'db> rustc_type_ir::inherent::Clauses<'a, DbInterner<'db>> for ClausesRef<'a, 'db> where
+    'db: 'a
+{
+}
 
+impl<'a, 'db> rustc_type_ir::inherent::SliceLike<'a> for ClausesRef<'a, 'db>
+where
+    'db: 'a,
+{
+    type Item = ClauseRef<'a, 'db>;
+
+    #[inline]
+    fn as_slice(self) -> &'a [Self::Item] {
+        self.as_slice()
+    }
+}
+
+impl<'a, 'db> IntoIterator for ClausesRef<'a, 'db>
+where
+    'db: 'a,
+{
+    type Item = ClauseRef<'a, 'db>;
+    type IntoIter = std::iter::Copied<std::slice::Iter<'a, ClauseRef<'a, 'db>>>;
+
+    #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        rustc_type_ir::inherent::SliceLike::iter(self)
+        self.as_slice().iter().copied()
     }
 }
 
 impl<'db> Default for Clauses<'db> {
+    #[inline]
     fn default() -> Self {
-        Clauses::new_from_iter(DbInterner::conjure(), [])
+        default_types().empty.clauses.clone()
     }
 }
 
-impl<'db> rustc_type_ir::TypeSuperFoldable<DbInterner<'db>> for Clauses<'db> {
-    fn try_super_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
+impl<'db> Default for ClausesRef<'_, 'db> {
+    #[inline]
+    fn default() -> Self {
+        default_types().empty.clauses.r()
+    }
+}
+
+impl<'a, 'db> Deref for ClausesRef<'a, 'db> {
+    type Target = [ClauseRef<'a, 'db>];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        (*self).as_slice()
+    }
+}
+
+impl<'db> TypeSuperFoldable<DbInterner<'db>> for Clauses<'db> {
+    #[inline]
+    fn try_super_fold_with<F: FallibleTypeFolder<DbInterner<'db>>>(
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        let mut clauses: SmallVec<[_; 2]> = SmallVec::with_capacity(self.inner().0.len());
-        for c in self {
-            clauses.push(c.try_fold_with(folder)?);
-        }
-        Ok(Clauses::new_from_iter(folder.cx(), clauses))
+        self.try_fold_with(folder)
     }
 
-    fn super_fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(
-        self,
-        folder: &mut F,
-    ) -> Self {
-        let mut clauses: SmallVec<[_; 2]> = SmallVec::with_capacity(self.inner().0.len());
-        for c in self {
-            clauses.push(c.fold_with(folder));
-        }
-        Clauses::new_from_iter(folder.cx(), clauses)
+    #[inline]
+    fn super_fold_with<F: TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
+        self.fold_with(folder)
     }
 }
 
-impl<'db> rustc_type_ir::TypeFoldable<DbInterner<'db>> for Clauses<'db> {
-    fn try_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
+impl<'db> TypeFoldable<DbInterner<'db>> for Clauses<'db> {
+    fn try_fold_with<F: FallibleTypeFolder<DbInterner<'db>>>(
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        use rustc_type_ir::inherent::SliceLike as _;
-        let inner: smallvec::SmallVec<[_; 2]> =
-            self.iter().map(|v| v.try_fold_with(folder)).collect::<Result<_, _>>()?;
-        Ok(Clauses::new_from_iter(folder.cx(), inner))
+        let result = self
+            .as_slice()
+            .iter()
+            .map(|item| item.o().try_fold_with(folder))
+            .collect::<Result<_, _>>()?;
+        Ok(Clauses::new_from_vec(result))
     }
-    fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
-        use rustc_type_ir::inherent::SliceLike as _;
-        let inner: smallvec::SmallVec<[_; 2]> = self.iter().map(|v| v.fold_with(folder)).collect();
-        Clauses::new_from_iter(folder.cx(), inner)
+    fn fold_with<F: TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
+        let result = self.as_slice().iter().map(|item| item.o().fold_with(folder)).collect();
+        Clauses::new_from_vec(result)
     }
 }
 
-impl<'db> rustc_type_ir::TypeVisitable<DbInterner<'db>> for Clauses<'db> {
-    fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-        &self,
-        visitor: &mut V,
-    ) -> V::Result {
-        use rustc_ast_ir::visit::VisitorResult;
-        use rustc_type_ir::inherent::SliceLike as _;
-        rustc_ast_ir::walk_visitable_list!(visitor, self.as_slice().iter());
+impl<'db> TypeVisitable<DbInterner<'db>> for Clauses<'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        self.r().visit_with(visitor)
+    }
+}
+
+impl<'db> TypeVisitable<DbInterner<'db>> for ClausesRef<'_, 'db> {
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        use rustc_type_ir::VisitorResult;
+        rustc_ast_ir::walk_visitable_list!(visitor, self.as_slice());
         V::Result::output()
     }
 }
 
 impl<'db> rustc_type_ir::Flags for Clauses<'db> {
+    #[inline]
     fn flags(&self) -> rustc_type_ir::TypeFlags {
-        self.inner().1
+        self.interned.header.header.flags
     }
 
+    #[inline]
     fn outer_exclusive_binder(&self) -> rustc_type_ir::DebruijnIndex {
-        self.inner().2
+        self.interned.header.header.outer_exclusive_binder
+    }
+}
+
+impl<'db> rustc_type_ir::Flags for ClausesRef<'_, 'db> {
+    #[inline]
+    fn flags(&self) -> rustc_type_ir::TypeFlags {
+        self.interned.header.header.flags
+    }
+
+    #[inline]
+    fn outer_exclusive_binder(&self) -> rustc_type_ir::DebruijnIndex {
+        self.interned.header.header.outer_exclusive_binder
     }
 }
 
 impl<'db> rustc_type_ir::TypeSuperVisitable<DbInterner<'db>> for Clauses<'db> {
-    fn super_visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-        &self,
-        visitor: &mut V,
-    ) -> V::Result {
+    fn super_visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        self.r().visit_with(visitor)
+    }
+}
+
+impl<'db> rustc_type_ir::TypeSuperVisitable<DbInterner<'db>> for ClausesRef<'_, 'db> {
+    fn super_visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
         self.as_slice().visit_with(visitor)
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)] // TODO implement Debug by hand
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct Clause<'db>(pub(crate) Predicate<'db>);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct ClauseRef<'a, 'db>(pub(crate) PredicateRef<'a, 'db>);
+
+unsafe impl<'db> SameRepr for Clause<'db> {
+    type Borrowed<'a>
+        = ClauseRef<'a, 'db>
+    where
+        Self: 'a;
+}
+
+impl<'db> AsOwnedSlice for [ClauseRef<'_, 'db>] {
+    type Owned = Clause<'db>;
+
+    #[inline(always)]
+    fn as_owned_slice(&self) -> &[Self::Owned] {
+        <[Clause<'_>]>::as_owned_slice(self)
+    }
+}
+
+impl<'db> fmt::Debug for Clause<'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'db> fmt::Debug for ClauseRef<'_, 'db> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 // We could cram the reveal into the clauses like rustc does, probably
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, TypeVisitable, TypeFoldable)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Default, TypeVisitable, TypeFoldable)]
 pub struct ParamEnv<'db> {
     pub(crate) clauses: Clauses<'db>,
 }
 
-impl<'db> ParamEnv<'db> {
-    pub fn empty() -> Self {
-        ParamEnv { clauses: Clauses::new_from_iter(DbInterner::conjure(), []) }
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Default, TypeVisitable)]
+pub struct ParamEnvRef<'a, 'db> {
+    pub(crate) clauses: ClausesRef<'a, 'db>,
+}
+
+impl<'a, 'db> ParamEnvRef<'a, 'db> {
+    #[inline]
+    pub fn o(self) -> ParamEnv<'db> {
+        ParamEnv { clauses: self.clauses.o() }
+    }
+
+    #[inline]
+    pub fn caller_bounds(self) -> ClausesRef<'a, 'db> {
+        self.clauses
     }
 }
 
-impl<'db> rustc_type_ir::inherent::ParamEnv<DbInterner<'db>> for ParamEnv<'db> {
-    fn caller_bounds(self) -> impl rustc_type_ir::inherent::SliceLike<Item = Clause<'db>> {
+impl<'db> ParamEnv<'db> {
+    #[inline]
+    pub fn empty() -> Self {
+        ParamEnv { clauses: Clauses::default() }
+    }
+
+    #[inline]
+    pub fn r(&self) -> ParamEnvRef<'_, 'db> {
+        ParamEnvRef { clauses: self.clauses.r() }
+    }
+
+    #[inline]
+    pub fn caller_bounds(&self) -> ClausesRef<'_, 'db> {
+        self.r().clauses
+    }
+}
+
+impl<'a, 'db> rustc_type_ir::inherent::ParamEnv<'a, DbInterner<'db>> for ParamEnvRef<'a, 'db>
+where
+    'db: 'a,
+{
+    #[inline]
+    fn caller_bounds(
+        self,
+    ) -> impl rustc_type_ir::inherent::SliceLike<'a, Item = ClauseRef<'a, 'db>> {
         self.clauses
     }
 }
@@ -447,91 +606,121 @@ impl<'db, T> ParamEnvAnd<'db, T> {
     }
 }
 
-impl<'db> TypeVisitable<DbInterner<'db>> for Predicate<'db> {
-    fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-        &self,
-        visitor: &mut V,
-    ) -> V::Result {
+impl<'db> TypeVisitable<DbInterner<'db>> for PredicateRef<'_, 'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
         visitor.visit_predicate(*self)
     }
 }
 
-impl<'db> TypeSuperVisitable<DbInterner<'db>> for Predicate<'db> {
-    fn super_visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-        &self,
-        visitor: &mut V,
-    ) -> V::Result {
+impl<'db> TypeVisitable<DbInterner<'db>> for Predicate<'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        self.r().visit_with(visitor)
+    }
+}
+
+impl<'db> TypeSuperVisitable<DbInterner<'db>> for PredicateRef<'_, 'db> {
+    #[inline]
+    fn super_visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
         (*self).kind().visit_with(visitor)
     }
 }
 
+impl<'db> TypeSuperVisitable<DbInterner<'db>> for Predicate<'db> {
+    #[inline]
+    fn super_visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        self.r().super_visit_with(visitor)
+    }
+}
+
 impl<'db> TypeFoldable<DbInterner<'db>> for Predicate<'db> {
-    fn try_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
+    fn try_fold_with<F: FallibleTypeFolder<DbInterner<'db>>>(
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
         folder.try_fold_predicate(self)
     }
-    fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
+    fn fold_with<F: TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
         folder.fold_predicate(self)
     }
 }
 
 impl<'db> TypeSuperFoldable<DbInterner<'db>> for Predicate<'db> {
-    fn try_super_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
+    fn try_super_fold_with<F: FallibleTypeFolder<DbInterner<'db>>>(
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        let new = self.kind().try_fold_with(folder)?;
-        Ok(Predicate::new(folder.cx(), new))
+        let new = self.kind().clone().try_fold_with(folder)?;
+        Ok(Predicate::new(new))
     }
-    fn super_fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(
-        self,
-        folder: &mut F,
-    ) -> Self {
-        let new = self.kind().fold_with(folder);
-        Predicate::new(folder.cx(), new)
+    fn super_fold_with<F: TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
+        let new = self.kind().clone().fold_with(folder);
+        Predicate::new(new)
     }
 }
 
 impl<'db> Elaboratable<DbInterner<'db>> for Predicate<'db> {
-    fn predicate(&self) -> <DbInterner<'db> as rustc_type_ir::Interner>::Predicate {
-        *self
+    #[inline]
+    fn predicate(&self) -> PredicateRef<'_, 'db> {
+        self.r()
     }
 
+    #[inline]
     fn child(&self, clause: <DbInterner<'db> as rustc_type_ir::Interner>::Clause) -> Self {
-        clause.as_predicate()
+        clause.into_predicate()
     }
 
     fn child_with_derived_cause(
         &self,
         clause: <DbInterner<'db> as rustc_type_ir::Interner>::Clause,
         _span: <DbInterner<'db> as rustc_type_ir::Interner>::Span,
-        _parent_trait_pred: rustc_type_ir::Binder<
-            DbInterner<'db>,
-            rustc_type_ir::TraitPredicate<DbInterner<'db>>,
-        >,
+        _parent_trait_pred: Binder<'db, &TraitPredicate<'db>>,
         _index: usize,
     ) -> Self {
-        clause.as_predicate()
+        clause.into_predicate()
     }
 }
 
 impl<'db> Flags for Predicate<'db> {
+    #[inline]
     fn flags(&self) -> rustc_type_ir::TypeFlags {
         self.inner().flags
     }
 
+    #[inline]
     fn outer_exclusive_binder(&self) -> rustc_type_ir::DebruijnIndex {
         self.inner().outer_exclusive_binder
     }
 }
 
-impl<'db> IntoKind for Predicate<'db> {
+impl<'db> Flags for PredicateRef<'_, 'db> {
+    #[inline]
+    fn flags(&self) -> rustc_type_ir::TypeFlags {
+        self.inner().flags
+    }
+
+    #[inline]
+    fn outer_exclusive_binder(&self) -> rustc_type_ir::DebruijnIndex {
+        self.inner().outer_exclusive_binder
+    }
+}
+
+impl<'db> AsKind for Predicate<'db> {
     type Kind = Binder<'db, PredicateKind<'db>>;
 
-    fn kind(self) -> Self::Kind {
-        self.inner().internee
+    #[inline]
+    fn kind(&self) -> &Self::Kind {
+        self.kind()
+    }
+}
+
+impl<'a, 'db> AsKindRef<'a> for PredicateRef<'a, 'db> {
+    type Kind = Binder<'db, PredicateKind<'db>>;
+
+    #[inline]
+    fn kind(self) -> &'a Self::Kind {
+        self.kind()
     }
 }
 
@@ -546,9 +735,9 @@ impl<'db>
 {
     fn upcast_from(
         from: ty::Binder<DbInterner<'db>, ty::PredicateKind<DbInterner<'db>>>,
-        interner: DbInterner<'db>,
+        _interner: DbInterner<'db>,
     ) -> Self {
-        Predicate::new(interner, from)
+        Predicate::new(from)
     }
 }
 impl<'db> UpcastFrom<DbInterner<'db>, ty::ClauseKind<DbInterner<'db>>> for Predicate<'db> {
@@ -668,11 +857,16 @@ impl<'db> UpcastFrom<DbInterner<'db>, PolyRegionOutlivesPredicate<'db>> for Pred
 }
 
 impl<'db> rustc_type_ir::inherent::Predicate<DbInterner<'db>> for Predicate<'db> {
-    fn as_clause(self) -> Option<<DbInterner<'db> as rustc_type_ir::Interner>::Clause> {
-        match self.kind().skip_binder() {
-            PredicateKind::Clause(..) => Some(self.expect_clause()),
-            _ => None,
-        }
+    #[inline]
+    fn as_clause(self) -> Option<Clause<'db>> {
+        self.as_clause()
+    }
+}
+
+impl<'a, 'db> rustc_type_ir::inherent::PredicateRef<'a, DbInterner<'db>> for PredicateRef<'a, 'db> {
+    #[inline]
+    fn as_clause(self) -> Option<ClauseRef<'a, 'db>> {
+        self.as_clause()
     }
 
     /// Whether this projection can be soundly normalized.
@@ -682,7 +876,7 @@ impl<'db> rustc_type_ir::inherent::Predicate<DbInterner<'db>> for Predicate<'db>
     /// unsoundly accept some programs. See #91068.
     fn allow_normalization(self) -> bool {
         // TODO: this should probably live in rustc_type_ir
-        match self.inner().as_ref().skip_binder() {
+        match self.kind().skip_binder_ref() {
             PredicateKind::Clause(ClauseKind::WellFormed(_))
             | PredicateKind::AliasRelate(..)
             | PredicateKind::NormalizesTo(..) => false,
@@ -704,94 +898,159 @@ impl<'db> rustc_type_ir::inherent::Predicate<DbInterner<'db>> for Predicate<'db>
 }
 
 impl<'db> Predicate<'db> {
-    pub fn as_trait_clause(self) -> Option<PolyTraitPredicate<'db>> {
-        let predicate = self.kind();
-        match predicate.skip_binder() {
-            PredicateKind::Clause(ClauseKind::Trait(t)) => Some(predicate.rebind(t)),
-            _ => None,
-        }
-    }
-
-    pub fn as_projection_clause(self) -> Option<PolyProjectionPredicate<'db>> {
-        let predicate = self.kind();
-        match predicate.skip_binder() {
-            PredicateKind::Clause(ClauseKind::Projection(t)) => Some(predicate.rebind(t)),
-            _ => None,
-        }
-    }
-
     /// Matches a `PredicateKind::Clause` and turns it into a `Clause`, otherwise returns `None`.
+    #[inline]
     pub fn as_clause(self) -> Option<Clause<'db>> {
-        match self.kind().skip_binder() {
-            PredicateKind::Clause(..) => Some(self.expect_clause()),
+        match self.kind().skip_binder_ref() {
+            PredicateKind::Clause(..) => Some(Clause(self)),
             _ => None,
         }
     }
 
     /// Assert that the predicate is a clause.
+    #[inline]
     pub fn expect_clause(self) -> Clause<'db> {
-        match self.kind().skip_binder() {
+        match self.kind().skip_binder_ref() {
             PredicateKind::Clause(..) => Clause(self),
             _ => panic!("{self:?} is not a clause"),
         }
     }
 }
 
+impl<'a, 'db> PredicateRef<'a, 'db> {
+    pub fn as_trait_clause(self) -> Option<Binder<'db, &'a TraitPredicate<'db>>> {
+        let predicate = self.kind();
+        match predicate.skip_binder_ref() {
+            PredicateKind::Clause(ClauseKind::Trait(t)) => Some(predicate.rebind(t)),
+            _ => None,
+        }
+    }
+
+    pub fn as_projection_clause(self) -> Option<Binder<'db, &'a ProjectionPredicate<'db>>> {
+        let predicate = self.kind();
+        match predicate.skip_binder_ref() {
+            PredicateKind::Clause(ClauseKind::Projection(t)) => Some(predicate.rebind(t)),
+            _ => None,
+        }
+    }
+
+    /// Matches a `PredicateKind::Clause` and turns it into a `Clause`, otherwise returns `None`.
+    #[inline]
+    pub fn as_clause(self) -> Option<ClauseRef<'a, 'db>> {
+        match self.kind().skip_binder_ref() {
+            PredicateKind::Clause(..) => Some(ClauseRef(self)),
+            _ => None,
+        }
+    }
+
+    /// Assert that the predicate is a clause.
+    #[inline]
+    pub fn expect_clause(self) -> ClauseRef<'a, 'db> {
+        match self.kind().skip_binder_ref() {
+            PredicateKind::Clause(..) => ClauseRef(self),
+            _ => panic!("{self:?} is not a clause"),
+        }
+    }
+}
+
 impl<'db> TypeVisitable<DbInterner<'db>> for Clause<'db> {
-    fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-        &self,
-        visitor: &mut V,
-    ) -> V::Result {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
+        self.r().visit_with(visitor)
+    }
+}
+
+impl<'db> TypeVisitable<DbInterner<'db>> for ClauseRef<'_, 'db> {
+    #[inline]
+    fn visit_with<V: TypeVisitor<DbInterner<'db>>>(&self, visitor: &mut V) -> V::Result {
         visitor.visit_predicate((*self).as_predicate())
     }
 }
 
 impl<'db> TypeFoldable<DbInterner<'db>> for Clause<'db> {
-    fn try_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
+    fn try_fold_with<F: FallibleTypeFolder<DbInterner<'db>>>(
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        Ok(folder.try_fold_predicate(self.as_predicate())?.expect_clause())
+        Ok(folder.try_fold_predicate(self.into_predicate())?.expect_clause())
     }
-    fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
-        folder.fold_predicate(self.as_predicate()).expect_clause()
+    fn fold_with<F: TypeFolder<DbInterner<'db>>>(self, folder: &mut F) -> Self {
+        folder.fold_predicate(self.into_predicate()).expect_clause()
     }
 }
 
-impl<'db> IntoKind for Clause<'db> {
-    type Kind = Binder<'db, ClauseKind<'db>>;
+impl<'a, 'db> AsOwnedKindRef<'a> for ClauseRef<'a, 'db> {
+    type Kind = Binder<'db, &'a ClauseKind<'db>>;
 
     fn kind(self) -> Self::Kind {
-        self.0.kind().map_bound(|pk| match pk {
-            PredicateKind::Clause(kind) => kind,
-            _ => unreachable!(),
-        })
+        self.kind()
     }
 }
 
 impl<'db> Clause<'db> {
-    pub fn as_predicate(self) -> Predicate<'db> {
+    #[inline]
+    pub fn into_predicate(self) -> Predicate<'db> {
         self.0
+    }
+
+    #[inline]
+    pub fn r(&self) -> ClauseRef<'_, 'db> {
+        ClauseRef(self.0.r())
+    }
+
+    #[inline]
+    pub fn kind(&self) -> Binder<'db, &ClauseKind<'db>> {
+        self.r().kind()
+    }
+
+    #[inline]
+    pub fn kind_skip_binder(&self) -> &ClauseKind<'db> {
+        self.r().kind_skip_binder()
+    }
+}
+
+impl<'a, 'db> ClauseRef<'a, 'db> {
+    #[inline]
+    pub fn as_predicate(self) -> PredicateRef<'a, 'db> {
+        self.0
+    }
+
+    #[inline]
+    pub fn o(self) -> Clause<'db> {
+        Clause(self.0.o())
+    }
+
+    #[inline]
+    pub fn kind(self) -> Binder<'db, &'a ClauseKind<'db>> {
+        self.0.kind().map_bound_ref(|clause| match clause {
+            PredicateKind::Clause(clause) => clause,
+            _ => unreachable!(),
+        })
+    }
+
+    #[inline]
+    pub fn kind_skip_binder(self) -> &'a ClauseKind<'db> {
+        match self.0.kind().skip_binder_ref() {
+            PredicateKind::Clause(clause) => clause,
+            _ => unreachable!(),
+        }
     }
 }
 
 impl<'db> Elaboratable<DbInterner<'db>> for Clause<'db> {
-    fn predicate(&self) -> <DbInterner<'db> as rustc_type_ir::Interner>::Predicate {
-        self.0
+    fn predicate(&self) -> PredicateRef<'_, 'db> {
+        self.0.r()
     }
 
-    fn child(&self, clause: <DbInterner<'db> as rustc_type_ir::Interner>::Clause) -> Self {
+    fn child(&self, clause: Clause<'db>) -> Self {
         clause
     }
 
     fn child_with_derived_cause(
         &self,
-        clause: <DbInterner<'db> as rustc_type_ir::Interner>::Clause,
-        _span: <DbInterner<'db> as rustc_type_ir::Interner>::Span,
-        _parent_trait_pred: rustc_type_ir::Binder<
-            DbInterner<'db>,
-            rustc_type_ir::TraitPredicate<DbInterner<'db>>,
-        >,
+        clause: Clause<'db>,
+        _span: Span,
+        _parent_trait_pred: Binder<'db, &TraitPredicate<'db>>,
         _index: usize,
     ) -> Self {
         clause
@@ -865,25 +1124,37 @@ impl<'db> rustc_type_ir::inherent::Clause<DbInterner<'db>> for Clause<'db> {
     fn as_predicate(self) -> <DbInterner<'db> as rustc_type_ir::Interner>::Predicate {
         self.0
     }
+}
+
+impl<'a, 'db> rustc_type_ir::inherent::ClauseRef<'a, DbInterner<'db>> for ClauseRef<'a, 'db>
+where
+    'db: 'a,
+{
+    fn as_predicate(self) -> PredicateRef<'a, 'db> {
+        self.as_predicate()
+    }
 
     fn instantiate_supertrait(
         self,
         cx: DbInterner<'db>,
-        trait_ref: rustc_type_ir::Binder<DbInterner<'db>, rustc_type_ir::TraitRef<DbInterner<'db>>>,
-    ) -> Self {
+        trait_ref: Binder<'db, &TraitRef<'db>>,
+    ) -> Clause<'db> {
         tracing::debug!(?self, ?trait_ref);
         // See the rustc impl for a long comment
         let bound_pred = self.kind();
         let pred_bound_vars = bound_pred.bound_vars();
         let trait_bound_vars = trait_ref.bound_vars();
         // 1) Self: Bar1<'a, '^0.0> -> Self: Bar1<'a, '^0.1>
-        let shifted_pred =
-            cx.shift_bound_var_indices(trait_bound_vars.len(), bound_pred.skip_binder());
+        let shifted_pred = cx.shift_bound_var_indices(
+            trait_bound_vars.len(),
+            (*bound_pred.skip_binder_ref()).clone(),
+        );
         // 2) Self: Bar1<'a, '^0.1> -> T: Bar1<'^0.0, '^0.1>
-        let new = EarlyBinder::bind(shifted_pred).instantiate(cx, trait_ref.skip_binder().args);
+        let new =
+            EarlyBinder::bind(shifted_pred).instantiate(cx, trait_ref.skip_binder_ref().args.r());
         // 3) ['x] + ['b] -> ['x, 'b]
         let bound_vars =
-            BoundVarKinds::new_from_iter(cx, trait_bound_vars.iter().chain(pred_bound_vars.iter()));
+            BoundVarKinds::new_from_iter(trait_bound_vars.iter().chain(pred_bound_vars.iter()));
 
         let predicate: Predicate<'db> =
             ty::Binder::bind_with_vars(PredicateKind::Clause(new), bound_vars).upcast(cx);

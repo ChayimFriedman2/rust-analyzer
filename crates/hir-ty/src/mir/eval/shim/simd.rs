@@ -35,7 +35,8 @@ impl<'db> Evaluator<'db> {
                                 not_supported!("simd type with no field");
                             };
                             let field_ty = self.db.field_types(id.into())[first_field]
-                                .instantiate(self.interner(), subst);
+                                .clone()
+                                .instantiate(self.interner(), subst.r());
                             return Ok((fields.len(), field_ty));
                         }
                         return Err(MirEvalError::InternalError(
@@ -50,7 +51,7 @@ impl<'db> Evaluator<'db> {
                                 "simd type with no ty param".into(),
                             ));
                         };
-                        Ok((len as usize, ty))
+                        Ok((len as usize, ty.o()))
                     }
                     None => Err(MirEvalError::InternalError(
                         "simd type with unevaluatable len param".into(),
@@ -94,7 +95,7 @@ impl<'db> Evaluator<'db> {
                 let [left, right] = args else {
                     return Err(MirEvalError::InternalError("simd args are not provided".into()));
                 };
-                let (len, ty) = self.detect_simd_ty(left.ty)?;
+                let (len, ty) = self.detect_simd_ty(left.ty.clone())?;
                 let is_signed = matches!(ty.kind(), TyKind::Int(_));
                 let size = left.interval.size / len;
                 let dest_size = destination.size / len;
@@ -132,7 +133,7 @@ impl<'db> Evaluator<'db> {
                         "simd_bitmask args are not provided".into(),
                     ));
                 };
-                let (op_len, _) = self.detect_simd_ty(op.ty)?;
+                let (op_len, _) = self.detect_simd_ty(op.ty.clone())?;
                 let op_count = op.interval.size / op_len;
                 let mut result: u64 = 0;
                 for (i, val) in op.get(self)?.chunks(op_count).enumerate() {
@@ -153,7 +154,7 @@ impl<'db> Evaluator<'db> {
                         "simd_shuffle index argument has non-array type".into(),
                     ));
                 };
-                let index_len = match try_const_usize(self.db, index_len) {
+                let index_len = match try_const_usize(self.db, index_len.r()) {
                     Some(it) => it as usize,
                     None => {
                         return Err(MirEvalError::InternalError(
@@ -161,7 +162,7 @@ impl<'db> Evaluator<'db> {
                         ));
                     }
                 };
-                let (left_len, _) = self.detect_simd_ty(left.ty)?;
+                let (left_len, _) = self.detect_simd_ty(left.ty.clone())?;
                 let left_size = left.interval.size / left_len;
                 let vector =
                     left.get(self)?.chunks(left_size).chain(right.get(self)?.chunks(left_size));

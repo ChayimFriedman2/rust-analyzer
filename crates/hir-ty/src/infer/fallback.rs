@@ -6,10 +6,7 @@ use petgraph::{
     visit::{Dfs, Walker},
 };
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
-use rustc_type_ir::{
-    TyVid,
-    inherent::{IntoKind, Ty as _},
-};
+use rustc_type_ir::TyVid;
 use tracing::debug;
 
 use crate::{
@@ -151,16 +148,16 @@ impl<'db> InferenceContext<'_, 'db> {
         // type, `?T` is not considered unsolved, but `?I` is. The
         // same is true for float variables.)
         let fallback = match ty.kind() {
-            TyKind::Infer(rustc_type_ir::IntVar(_)) => self.types.i32,
-            TyKind::Infer(rustc_type_ir::FloatVar(_)) => self.types.f64,
+            TyKind::Infer(rustc_type_ir::IntVar(_)) => self.types.types.i32.r(),
+            TyKind::Infer(rustc_type_ir::FloatVar(_)) => self.types.types.f64.r(),
             _ => match diverging_fallback.get(&ty) {
-                Some(&fallback_ty) => fallback_ty,
+                Some(fallback_ty) => fallback_ty.r(),
                 None => return false,
             },
         };
         debug!("fallback_if_possible(ty={:?}): defaulting to `{:?}`", ty, fallback);
 
-        _ = self.demand_eqtype_fixme_no_diag(ty, fallback);
+        _ = self.demand_eqtype_fixme_no_diag(ty.r(), fallback);
         true
     }
 
@@ -244,7 +241,7 @@ impl<'db> InferenceContext<'_, 'db> {
 
         // Extract the unsolved type inference variable vids; note that some
         // unsolved variables are integer/float variables and are excluded.
-        let unsolved_vids = unresolved_variables.iter().filter_map(|ty| ty.ty_vid());
+        let unsolved_vids = unresolved_variables.iter().filter_map(|ty| ty.r().ty_vid());
 
         // Compute the diverging root vids D -- that is, the root vid of
         // those type variables that (a) are the target of a coercion from
@@ -256,8 +253,8 @@ impl<'db> InferenceContext<'_, 'db> {
             .table
             .diverging_type_vars
             .iter()
-            .map(|&ty| self.shallow_resolve(ty))
-            .filter_map(|ty| ty.ty_vid())
+            .map(|ty| self.shallow_resolve(ty.clone()))
+            .filter_map(|ty| ty.r().ty_vid())
             .map(|vid| self.table.infer_ctxt.root_var(vid))
             .collect();
         debug!(
@@ -324,20 +321,20 @@ impl<'db> InferenceContext<'_, 'db> {
             FxHashMap::with_capacity_and_hasher(diverging_vids.len(), FxBuildHasher);
 
         for &diverging_vid in &diverging_vids {
-            let diverging_ty = Ty::new_var(self.interner(), diverging_vid);
+            let diverging_ty = Ty::new_var(diverging_vid);
             let root_vid = self.table.infer_ctxt.root_var(diverging_vid);
             let can_reach_non_diverging = Dfs::new(&coercion_graph, root_vid.as_u32().into())
                 .iter(&coercion_graph)
                 .any(|n| roots_reachable_from_non_diverging.discovered.contains(n.index()));
 
-            let mut fallback_to = |ty| {
+            let fallback_to = |ty| {
                 diverging_fallback.insert(diverging_ty, ty);
             };
 
             match behavior {
                 DivergingFallbackBehavior::ToUnit => {
                     debug!("fallback to () - legacy: {:?}", diverging_vid);
-                    fallback_to(self.types.unit);
+                    fallback_to(self.types.types.unit.clone());
                 }
                 DivergingFallbackBehavior::ContextDependent => {
                     // FIXME: rustc does the following, but given this is only relevant when the unstable
@@ -372,10 +369,10 @@ impl<'db> InferenceContext<'_, 'db> {
                     // }
                     if can_reach_non_diverging {
                         debug!("fallback to () - reached non-diverging: {:?}", diverging_vid);
-                        fallback_to(self.types.unit);
+                        fallback_to(self.types.types.unit.clone());
                     } else {
                         debug!("fallback to ! - all diverging: {:?}", diverging_vid);
-                        fallback_to(self.types.never);
+                        fallback_to(self.types.types.never.clone());
                     }
                 }
                 DivergingFallbackBehavior::ToNever => {
@@ -383,7 +380,7 @@ impl<'db> InferenceContext<'_, 'db> {
                         "fallback to ! - `rustc_never_type_mode = \"fallback_to_never\")`: {:?}",
                         diverging_vid
                     );
-                    fallback_to(self.types.never);
+                    fallback_to(self.types.types.never.clone());
                 }
             }
         }
@@ -397,32 +394,29 @@ impl<'db> InferenceContext<'_, 'db> {
         let pending_obligations = self.table.fulfillment_cx.pending_obligations();
         let pending_obligations_len = pending_obligations.len();
         debug!("create_coercion_graph: pending_obligations={:?}", pending_obligations);
-        let coercion_edges = pending_obligations
-            .into_iter()
-            .filter_map(|obligation| {
-                // The predicates we are looking for look like `Coerce(?A -> ?B)`.
-                // They will have no bound variables.
-                obligation.predicate.kind().no_bound_vars()
-            })
-            .filter_map(|atom| {
-                // We consider both subtyping and coercion to imply 'flow' from
-                // some position in the code `a` to a different position `b`.
-                // This is then used to determine which variables interact with
-                // live code, and as such must fall back to `()` to preserve
-                // soundness.
-                //
-                // In practice currently the two ways that this happens is
-                // coercion and subtyping.
-                let (a, b) = match atom {
-                    PredicateKind::Coerce(CoercePredicate { a, b }) => (a, b),
-                    PredicateKind::Subtype(SubtypePredicate { a_is_expected: _, a, b }) => (a, b),
-                    _ => return None,
-                };
+        let coercion_edges = pending_obligations.into_iter().filter_map(|obligation| {
+            // The predicates we are looking for look like `Coerce(?A -> ?B)`.
+            // They will have no bound variables.
+            let atom = obligation.predicate.kind().no_bound_vars_ref()?;
 
-                let a_vid = self.root_vid(a)?;
-                let b_vid = self.root_vid(b)?;
-                Some((a_vid.as_u32(), b_vid.as_u32()))
-            });
+            // We consider both subtyping and coercion to imply 'flow' from
+            // some position in the code `a` to a different position `b`.
+            // This is then used to determine which variables interact with
+            // live code, and as such must fall back to `()` to preserve
+            // soundness.
+            //
+            // In practice currently the two ways that this happens is
+            // coercion and subtyping.
+            let (a, b) = match atom {
+                PredicateKind::Coerce(CoercePredicate { a, b }) => (a, b),
+                PredicateKind::Subtype(SubtypePredicate { a_is_expected: _, a, b }) => (a, b),
+                _ => return None,
+            };
+
+            let a_vid = self.root_vid(a.clone())?;
+            let b_vid = self.root_vid(b.clone())?;
+            Some((a_vid.as_u32(), b_vid.as_u32()))
+        });
         let num_ty_vars = self.table.infer_ctxt.num_ty_vars();
         let mut graph = Graph::with_capacity(num_ty_vars, pending_obligations_len);
         for _ in 0..num_ty_vars {
@@ -434,6 +428,6 @@ impl<'db> InferenceContext<'_, 'db> {
 
     /// If `ty` is an unresolved type variable, returns its root vid.
     fn root_vid(&self, ty: Ty<'db>) -> Option<TyVid> {
-        Some(self.table.infer_ctxt.root_var(self.shallow_resolve(ty).ty_vid()?))
+        Some(self.table.infer_ctxt.root_var(self.shallow_resolve(ty).r().ty_vid()?))
     }
 }

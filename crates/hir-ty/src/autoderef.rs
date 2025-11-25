@@ -6,7 +6,7 @@
 use std::fmt;
 
 use hir_def::{TraitId, TypeAliasId, lang_item::LangItem};
-use rustc_type_ir::inherent::{IntoKind, Ty as _};
+use rustc_type_ir::inherent::Ty as _;
 use tracing::debug;
 use triomphe::Arc;
 
@@ -15,7 +15,7 @@ use crate::{
     db::HirDatabase,
     infer::InferenceContext,
     next_solver::{
-        Canonical, DbInterner, ParamEnv, TraitRef, Ty, TyKind, TypingMode,
+        Canonical, DbInterner, ParamEnvRef, TraitRef, Ty, TyKind, TyRef, TypingMode,
         infer::{
             DbInternerInferExt, InferCtxt,
             traits::{Obligation, ObligationCause, PredicateObligations},
@@ -64,14 +64,14 @@ pub fn autoderef<'db>(
 
 pub(crate) trait TrackAutoderefSteps<'db>: Default + fmt::Debug {
     fn len(&self) -> usize;
-    fn push(&mut self, ty: Ty<'db>, kind: AutoderefKind);
+    fn push(&mut self, ty: TyRef<'_, 'db>, kind: AutoderefKind);
 }
 
 impl<'db> TrackAutoderefSteps<'db> for usize {
     fn len(&self) -> usize {
         *self
     }
-    fn push(&mut self, _: Ty<'db>, _: AutoderefKind) {
+    fn push(&mut self, _: TyRef<'_, 'db>, _: AutoderefKind) {
         *self += 1;
     }
 }
@@ -79,8 +79,8 @@ impl<'db> TrackAutoderefSteps<'db> for Vec<(Ty<'db>, AutoderefKind)> {
     fn len(&self) -> usize {
         self.len()
     }
-    fn push(&mut self, ty: Ty<'db>, kind: AutoderefKind) {
-        self.push((ty, kind));
+    fn push(&mut self, ty: TyRef<'_, 'db>, kind: AutoderefKind) {
+        self.push((ty.o(), kind));
     }
 }
 
@@ -175,7 +175,7 @@ where
         if self.state.at_start {
             self.state.at_start = false;
             debug!("autoderef stage #0 is {:?}", self.state.cur_ty);
-            return Some((self.state.cur_ty, 0));
+            return Some((self.state.cur_ty.clone(), 0));
         }
 
         // If we have reached the recursion limit, error gracefully.
@@ -184,7 +184,7 @@ where
             return None;
         }
 
-        if self.state.cur_ty.is_ty_var() {
+        if self.state.cur_ty.r().is_ty_var() {
             return None;
         }
 
@@ -194,36 +194,36 @@ where
         // and &mut T implement Receiver. But built-in derefs apply equally to Receiver
         // and Deref, and this has benefits for const and the emitted MIR.
         let (kind, new_ty) =
-            if let Some(ty) = self.state.cur_ty.builtin_deref(self.include_raw_pointers) {
-                debug_assert_eq!(ty, self.infcx().resolve_vars_if_possible(ty));
+            if let Some(ty) = self.state.cur_ty.r().builtin_deref(self.include_raw_pointers) {
+                debug_assert_eq!(ty, self.infcx().resolve_vars_if_possible(ty.o()).r());
                 // NOTE: we may still need to normalize the built-in deref in case
                 // we have some type like `&<Ty as Trait>::Assoc`, since users of
                 // autoderef expect this type to have been structurally normalized.
                 if let TyKind::Alias(..) = ty.kind() {
                     let (normalized_ty, obligations) =
-                        structurally_normalize_ty(self.infcx(), self.env().env, ty)?;
+                        structurally_normalize_ty(self.infcx(), self.env().env.r(), ty.o())?;
                     self.state.obligations.extend(obligations);
                     (AutoderefKind::Builtin, normalized_ty)
                 } else {
-                    (AutoderefKind::Builtin, ty)
+                    (AutoderefKind::Builtin, ty.o())
                 }
-            } else if let Some(ty) = self.overloaded_deref_ty(self.state.cur_ty) {
+            } else if let Some(ty) = self.overloaded_deref_ty(self.state.cur_ty.clone()) {
                 // The overloaded deref check already normalizes the pointee type.
                 (AutoderefKind::Overloaded, ty)
             } else {
                 return None;
             };
 
-        self.state.steps.push(self.state.cur_ty, kind);
+        self.state.steps.push(self.state.cur_ty.r(), kind);
         debug!(
             "autoderef stage #{:?} is {:?} from {:?}",
             self.step_count(),
             new_ty,
-            (self.state.cur_ty, kind)
+            (self.state.cur_ty.clone(), kind)
         );
         self.state.cur_ty = new_ty;
 
-        Some((self.state.cur_ty, self.step_count()))
+        Some((self.state.cur_ty.clone(), self.step_count()))
     }
 }
 
@@ -345,9 +345,9 @@ where
         // <ty as Deref>, or whatever the equivalent trait is that we've been asked to walk.
         let AutoderefTraits { trait_, trait_target } = self.autoderef_traits()?;
 
-        let trait_ref = TraitRef::new(interner, trait_.into(), [ty]);
+        let trait_ref = TraitRef::new(interner, trait_.into(), [ty.clone()]);
         let obligation =
-            Obligation::new(interner, ObligationCause::new(), self.env().env, trait_ref);
+            Obligation::new(interner, ObligationCause::new(), self.env().env.clone(), trait_ref);
         // We detect whether the self type implements `Deref` before trying to
         // structurally normalize. We use `predicate_may_hold_opaque_types_jank`
         // to support not-yet-defined opaque types. It will succeed for `impl Deref`
@@ -359,10 +359,9 @@ where
 
         let (normalized_ty, obligations) = structurally_normalize_ty(
             self.infcx(),
-            self.env().env,
+            self.env().env.r(),
             Ty::new_projection(interner, trait_target.into(), [ty]),
         )?;
-        debug!("overloaded_deref_ty({:?}) = ({:?}, {:?})", ty, normalized_ty, obligations);
         self.state.obligations.extend(obligations);
 
         Some(self.infcx().resolve_vars_if_possible(normalized_ty))
@@ -370,8 +369,8 @@ where
 
     /// Returns the final type we ended up with, which may be an unresolved
     /// inference variable.
-    pub(crate) fn final_ty(&self) -> Ty<'db> {
-        self.state.cur_ty
+    pub(crate) fn final_ty(&self) -> TyRef<'_, 'db> {
+        self.state.cur_ty.r()
     }
 
     pub(crate) fn step_count(&self) -> usize {
@@ -410,7 +409,7 @@ where
 
 fn structurally_normalize_ty<'db>(
     infcx: &InferCtxt<'db>,
-    param_env: ParamEnv<'db>,
+    param_env: ParamEnvRef<'_, 'db>,
     ty: Ty<'db>,
 ) -> Option<(Ty<'db>, PredicateObligations<'db>)> {
     let mut ocx = ObligationCtxt::new(infcx);

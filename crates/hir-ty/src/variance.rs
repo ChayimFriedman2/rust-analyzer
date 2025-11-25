@@ -17,7 +17,7 @@ use hir_def::{AdtId, GenericDefId, GenericParamId, VariantId, signatures::Struct
 use rustc_ast_ir::Mutability;
 use rustc_type_ir::{
     Variance,
-    inherent::{AdtDef, IntoKind, SliceLike},
+    inherent::{AdtDef, SliceLike},
 };
 use stdx::never;
 
@@ -25,33 +25,32 @@ use crate::{
     db::HirDatabase,
     generics::{Generics, generics},
     next_solver::{
-        Const, ConstKind, DbInterner, ExistentialPredicate, GenericArg, GenericArgs, Region,
-        RegionKind, Term, Ty, TyKind, VariancesOf,
+        ConstKind, ConstRef, ExistentialPredicate, GenericArgKind, GenericArgsRef, RegionKind,
+        RegionRef, TermKind, TyKind, TyRef, VariancesOf, default_types,
     },
 };
 
 pub(crate) fn variances_of(db: &dyn HirDatabase, def: GenericDefId) -> VariancesOf<'_> {
     tracing::debug!("variances_of(def={:?})", def);
-    let interner = DbInterner::new_with(db, None, None);
     match def {
         GenericDefId::FunctionId(_) => (),
         GenericDefId::AdtId(adt) => {
             if let AdtId::StructId(id) = adt {
                 let flags = &db.struct_signature(id).flags;
                 if flags.contains(StructFlags::IS_UNSAFE_CELL) {
-                    return VariancesOf::new_from_iter(interner, [Variance::Invariant]);
+                    return default_types().one_invariant.clone();
                 } else if flags.contains(StructFlags::IS_PHANTOM_DATA) {
-                    return VariancesOf::new_from_iter(interner, [Variance::Covariant]);
+                    return default_types().one_covariant.clone();
                 }
             }
         }
-        _ => return VariancesOf::new_from_iter(interner, []),
+        _ => return VariancesOf::default(),
     }
 
     let generics = generics(db, def);
     let count = generics.len();
     if count == 0 {
-        return VariancesOf::new_from_iter(interner, []);
+        return VariancesOf::default();
     }
     let mut variances =
         Context { generics, variances: vec![Variance::Bivariant; count], db }.solve();
@@ -71,7 +70,7 @@ pub(crate) fn variances_of(db: &dyn HirDatabase, def: GenericDefId) -> Variances
         }
     }
 
-    VariancesOf::new_from_iter(interner, variances)
+    VariancesOf::new_from_vec(variances)
 }
 
 // pub(crate) fn variances_of_cycle_fn(
@@ -107,12 +106,11 @@ pub(crate) fn variances_of_cycle_initial(
     db: &dyn HirDatabase,
     def: GenericDefId,
 ) -> VariancesOf<'_> {
-    let interner = DbInterner::new_with(db, None, None);
     let generics = generics(db, def);
     let count = generics.len();
 
     // FIXME(next-solver): Returns `Invariance` and not `Bivariance` here, see the comment in the main query.
-    VariancesOf::new_from_iter(interner, std::iter::repeat_n(Variance::Invariant, count))
+    VariancesOf::new_from_vec(vec![Variance::Invariant; count])
 }
 
 struct Context<'db> {
@@ -130,7 +128,7 @@ impl<'db> Context<'db> {
                 let mut add_constraints_from_variant = |variant| {
                     for (_, field) in db.field_types(variant).iter() {
                         self.add_constraints_from_ty(
-                            field.instantiate_identity(),
+                            field.map_bound_ref(|it| it.r()).instantiate_identity(),
                             Variance::Covariant,
                         );
                     }
@@ -148,7 +146,10 @@ impl<'db> Context<'db> {
             GenericDefId::FunctionId(f) => {
                 let sig =
                     self.db.callable_item_signature(f.into()).instantiate_identity().skip_binder();
-                self.add_constraints_from_sig(sig.inputs_and_output.iter(), Variance::Covariant);
+                self.add_constraints_from_sig(
+                    sig.inputs_and_output.r().iter(),
+                    Variance::Covariant,
+                );
             }
             _ => {}
         }
@@ -176,7 +177,7 @@ impl<'db> Context<'db> {
     /// Adds constraints appropriate for an instance of `ty` appearing
     /// in a context with the generics defined in `generics` and
     /// ambient variance `variance`
-    fn add_constraints_from_ty(&mut self, ty: Ty<'db>, variance: Variance) {
+    fn add_constraints_from_ty(&mut self, ty: TyRef<'_, 'db>, variance: Variance) {
         tracing::debug!("add_constraints_from_ty(ty={:?}, variance={:?})", ty, variance);
         match ty.kind() {
             TyKind::Int(_)
@@ -196,47 +197,47 @@ impl<'db> Context<'db> {
                 never!("Unexpected unnameable type in variance computation: {:?}", ty);
             }
             TyKind::Ref(lifetime, ty, mutbl) => {
-                self.add_constraints_from_region(lifetime, variance);
-                self.add_constraints_from_mt(ty, mutbl, variance);
+                self.add_constraints_from_region(lifetime.r(), variance);
+                self.add_constraints_from_mt(ty.r(), *mutbl, variance);
             }
             TyKind::Array(typ, len) => {
-                self.add_constraints_from_const(len);
-                self.add_constraints_from_ty(typ, variance);
+                self.add_constraints_from_const(len.r());
+                self.add_constraints_from_ty(typ.r(), variance);
             }
             TyKind::Slice(typ) => {
-                self.add_constraints_from_ty(typ, variance);
+                self.add_constraints_from_ty(typ.r(), variance);
             }
             TyKind::RawPtr(ty, mutbl) => {
-                self.add_constraints_from_mt(ty, mutbl, variance);
+                self.add_constraints_from_mt(ty.r(), *mutbl, variance);
             }
             TyKind::Tuple(subtys) => {
-                for subty in subtys {
+                for subty in subtys.r() {
                     self.add_constraints_from_ty(subty, variance);
                 }
             }
             TyKind::Adt(def, args) => {
-                self.add_constraints_from_args(def.def_id().0.into(), args, variance);
+                self.add_constraints_from_args(def.def_id().0.into(), args.r(), variance);
             }
             TyKind::Alias(_, alias) => {
                 // FIXME: Probably not correct wrt. opaques.
-                self.add_constraints_from_invariant_args(alias.args);
+                self.add_constraints_from_invariant_args(alias.args.r());
             }
             TyKind::Dynamic(bounds, region) => {
                 // The type `dyn Trait<T> +'a` is covariant w/r/t `'a`:
-                self.add_constraints_from_region(region, variance);
+                self.add_constraints_from_region(region.r(), variance);
 
-                for bound in bounds {
-                    match bound.skip_binder() {
+                for bound in bounds.r() {
+                    match bound.skip_binder_ref() {
                         ExistentialPredicate::Trait(trait_ref) => {
-                            self.add_constraints_from_invariant_args(trait_ref.args)
+                            self.add_constraints_from_invariant_args(trait_ref.args.r())
                         }
                         ExistentialPredicate::Projection(projection) => {
-                            self.add_constraints_from_invariant_args(projection.args);
-                            match projection.term {
-                                Term::Ty(ty) => {
+                            self.add_constraints_from_invariant_args(projection.args.r());
+                            match projection.term.kind() {
+                                TermKind::Ty(ty) => {
                                     self.add_constraints_from_ty(ty, Variance::Invariant)
                                 }
-                                Term::Const(konst) => self.add_constraints_from_const(konst),
+                                TermKind::Const(konst) => self.add_constraints_from_const(konst),
                             }
                         }
                         ExistentialPredicate::AutoTrait(_) => {}
@@ -247,7 +248,10 @@ impl<'db> Context<'db> {
             // Chalk has no params, so use placeholders for now?
             TyKind::Param(param) => self.constrain(param.index as usize, variance),
             TyKind::FnPtr(sig, _) => {
-                self.add_constraints_from_sig(sig.skip_binder().inputs_and_output.iter(), variance);
+                self.add_constraints_from_sig(
+                    sig.skip_binder_ref().inputs_and_output.r().iter(),
+                    variance,
+                );
             }
             TyKind::Error(_) => {
                 // we encounter this when walking the trait references for object
@@ -264,14 +268,14 @@ impl<'db> Context<'db> {
         }
     }
 
-    fn add_constraints_from_invariant_args(&mut self, args: GenericArgs<'db>) {
+    fn add_constraints_from_invariant_args(&mut self, args: GenericArgsRef<'_, 'db>) {
         for k in args.iter() {
-            match k {
-                GenericArg::Lifetime(lt) => {
+            match k.kind() {
+                GenericArgKind::Lifetime(lt) => {
                     self.add_constraints_from_region(lt, Variance::Invariant)
                 }
-                GenericArg::Ty(ty) => self.add_constraints_from_ty(ty, Variance::Invariant),
-                GenericArg::Const(val) => self.add_constraints_from_const(val),
+                GenericArgKind::Type(ty) => self.add_constraints_from_ty(ty, Variance::Invariant),
+                GenericArgKind::Const(val) => self.add_constraints_from_const(val),
             }
         }
     }
@@ -281,7 +285,7 @@ impl<'db> Context<'db> {
     fn add_constraints_from_args(
         &mut self,
         def_id: GenericDefId,
-        args: GenericArgs<'db>,
+        args: GenericArgsRef<'_, 'db>,
         variance: Variance,
     ) {
         if args.is_empty() {
@@ -289,31 +293,35 @@ impl<'db> Context<'db> {
         }
         let variances = self.db.variances_of(def_id);
 
-        for (k, v) in args.iter().zip(variances) {
-            match k {
-                GenericArg::Lifetime(lt) => self.add_constraints_from_region(lt, variance.xform(v)),
-                GenericArg::Ty(ty) => self.add_constraints_from_ty(ty, variance.xform(v)),
-                GenericArg::Const(val) => self.add_constraints_from_const(val),
+        for (k, v) in args.iter().zip(variances.r().iter()) {
+            match k.kind() {
+                GenericArgKind::Lifetime(lt) => {
+                    self.add_constraints_from_region(lt, variance.xform(v))
+                }
+                GenericArgKind::Type(ty) => self.add_constraints_from_ty(ty, variance.xform(v)),
+                GenericArgKind::Const(val) => self.add_constraints_from_const(val),
             }
         }
     }
 
     /// Adds constraints appropriate for a const expression `val`
     /// in a context with ambient variance `variance`
-    fn add_constraints_from_const(&mut self, c: Const<'db>) {
+    fn add_constraints_from_const(&mut self, c: ConstRef<'_, 'db>) {
         match c.kind() {
-            ConstKind::Unevaluated(c) => self.add_constraints_from_invariant_args(c.args),
+            ConstKind::Unevaluated(c) => self.add_constraints_from_invariant_args(c.args.r()),
             _ => {}
         }
     }
 
     /// Adds constraints appropriate for a function with signature
     /// `sig` appearing in a context with ambient variance `variance`
-    fn add_constraints_from_sig(
+    fn add_constraints_from_sig<'a>(
         &mut self,
-        mut sig_tys: impl DoubleEndedIterator<Item = Ty<'db>>,
+        mut sig_tys: impl DoubleEndedIterator<Item = TyRef<'a, 'db>>,
         variance: Variance,
-    ) {
+    ) where
+        'db: 'a,
+    {
         let contra = variance.xform(Variance::Contravariant);
         let Some(output) = sig_tys.next_back() else {
             return never!("function signature has no return type");
@@ -326,7 +334,7 @@ impl<'db> Context<'db> {
 
     /// Adds constraints appropriate for a region appearing in a
     /// context with ambient variance `variance`
-    fn add_constraints_from_region(&mut self, region: Region<'db>, variance: Variance) {
+    fn add_constraints_from_region(&mut self, region: RegionRef<'_, 'db>, variance: Variance) {
         tracing::debug!(
             "add_constraints_from_region(region={:?}, variance={:?})",
             region,
@@ -359,7 +367,7 @@ impl<'db> Context<'db> {
 
     /// Adds constraints appropriate for a mutability-type pair
     /// appearing in a context with ambient variance `variance`
-    fn add_constraints_from_mt(&mut self, ty: Ty<'db>, mt: Mutability, variance: Variance) {
+    fn add_constraints_from_mt(&mut self, ty: TyRef<'_, 'db>, mt: Mutability, variance: Variance) {
         self.add_constraints_from_ty(
             ty,
             match mt {
@@ -918,7 +926,7 @@ struct FixedPoint<T, U, V>(&'static FixedPoint<(), T, U>, V);
             let mut res = String::new();
             for (def, name) in defs {
                 let variances = db.variances_of(def);
-                if variances.is_empty() {
+                if variances.r().is_empty() {
                     continue;
                 }
                 format_to!(
@@ -936,7 +944,7 @@ struct FixedPoint<T, U, V>(&'static FixedPoint<(), T, U>, V);
                                 &lifetime_param_data.name
                             }
                         })
-                        .zip_eq(variances)
+                        .zip_eq(variances.r())
                         .format_with(", ", |(name, var), f| f(&format_args!(
                             "{}: {}",
                             name.as_str(),

@@ -12,7 +12,6 @@ use hir_def::{
 use la_arena::{Arena, ArenaMap, Idx, RawIdx};
 use rustc_ast_ir::Mutability;
 use rustc_hash::FxHashMap;
-use rustc_type_ir::inherent::{GenericArgs as _, IntoKind, SliceLike, Ty as _};
 use smallvec::{SmallVec, smallvec};
 use stdx::{impl_from, never};
 
@@ -23,7 +22,7 @@ use crate::{
     display::{DisplayTarget, HirDisplay},
     infer::PointerCast,
     next_solver::{
-        Const, DbInterner, ErrorGuaranteed, GenericArgs, ParamEnv, Ty, TyKind,
+        Const, GenericArgs, ParamEnv, Ty, TyKind,
         infer::{InferCtxt, traits::ObligationCause},
         obligation_ctxt::ObligationCtxt,
     },
@@ -111,10 +110,9 @@ pub enum OperandKind<'db> {
 
 impl<'db> Operand<'db> {
     fn from_concrete_const(data: Box<[u8]>, memory_map: MemoryMap<'db>, ty: Ty<'db>) -> Self {
-        let interner = DbInterner::conjure();
         Operand {
             kind: OperandKind::Constant {
-                konst: Const::new_valtree(interner, ty, data, memory_map),
+                konst: Const::new_valtree(ty.clone(), data, memory_map),
                 ty,
             },
             span: None,
@@ -130,12 +128,11 @@ impl<'db> Operand<'db> {
     }
 
     fn from_fn(
-        db: &'db dyn HirDatabase,
+        _db: &'db dyn HirDatabase,
         func_id: hir_def::FunctionId,
         generic_args: GenericArgs<'db>,
     ) -> Operand<'db> {
-        let interner = DbInterner::new_with(db, None, None);
-        let ty = Ty::new_fn_def(interner, CallableDefId::FunctionId(func_id).into(), generic_args);
+        let ty = Ty::new_fn_def(CallableDefId::FunctionId(func_id).into(), generic_args);
         Operand::from_bytes(Box::default(), ty)
     }
 }
@@ -167,88 +164,88 @@ impl<V, T> ProjectionElem<V, T> {
         // we only bail on mir building when there are type mismatches
         // but error types may pop up resulting in us still attempting to build the mir
         // so just propagate the error type
-        if base.is_ty_error() {
-            return Ty::new_error(interner, ErrorGuaranteed);
+        if base.r().is_ty_error() {
+            return Ty::new_error();
         }
 
         if matches!(base.kind(), TyKind::Alias(..)) {
             let mut ocx = ObligationCtxt::new(infcx);
             // FIXME: we should get this from caller
             let env = ParamEnv::empty();
-            match ocx.structurally_normalize_ty(&ObligationCause::dummy(), env, base) {
+            match ocx.structurally_normalize_ty(&ObligationCause::dummy(), env.r(), base) {
                 Ok(it) => base = it,
-                Err(_) => return Ty::new_error(interner, ErrorGuaranteed),
+                Err(_) => return Ty::new_error(),
             }
         }
 
         match self {
             ProjectionElem::Deref => match base.kind() {
-                TyKind::RawPtr(inner, _) | TyKind::Ref(_, inner, _) => inner,
-                TyKind::Adt(adt_def, subst) if adt_def.is_box() => subst.type_at(0),
+                TyKind::RawPtr(inner, _) | TyKind::Ref(_, inner, _) => inner.clone(),
+                TyKind::Adt(adt_def, subst) if adt_def.is_box() => subst.r().type_at(0).o(),
                 _ => {
                     never!(
                         "Overloaded deref on type {} is not a projection",
                         base.display(db, DisplayTarget::from_crate(db, krate))
                     );
-                    Ty::new_error(interner, ErrorGuaranteed)
+                    Ty::new_error()
                 }
             },
             ProjectionElem::Field(Either::Left(f)) => match base.kind() {
                 TyKind::Adt(_, subst) => {
-                    db.field_types(f.parent)[f.local_id].instantiate(interner, subst)
+                    db.field_types(f.parent)[f.local_id].clone().instantiate(interner, subst.r())
                 }
                 ty => {
                     never!("Only adt has field, found {:?}", ty);
-                    Ty::new_error(interner, ErrorGuaranteed)
+                    Ty::new_error()
                 }
             },
             ProjectionElem::Field(Either::Right(f)) => match base.kind() {
                 TyKind::Tuple(subst) => {
-                    subst.as_slice().get(f.index as usize).copied().unwrap_or_else(|| {
+                    subst.as_slice().get(f.index as usize).map(|it| it.o()).unwrap_or_else(|| {
                         never!("Out of bound tuple field");
-                        Ty::new_error(interner, ErrorGuaranteed)
+                        Ty::new_error()
                     })
                 }
                 ty => {
                     never!("Only tuple has tuple field: {:?}", ty);
-                    Ty::new_error(interner, ErrorGuaranteed)
+                    Ty::new_error()
                 }
             },
             ProjectionElem::ClosureField(f) => match base.kind() {
-                TyKind::Closure(id, subst) => closure_field(id.0, subst, *f),
+                TyKind::Closure(id, subst) => closure_field(id.0, subst.clone(), *f),
                 _ => {
                     never!("Only closure has closure field");
-                    Ty::new_error(interner, ErrorGuaranteed)
+                    Ty::new_error()
                 }
             },
             ProjectionElem::ConstantIndex { .. } | ProjectionElem::Index(_) => match base.kind() {
-                TyKind::Array(inner, _) | TyKind::Slice(inner) => inner,
+                TyKind::Array(inner, _) | TyKind::Slice(inner) => inner.clone(),
                 _ => {
                     never!("Overloaded index is not a projection");
-                    Ty::new_error(interner, ErrorGuaranteed)
+                    Ty::new_error()
                 }
             },
             &ProjectionElem::Subslice { from, to } => match base.kind() {
                 TyKind::Array(inner, c) => {
                     let next_c = usize_const(
                         db,
-                        match try_const_usize(db, c) {
+                        match try_const_usize(db, c.r()) {
                             None => None,
                             Some(x) => x.checked_sub(u128::from(from + to)),
                         },
                         krate,
                     );
-                    Ty::new_array_with_const_len(interner, inner, next_c)
+                    Ty::new_array_with_const_len(inner.clone(), next_c)
                 }
                 TyKind::Slice(_) => base,
                 _ => {
                     never!("Subslice projection should only happen on slice and array");
-                    Ty::new_error(interner, ErrorGuaranteed)
+                    Ty::new_error()
                 }
             },
             ProjectionElem::OpaqueCast(_) => {
                 never!("We don't emit these yet");
-                Ty::new_error(interner, ErrorGuaranteed)
+                Ty::new_error()
             }
         }
     }

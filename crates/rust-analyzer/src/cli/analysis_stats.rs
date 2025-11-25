@@ -10,10 +10,10 @@ use std::{
 
 use cfg::{CfgAtom, CfgDiff};
 use hir::{
-    Adt, AssocItem, Crate, DefWithBody, FindPathConfig, HasCrate, HasSource, HirDisplay, ModuleDef,
-    Name, crate_lang_items,
+    Adt, AssocItem, Crate, DefWithBody, FindPathConfig, HasSource, HirDisplay, ModuleDef, Name,
+    crate_lang_items,
     db::{DefDatabase, ExpandDatabase, HirDatabase},
-    next_solver::{DbInterner, GenericArgs},
+    next_solver::GenericArgs,
 };
 use hir_def::{
     SyntheticSyntax,
@@ -35,7 +35,6 @@ use profile::StopWatch;
 use project_model::{CargoConfig, CfgOverrides, ProjectManifest, ProjectWorkspace, RustLibSource};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use rustc_type_ir::inherent::Ty as _;
 use syntax::AstNode;
 use vfs::{AbsPathBuf, Vfs, VfsPath};
 
@@ -374,7 +373,6 @@ impl flags::AnalysisStats {
         let mut all = 0;
         let mut fail = 0;
         for &a in adts {
-            let interner = DbInterner::new_with(db, Some(a.krate(db).base()), None);
             let generic_params = db.generic_params(a.into());
             if generic_params.iter_type_or_consts().next().is_some()
                 || generic_params.iter_lt().next().is_some()
@@ -385,7 +383,7 @@ impl flags::AnalysisStats {
             all += 1;
             let Err(e) = db.layout_of_adt(
                 hir_def::AdtId::from(a),
-                GenericArgs::new_from_iter(interner, []),
+                GenericArgs::default(),
                 db.trait_environment(a.into()),
             ) else {
                 continue;
@@ -823,7 +821,7 @@ impl flags::AnalysisStats {
             for (expr_id, _) in body.exprs() {
                 let ty = &inference_result[expr_id];
                 num_exprs += 1;
-                let unknown_or_partial = if ty.is_ty_error() {
+                let unknown_or_partial = if ty.r().is_ty_error() {
                     num_exprs_unknown += 1;
                     if verbosity.is_spammy() {
                         if let Some((path, start, end)) = expr_syntax_range(db, vfs, &sm(), expr_id)
@@ -845,7 +843,7 @@ impl flags::AnalysisStats {
                     }
                     true
                 } else {
-                    let is_partially_unknown = ty.references_non_lt_error();
+                    let is_partially_unknown = ty.r().references_non_lt_error();
                     if is_partially_unknown {
                         num_exprs_partially_unknown += 1;
                     }
@@ -927,7 +925,7 @@ impl flags::AnalysisStats {
             for (pat_id, _) in body.pats() {
                 let ty = &inference_result[pat_id];
                 num_pats += 1;
-                let unknown_or_partial = if ty.is_ty_error() {
+                let unknown_or_partial = if ty.r().is_ty_error() {
                     num_pats_unknown += 1;
                     if verbosity.is_spammy() {
                         if let Some((path, start, end)) = pat_syntax_range(db, vfs, &sm(), pat_id) {
@@ -948,7 +946,7 @@ impl flags::AnalysisStats {
                     }
                     true
                 } else {
-                    let is_partially_unknown = ty.references_non_lt_error();
+                    let is_partially_unknown = ty.r().references_non_lt_error();
                     if is_partially_unknown {
                         num_pats_partially_unknown += 1;
                     }

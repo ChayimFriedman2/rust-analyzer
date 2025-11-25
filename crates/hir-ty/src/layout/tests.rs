@@ -3,7 +3,6 @@ use either::Either;
 use hir_def::db::DefDatabase;
 use project_model::{Sysroot, toolchain_info::QueryConfig};
 use rustc_hash::FxHashMap;
-use rustc_type_ir::inherent::GenericArgs as _;
 use syntax::ToSmolStr;
 use test_fixture::WithFixture;
 use triomphe::Arc;
@@ -82,7 +81,7 @@ fn eval_goal(
     crate::attach_db(&db, || {
         let interner = DbInterner::new_with(&db, None, None);
         let goal_ty = match adt_or_type_alias_id {
-            Either::Left(adt_id) => crate::next_solver::Ty::new_adt(
+            Either::Left(adt_id) => crate::next_solver::Ty::new_adt_id(
                 interner,
                 adt_id,
                 GenericArgs::identity_for_item(interner, adt_id.into()),
@@ -137,7 +136,7 @@ fn eval_expr(
             .unwrap()
             .0;
         let infer = db.infer(function_id.into());
-        let goal_ty = infer.type_of_binding[b];
+        let goal_ty = infer.type_of_binding[b].clone();
         db.layout_of_ty(goal_ty, db.trait_environment(function_id.into()))
     })
 }

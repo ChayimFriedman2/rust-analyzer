@@ -36,22 +36,13 @@ impl<'db> InferCtxt<'db> {
 
         let delegate = FnMutDelegate {
             regions: &mut |br: BoundRegion| {
-                Region::new_placeholder(
-                    self.interner,
-                    PlaceholderRegion { universe: next_universe, bound: br },
-                )
+                Region::new_placeholder(PlaceholderRegion { universe: next_universe, bound: br })
             },
             types: &mut |bound_ty: BoundTy| {
-                Ty::new_placeholder(
-                    self.interner,
-                    PlaceholderTy { universe: next_universe, bound: bound_ty },
-                )
+                Ty::new_placeholder(PlaceholderTy { universe: next_universe, bound: bound_ty })
             },
             consts: &mut |bound: BoundConst| {
-                Const::new_placeholder(
-                    self.interner,
-                    PlaceholderConst { universe: next_universe, bound },
-                )
+                Const::new_placeholder(PlaceholderConst { universe: next_universe, bound })
             },
         };
 

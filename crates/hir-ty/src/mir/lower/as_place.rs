@@ -2,7 +2,7 @@
 
 use hir_def::FunctionId;
 use intern::sym;
-use rustc_type_ir::inherent::{AdtDef, Region as _, Ty as _};
+use rustc_type_ir::inherent::AdtDef;
 
 use super::*;
 use crate::{
@@ -22,7 +22,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
         expr_id: ExprId,
         prev_block: BasicBlockId<'db>,
     ) -> Result<'db, Option<(Place<'db>, BasicBlockId<'db>)>> {
-        let ty = self.expr_ty_without_adjust(expr_id);
+        let ty = self.expr_ty_without_adjust(expr_id).o();
         let place = self.temp(ty, prev_block, expr_id.into())?;
         let Some(current) =
             self.lower_expr_to_place_without_adjust(expr_id, place.into(), prev_block)?
@@ -40,8 +40,9 @@ impl<'db> MirLowerCtx<'_, 'db> {
     ) -> Result<'db, Option<(Place<'db>, BasicBlockId<'db>)>> {
         let ty = adjustments
             .last()
-            .map(|it| it.target)
-            .unwrap_or_else(|| self.expr_ty_without_adjust(expr_id));
+            .map(|it| it.target.r())
+            .unwrap_or_else(|| self.expr_ty_without_adjust(expr_id))
+            .o();
         let place = self.temp(ty, prev_block, expr_id.into())?;
         let Some(current) =
             self.lower_expr_to_place_with_adjust(expr_id, place.into(), prev_block, adjustments)?
@@ -93,9 +94,10 @@ impl<'db> MirLowerCtx<'_, 'db> {
                         current,
                         r,
                         rest.last()
-                            .map(|it| it.target)
-                            .unwrap_or_else(|| self.expr_ty_without_adjust(expr_id)),
-                        last.target,
+                            .map(|it| it.target.r())
+                            .unwrap_or_else(|| self.expr_ty_without_adjust(expr_id))
+                            .o(),
+                        last.target.clone(),
                         expr_id.into(),
                         match od.0 {
                             Some(Mutability::Mut) => true,
@@ -153,12 +155,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
                     }
                     ValueNs::StaticId(s) => {
                         let ty = self.expr_ty_without_adjust(expr_id);
-                        let ref_ty = Ty::new_ref(
-                            self.interner(),
-                            Region::new_static(self.interner()),
-                            ty,
-                            Mutability::Not,
-                        );
+                        let ref_ty = Ty::new_ref(Region::new_static(), ty.o(), Mutability::Not);
                         let temp: Place<'db> = self.temp(ref_ty, current, expr_id.into())?.into();
                         self.push_assignment(
                             current,
@@ -193,8 +190,8 @@ impl<'db> MirLowerCtx<'_, 'db> {
                     return self.lower_overloaded_deref(
                         current,
                         p,
-                        self.expr_ty_without_adjust(*expr),
-                        self.expr_ty_without_adjust(expr_id),
+                        self.expr_ty_without_adjust(*expr).o(),
+                        self.expr_ty_without_adjust(expr_id).o(),
                         expr_id.into(),
                         'b: {
                             if let Some((f, _)) = self.infer.method_resolution(expr_id)
@@ -225,11 +222,11 @@ impl<'db> MirLowerCtx<'_, 'db> {
                 Ok(Some((r, current)))
             }
             Expr::Index { base, index } => {
-                let base_ty = self.expr_ty_after_adjustments(*base);
-                let index_ty = self.expr_ty_after_adjustments(*index);
+                let base_ty = self.expr_ty_after_adjustments(*base).o();
+                let index_ty = self.expr_ty_after_adjustments(*index).o();
                 if !matches!(index_ty.kind(), TyKind::Uint(rustc_ast_ir::UintTy::Usize))
                     || !matches!(
-                        base_ty.strip_reference().kind(),
+                        base_ty.r().strip_reference().kind(),
                         TyKind::Array(..) | TyKind::Slice(..)
                     )
                 {
@@ -238,6 +235,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
                             "[overloaded index]".to_owned(),
                         ));
                     };
+                    let index_fn = (index_fn.0, index_fn.1.o());
                     let Some((base_place, current)) =
                         self.lower_expr_as_place(current, *base, true)?
                     else {
@@ -252,7 +250,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
                         current,
                         base_place,
                         base_ty,
-                        self.expr_ty_without_adjust(expr_id),
+                        self.expr_ty_without_adjust(expr_id).o(),
                         index_operand,
                         expr_id.into(),
                         index_fn,
@@ -271,7 +269,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
                     return Ok(None);
                 };
                 let l_index =
-                    self.temp(self.expr_ty_after_adjustments(*index), current, expr_id.into())?;
+                    self.temp(self.expr_ty_after_adjustments(*index).o(), current, expr_id.into())?;
                 let Some(current) = self.lower_expr_to_place(*index, l_index.into(), current)?
                 else {
                     return Ok(None);
@@ -294,15 +292,13 @@ impl<'db> MirLowerCtx<'_, 'db> {
         span: MirSpan,
         index_fn: (FunctionId, GenericArgs<'db>),
     ) -> Result<'db, Option<(Place<'db>, BasicBlockId<'db>)>> {
-        let mutability = match base_ty.as_reference() {
+        let mutability = match base_ty.r().as_reference() {
             Some((_, _, mutability)) => mutability,
             None => Mutability::Not,
         };
-        let result_ref =
-            Ty::new_ref(self.interner(), Region::error(self.interner()), result_ty, mutability);
+        let result_ref = Ty::new_ref(Region::new_error(), result_ty, mutability);
         let mut result: Place<'db> = self.temp(result_ref, current, span)?.into();
         let index_fn_op = Operand::const_zst(Ty::new_fn_def(
-            self.interner(),
             CallableDefId::FunctionId(index_fn.0).into(),
             index_fn.1,
         ));
@@ -345,9 +341,9 @@ impl<'db> MirLowerCtx<'_, 'db> {
                 BorrowKind::Mut { kind: MutBorrowKind::Default },
             )
         };
-        let error_region = Region::error(self.interner());
-        let ty_ref = Ty::new_ref(self.interner(), error_region, source_ty, mutability);
-        let target_ty_ref = Ty::new_ref(self.interner(), error_region, target_ty, mutability);
+        let error_region = Region::new_error();
+        let ty_ref = Ty::new_ref(error_region.clone(), source_ty.clone(), mutability);
+        let target_ty_ref = Ty::new_ref(error_region, target_ty, mutability);
         let ref_place: Place<'db> = self.temp(ty_ref, current, span)?.into();
         self.push_assignment(current, ref_place, Rvalue::Ref(borrow_kind, place), span);
         let deref_trait = self
@@ -359,9 +355,8 @@ impl<'db> MirLowerCtx<'_, 'db> {
             .method_by_name(&trait_method_name)
             .ok_or(MirLowerError::LangItemNotFound(trait_lang_item))?;
         let deref_fn_op = Operand::const_zst(Ty::new_fn_def(
-            self.interner(),
             CallableDefId::FunctionId(deref_fn).into(),
-            GenericArgs::new_from_iter(self.interner(), [source_ty.into()]),
+            GenericArgs::new_from_array([source_ty.into()]),
         ));
         let mut result: Place<'db> = self.temp(target_ty_ref, current, span)?.into();
         let Some(current) = self.lower_call(

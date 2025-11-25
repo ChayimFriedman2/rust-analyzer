@@ -2,7 +2,7 @@
 
 use hir_def::{AdtId, lang_item::LangItem, signatures::StructFlags};
 use rustc_hash::FxHashSet;
-use rustc_type_ir::inherent::{AdtDef, IntoKind, SliceLike};
+use rustc_type_ir::inherent::{AdtDef, SliceLike};
 use stdx::never;
 use triomphe::Arc;
 
@@ -62,9 +62,11 @@ fn has_drop_glue_impl<'db>(
     visited: &mut FxHashSet<Ty<'db>>,
 ) -> DropGlue {
     let mut ocx = ObligationCtxt::new(infcx);
-    let ty = ocx.structurally_normalize_ty(&ObligationCause::dummy(), env.env, ty).unwrap_or(ty);
+    let ty = ocx
+        .structurally_normalize_ty(&ObligationCause::dummy(), env.env.r(), ty.clone())
+        .unwrap_or(ty);
 
-    if !visited.insert(ty) {
+    if !visited.insert(ty.clone()) {
         // Recursive type.
         return DropGlue::None;
     }
@@ -90,7 +92,7 @@ fn has_drop_glue_impl<'db>(
                         .map(|(_, field_ty)| {
                             has_drop_glue_impl(
                                 infcx,
-                                field_ty.instantiate(infcx.interner, subst),
+                                field_ty.clone().instantiate(infcx.interner, subst.r()),
                                 env.clone(),
                                 visited,
                             )
@@ -110,7 +112,7 @@ fn has_drop_glue_impl<'db>(
                             .map(|(_, field_ty)| {
                                 has_drop_glue_impl(
                                     infcx,
-                                    field_ty.instantiate(infcx.interner, subst),
+                                    field_ty.clone().instantiate(infcx.interner, subst.r()),
                                     env.clone(),
                                     visited,
                                 )
@@ -123,18 +125,19 @@ fn has_drop_glue_impl<'db>(
             }
         }
         TyKind::Tuple(tys) => tys
+            .r()
             .iter()
-            .map(|ty| has_drop_glue_impl(infcx, ty, env.clone(), visited))
+            .map(|ty| has_drop_glue_impl(infcx, ty.o(), env.clone(), visited))
             .max()
             .unwrap_or(DropGlue::None),
         TyKind::Array(ty, len) => {
-            if consteval::try_const_usize(db, len) == Some(0) {
+            if consteval::try_const_usize(db, len.r()) == Some(0) {
                 // Arrays of size 0 don't have drop glue.
                 return DropGlue::None;
             }
-            has_drop_glue_impl(infcx, ty, env, visited)
+            has_drop_glue_impl(infcx, ty.clone(), env, visited)
         }
-        TyKind::Slice(ty) => has_drop_glue_impl(infcx, ty, env, visited),
+        TyKind::Slice(ty) => has_drop_glue_impl(infcx, ty.clone(), env, visited),
         TyKind::Closure(closure_id, subst) => {
             let owner = db.lookup_intern_closure(closure_id.0).0;
             let infer = db.infer(owner);
@@ -143,7 +146,7 @@ fn has_drop_glue_impl<'db>(
             captures
                 .iter()
                 .map(|capture| {
-                    has_drop_glue_impl(infcx, capture.ty(db, subst), env.clone(), visited)
+                    has_drop_glue_impl(infcx, capture.ty(db, subst.r()), env.clone(), visited)
                 })
                 .max()
                 .unwrap_or(DropGlue::None)
@@ -169,14 +172,14 @@ fn has_drop_glue_impl<'db>(
         | TyKind::Placeholder(..) => DropGlue::None,
         TyKind::Dynamic(..) => DropGlue::HasDropGlue,
         TyKind::Alias(..) => {
-            if infcx.type_is_copy_modulo_regions(env.env, ty) {
+            if infcx.type_is_copy_modulo_regions(env.env.clone(), ty) {
                 DropGlue::None
             } else {
                 DropGlue::HasDropGlue
             }
         }
         TyKind::Param(_) => {
-            if infcx.type_is_copy_modulo_regions(env.env, ty) {
+            if infcx.type_is_copy_modulo_regions(env.env.clone(), ty) {
                 DropGlue::None
             } else {
                 DropGlue::DependOnParams

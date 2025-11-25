@@ -18,10 +18,7 @@ use hir_def::{
     type_ref::{TypeRef, TypeRefId},
 };
 use hir_expand::name::Name;
-use rustc_type_ir::{
-    AliasTerm, AliasTy, AliasTyKind,
-    inherent::{GenericArgs as _, Region as _, SliceLike, Ty as _},
-};
+use rustc_type_ir::{AliasTerm, AliasTy, AliasTyKind, inherent::SliceLike};
 use smallvec::SmallVec;
 use stdx::never;
 
@@ -35,8 +32,8 @@ use crate::{
         LifetimeElisionKind, PathDiagnosticCallbackData, named_associated_type_shorthand_candidates,
     },
     next_solver::{
-        Binder, Clause, Const, DbInterner, ErrorGuaranteed, GenericArg, GenericArgs, Predicate,
-        ProjectionPredicate, Region, TraitRef, Ty,
+        AsBorrowedSlice, Binder, Clause, Const, DbInterner, GenericArg, GenericArgs,
+        IteratorOwnedExt, Predicate, ProjectionPredicate, Region, TraitRef, Ty,
     },
 };
 
@@ -162,7 +159,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             }
             _ => {
                 // FIXME report error (ambiguous associated type)
-                (Ty::new_error(self.ctx.interner, ErrorGuaranteed), None)
+                (Ty::new_error(), None)
             }
         }
     }
@@ -182,11 +179,8 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             TypeNs::TraitId(trait_) => {
                 let ty = match remaining_segments.len() {
                     1 => {
-                        let trait_ref = self.lower_trait_ref_from_resolved_path(
-                            trait_,
-                            Ty::new_error(self.ctx.interner, ErrorGuaranteed),
-                            false,
-                        );
+                        let trait_ref =
+                            self.lower_trait_ref_from_resolved_path(trait_, Ty::new_error(), false);
                         tracing::debug!(?trait_ref);
                         self.skip_resolved_segment();
                         let segment = self.current_or_prev_segment;
@@ -208,14 +202,16 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                                     true,
                                 );
                                 let args = GenericArgs::new_from_iter(
-                                    self.ctx.interner,
                                     trait_ref
                                         .args
+                                        .r()
                                         .iter()
-                                        .chain(substitution.iter().skip(trait_ref.args.len())),
+                                        .chain(
+                                            substitution.r().iter().skip(trait_ref.args.r().len()),
+                                        )
+                                        .owned(),
                                 );
                                 Ty::new_alias(
-                                    self.ctx.interner,
                                     AliasTyKind::Projection,
                                     AliasTy::new_from_args(
                                         self.ctx.interner,
@@ -226,7 +222,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                             }
                             None => {
                                 // FIXME: report error (associated type not found)
-                                Ty::new_error(self.ctx.interner, ErrorGuaranteed)
+                                Ty::new_error()
                             }
                         }
                     }
@@ -234,11 +230,11 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                         // Trait object type without dyn; this should be handled in upstream. See
                         // `lower_path()`.
                         stdx::never!("unexpected fully resolved trait path");
-                        Ty::new_error(self.ctx.interner, ErrorGuaranteed)
+                        Ty::new_error()
                     }
                     _ => {
                         // FIXME report error (ambiguous associated type)
-                        Ty::new_error(self.ctx.interner, ErrorGuaranteed)
+                        Ty::new_error()
                     }
                 };
                 return (ty, None);
@@ -249,7 +245,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                 match idx {
                     None => {
                         never!("no matching generics");
-                        Ty::new_error(self.ctx.interner, ErrorGuaranteed)
+                        Ty::new_error()
                     }
                     Some(idx) => {
                         let (pidx, _param) = generics.iter().nth(idx).unwrap();
@@ -261,7 +257,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             TypeNs::SelfType(impl_id) => self.ctx.db.impl_self_ty(impl_id).skip_binder(),
             TypeNs::AdtSelfType(adt) => {
                 let args = GenericArgs::identity_for_item(self.ctx.interner, adt.into());
-                Ty::new_adt(self.ctx.interner, adt, args)
+                Ty::new_adt_id(self.ctx.interner, adt, args)
             }
 
             TypeNs::AdtId(it) => self.lower_path_inner(it.into(), infer_args),
@@ -269,7 +265,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             TypeNs::TypeAliasId(it) => self.lower_path_inner(it.into(), infer_args),
             // FIXME: report error
             TypeNs::EnumVariantId(_) | TypeNs::ModuleId(_) => {
-                return (Ty::new_error(self.ctx.interner, ErrorGuaranteed), None);
+                return (Ty::new_error(), None);
             }
         };
 
@@ -483,12 +479,12 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
     fn select_associated_type(&mut self, res: Option<TypeNs>, infer_args: bool) -> Ty<'db> {
         let interner = self.ctx.interner;
         let Some(res) = res else {
-            return Ty::new_error(self.ctx.interner, ErrorGuaranteed);
+            return Ty::new_error();
         };
         let def = self.ctx.def;
         let segment = self.current_or_prev_segment;
         let assoc_name = segment.name;
-        let check_alias = |name: &Name, t: TraitRef<'db>, associated_ty: TypeAliasId| {
+        let check_alias = |name: &Name, t: &TraitRef<'db>, associated_ty: TypeAliasId| {
             if name != assoc_name {
                 return None;
             }
@@ -501,14 +497,12 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                 self.substs_from_path_segment(associated_ty.into(), infer_args, None, true);
 
             let substs = GenericArgs::new_from_iter(
-                interner,
-                t.args.iter().chain(substs.iter().skip(t.args.len())),
+                t.args.r().iter().chain(substs.r().iter().skip(t.args.r().len())).owned(),
             );
 
             Some(Ty::new_alias(
-                interner,
                 AliasTyKind::Projection,
-                AliasTy::new(interner, associated_ty.into(), substs),
+                AliasTy::new_from_args(interner, associated_ty.into(), substs),
             ))
         };
         named_associated_type_shorthand_candidates(
@@ -518,20 +512,20 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             Some(assoc_name.clone()),
             check_alias,
         )
-        .unwrap_or_else(|| Ty::new_error(interner, ErrorGuaranteed))
+        .unwrap_or_else(|| Ty::new_error())
     }
 
     fn lower_path_inner(&mut self, typeable: TyDefId, infer_args: bool) -> Ty<'db> {
         let generic_def = match typeable {
             TyDefId::BuiltinType(builtinty) => {
-                return Ty::from_builtin_type(self.ctx.interner, builtinty);
+                return Ty::from_builtin_type(builtinty);
             }
             TyDefId::AdtId(it) => it.into(),
             TyDefId::TypeAliasId(it) => it.into(),
         };
         let args = self.substs_from_path_segment(generic_def, infer_args, None, false);
         let ty = ty_query(self.ctx.db, typeable);
-        ty.instantiate(self.ctx.interner, args)
+        ty.instantiate(self.ctx.interner, args.r())
     }
 
     /// Collect generic arguments from a path into a `Substs`. See also
@@ -545,7 +539,6 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
         infer_args: bool,
         lowering_assoc_type_generics: bool,
     ) -> GenericArgs<'db> {
-        let interner = self.ctx.interner;
         let prev_current_segment_idx = self.current_segment_idx;
         let prev_current_segment = self.current_or_prev_segment;
 
@@ -555,7 +548,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             ValueTyDefId::UnionId(it) => it.into(),
             ValueTyDefId::ConstId(it) => it.into(),
             ValueTyDefId::StaticId(_) => {
-                return GenericArgs::new_from_iter(interner, []);
+                return GenericArgs::default();
             }
             ValueTyDefId::EnumVariantId(var) => {
                 // the generic args for an enum variant may be either specified
@@ -739,17 +732,14 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                 infer_args: bool,
                 preceding_args: &[GenericArg<'db>],
             ) -> GenericArg<'db> {
-                let default =
-                    || {
-                        self.ctx.ctx.db.generic_defaults(def).get(preceding_args.len()).map(
-                            |default| default.instantiate(self.ctx.ctx.interner, preceding_args),
-                        )
-                    };
+                let default = || {
+                    self.ctx.ctx.db.generic_defaults(def).get(preceding_args.len()).map(|default| {
+                        default
+                            .instantiate(self.ctx.ctx.interner, preceding_args.as_borrowed_slice())
+                    })
+                };
                 match param {
-                    GenericParamDataRef::LifetimeParamData(_) => {
-                        Region::new(self.ctx.ctx.interner, rustc_type_ir::ReError(ErrorGuaranteed))
-                            .into()
-                    }
+                    GenericParamDataRef::LifetimeParamData(_) => Region::new_error().into(),
                     GenericParamDataRef::TypeParamData(param) => {
                         if !infer_args
                             && param.default.is_some()
@@ -757,7 +747,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                         {
                             return default;
                         }
-                        Ty::new_error(self.ctx.ctx.interner, ErrorGuaranteed).into()
+                        Ty::new_error().into()
                     }
                     GenericParamDataRef::ConstParamData(param) => {
                         if !infer_args
@@ -776,16 +766,11 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
 
             fn parent_arg(&mut self, _param_idx: u32, param_id: GenericParamId) -> GenericArg<'db> {
                 match param_id {
-                    GenericParamId::TypeParamId(_) => {
-                        Ty::new_error(self.ctx.ctx.interner, ErrorGuaranteed).into()
-                    }
+                    GenericParamId::TypeParamId(_) => Ty::new_error().into(),
                     GenericParamId::ConstParamId(const_id) => {
                         unknown_const_as_generic(const_param_ty_query(self.ctx.ctx.db, const_id))
                     }
-                    GenericParamId::LifetimeParamId(_) => {
-                        Region::new(self.ctx.ctx.interner, rustc_type_ir::ReError(ErrorGuaranteed))
-                            .into()
-                    }
+                    GenericParamId::LifetimeParamId(_) => Region::new_error().into(),
                 }
             }
 
@@ -861,7 +846,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
             args_and_bindings.bindings.iter().enumerate().flat_map(move |(binding_idx, binding)| {
                 let found = associated_type_by_name_including_super_traits(
                     self.ctx.db,
-                    trait_ref,
+                    trait_ref.clone(),
                     &binding.name,
                 );
                 let (super_trait_ref, associated_ty) = match found {
@@ -878,7 +863,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                             binding.args.as_ref(),
                             associated_ty.into(),
                             false, // this is not relevant
-                            Some(super_trait_ref.self_ty()),
+                            Some(super_trait_ref.self_ty().o()),
                             PathGenericsSource::AssocType {
                                 segment: this.current_segment_u32(),
                                 assoc_type: binding_idx as u32,
@@ -888,11 +873,15 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                         )
                     });
                 let args = GenericArgs::new_from_iter(
-                    interner,
-                    super_trait_ref.args.iter().chain(args.iter().skip(super_trait_ref.args.len())),
+                    super_trait_ref
+                        .args
+                        .r()
+                        .iter()
+                        .chain(args.r().iter().skip(super_trait_ref.args.r().len()))
+                        .owned(),
                 );
                 let projection_term =
-                    AliasTerm::new_from_args(interner, associated_ty.into(), args);
+                    AliasTerm::new_from_args(interner, associated_ty.into(), args.clone());
                 let mut predicates: SmallVec<[_; 1]> = SmallVec::with_capacity(
                     binding.type_ref.as_ref().map_or(0, |_| 1) + binding.bounds.len(),
                 );
@@ -912,32 +901,37 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                                 ImplTraitLoweringMode::Disallowed | ImplTraitLoweringMode::Opaque,
                             ) => {
                                 let ty = this.ctx.lower_ty(type_ref);
-                                let pred = Clause(Predicate::new(
-                                    interner,
-                                    Binder::dummy(rustc_type_ir::PredicateKind::Clause(
+                                let pred = Clause(Predicate::new(Binder::dummy(
+                                    rustc_type_ir::PredicateKind::Clause(
                                         rustc_type_ir::ClauseKind::Projection(
                                             ProjectionPredicate {
                                                 projection_term,
                                                 term: ty.into(),
                                             },
                                         ),
-                                    )),
-                                ));
+                                    ),
+                                )));
                                 predicates.push(pred);
                             }
                         }
                     })
                 }
                 for bound in binding.bounds.iter() {
-                    predicates.extend(self.ctx.lower_type_bound(
-                        bound,
-                        Ty::new_alias(
-                            self.ctx.interner,
-                            AliasTyKind::Projection,
-                            AliasTy::new_from_args(self.ctx.interner, associated_ty.into(), args),
+                    predicates.extend(
+                        self.ctx.lower_type_bound(
+                            bound,
+                            Ty::new_alias(
+                                AliasTyKind::Projection,
+                                AliasTy::new_from_args(
+                                    self.ctx.interner,
+                                    associated_ty.into(),
+                                    args.clone(),
+                                ),
+                            )
+                            .r(),
+                            false,
                         ),
-                        false,
-                    ));
+                    );
                 }
                 predicates
             })
@@ -1100,8 +1094,6 @@ pub(crate) fn substs_from_args_and_bindings<'db>(
     explicit_self_ty: Option<Ty<'db>>,
     ctx: &mut impl GenericArgsLowerer<'db>,
 ) -> GenericArgs<'db> {
-    let interner = DbInterner::new_with(db, None, None);
-
     tracing::debug!(?args_and_bindings);
 
     // Order is
@@ -1264,9 +1256,9 @@ pub(crate) fn substs_from_args_and_bindings<'db>(
                             ctx.inferred_kind(def, param_id, param, infer_args, &substs)
                         }
                         LifetimeElisionKind::StaticIfNoLifetimeInScope { only_lint: _ } => {
-                            Region::new_static(interner).into()
+                            Region::new_static().into()
                         }
-                        LifetimeElisionKind::Elided(lifetime) => (*lifetime).into(),
+                        LifetimeElisionKind::Elided(lifetime) => lifetime.clone().into(),
                         LifetimeElisionKind::AnonymousCreateParameter { report_in_path: false }
                         | LifetimeElisionKind::Infer => {
                             // FIXME: With `AnonymousCreateParameter`, we need to create a new lifetime parameter here
@@ -1285,7 +1277,7 @@ pub(crate) fn substs_from_args_and_bindings<'db>(
         }
     }
 
-    GenericArgs::new_from_iter(interner, substs)
+    GenericArgs::new_from_vec(substs)
 }
 
 fn type_looks_like_const(
@@ -1306,15 +1298,5 @@ fn type_looks_like_const(
 }
 
 fn unknown_subst<'db>(interner: DbInterner<'db>, def: impl Into<GenericDefId>) -> GenericArgs<'db> {
-    let params = generics(interner.db(), def.into());
-    GenericArgs::new_from_iter(
-        interner,
-        params.iter_id().map(|id| match id {
-            GenericParamId::TypeParamId(_) => Ty::new_error(interner, ErrorGuaranteed).into(),
-            GenericParamId::ConstParamId(id) => {
-                unknown_const_as_generic(const_param_ty_query(interner.db(), id))
-            }
-            GenericParamId::LifetimeParamId(_) => Region::error(interner).into(),
-        }),
-    )
+    GenericArgs::error_for_item(interner, def.into().into())
 }

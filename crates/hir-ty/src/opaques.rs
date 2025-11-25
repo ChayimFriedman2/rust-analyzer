@@ -5,7 +5,6 @@ use hir_def::{
 };
 use hir_expand::name::Name;
 use la_arena::ArenaMap;
-use rustc_type_ir::inherent::Ty as _;
 use syntax::ast;
 
 use crate::{
@@ -13,7 +12,7 @@ use crate::{
     db::{HirDatabase, InternedOpaqueTyId},
     lower::{ImplTraitIdx, ImplTraits},
     next_solver::{
-        DbInterner, EarlyBinder, ErrorGuaranteed, SolverDefId, Ty, TypingMode,
+        DbInterner, EarlyBinder, SolverDefId, Ty, TypingMode,
         infer::{DbInternerInferExt, traits::ObligationCause},
         obligation_ctxt::ObligationCtxt,
     },
@@ -97,7 +96,7 @@ pub(crate) fn rpit_hidden_types<'db>(
     let infer = db.infer(function.into());
     let mut result = ArenaMap::new();
     for (opaque, hidden_type) in infer.return_position_impl_trait_types(db) {
-        result.insert(opaque, EarlyBinder::bind(hidden_type));
+        result.insert(opaque, EarlyBinder::bind(hidden_type.o()));
     }
     result.shrink_to_fit();
     result
@@ -122,14 +121,15 @@ pub(crate) fn tait_hidden_types<'db>(
     let infcx = interner.infer_ctxt().build(TypingMode::non_body_analysis());
     let mut ocx = ObligationCtxt::new(&infcx);
     let cause = ObligationCause::dummy();
-    let param_env = db.trait_environment(type_alias.into()).env;
+    let env = db.trait_environment(type_alias.into());
+    let param_env = env.env.r();
 
     let defining_bodies = tait_defining_bodies(db, &loc);
 
     let mut result = ArenaMap::with_capacity(taits_count);
     for defining_body in defining_bodies {
         let infer = db.infer(defining_body);
-        for (&opaque, &hidden_type) in &infer.type_of_opaque {
+        for (opaque, hidden_type) in &infer.type_of_opaque {
             let ImplTraitId::TypeAliasImplTrait(opaque_owner, opaque_idx) = opaque.loc(db) else {
                 continue;
             };
@@ -138,13 +138,18 @@ pub(crate) fn tait_hidden_types<'db>(
             }
             // In the presence of errors, we attempt to create a unified type from all
             // types. rustc doesn't do that, but this should improve the experience.
-            let hidden_type = infcx.insert_type_vars(hidden_type);
+            let hidden_type = infcx.insert_type_vars(hidden_type.clone());
             match result.entry(opaque_idx) {
                 la_arena::Entry::Vacant(entry) => {
                     entry.insert(EarlyBinder::bind(hidden_type));
                 }
                 la_arena::Entry::Occupied(entry) => {
-                    _ = ocx.eq(&cause, param_env, entry.get().instantiate_identity(), hidden_type);
+                    _ = ocx.eq(
+                        &cause,
+                        param_env,
+                        entry.get().map_bound_ref(|it| it.r()).instantiate_identity(),
+                        hidden_type.r(),
+                    );
                 }
             }
         }
@@ -157,11 +162,13 @@ pub(crate) fn tait_hidden_types<'db>(
         let idx = la_arena::Idx::from_raw(la_arena::RawIdx::from_u32(idx as u32));
         match result.entry(idx) {
             la_arena::Entry::Vacant(entry) => {
-                entry.insert(EarlyBinder::bind(Ty::new_error(interner, ErrorGuaranteed)));
+                entry.insert(EarlyBinder::bind(Ty::new_error()));
             }
             la_arena::Entry::Occupied(mut entry) => {
-                *entry.get_mut() = entry.get().map_bound(|hidden_type| {
-                    infcx.resolve_vars_if_possible(hidden_type).replace_infer_with_error(interner)
+                *entry.get_mut() = entry.get().map_bound_ref(|hidden_type| {
+                    infcx
+                        .resolve_vars_if_possible(hidden_type.clone())
+                        .replace_infer_with_error(interner)
                 });
             }
         }

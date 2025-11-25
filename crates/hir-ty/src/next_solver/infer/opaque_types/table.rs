@@ -80,8 +80,8 @@ impl<'db> OpaqueTypeStorage<'db> {
         self.opaque_types
             .iter()
             .skip(prev_entries.opaque_types)
-            .map(|(k, v)| (*k, *v))
-            .chain(self.duplicate_entries.iter().skip(prev_entries.duplicate_entries).copied())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .chain(self.duplicate_entries.iter().skip(prev_entries.duplicate_entries).cloned())
     }
 
     /// Only returns the opaque types from the lookup table. These are used
@@ -92,7 +92,7 @@ impl<'db> OpaqueTypeStorage<'db> {
     pub(crate) fn iter_lookup_table(
         &self,
     ) -> impl Iterator<Item = (OpaqueTypeKey<'db>, OpaqueHiddenType<'db>)> {
-        self.opaque_types.iter().map(|(k, v)| (*k, *v))
+        self.opaque_types.iter().map(|(k, v)| (k.clone(), v.clone()))
     }
 
     /// Only returns the opaque types which are stored in `duplicate_entries`.
@@ -103,14 +103,17 @@ impl<'db> OpaqueTypeStorage<'db> {
     pub(crate) fn iter_duplicate_entries(
         &self,
     ) -> impl Iterator<Item = (OpaqueTypeKey<'db>, OpaqueHiddenType<'db>)> {
-        self.duplicate_entries.iter().copied()
+        self.duplicate_entries.iter().cloned()
     }
 
     pub(crate) fn iter_opaque_types(
         &self,
     ) -> impl Iterator<Item = (OpaqueTypeKey<'db>, OpaqueHiddenType<'db>)> {
         let OpaqueTypeStorage { opaque_types, duplicate_entries } = self;
-        opaque_types.iter().map(|(k, v)| (*k, *v)).chain(duplicate_entries.iter().copied())
+        opaque_types
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .chain(duplicate_entries.iter().cloned())
     }
 
     #[inline]
@@ -143,10 +146,10 @@ impl<'a, 'db> OpaqueTypeTable<'a, 'db> {
     ) -> Option<Ty<'db>> {
         if let Some(entry) = self.storage.opaque_types.get_mut(&key) {
             let prev = std::mem::replace(entry, hidden_type);
-            self.undo_log.push(UndoLog::OpaqueTypes(key, Some(prev)));
+            self.undo_log.push(UndoLog::OpaqueTypes(key, Some(prev.clone())));
             return Some(prev.ty);
         }
-        self.storage.opaque_types.insert(key, hidden_type);
+        self.storage.opaque_types.insert(key.clone(), hidden_type);
         self.undo_log.push(UndoLog::OpaqueTypes(key, None));
         None
     }

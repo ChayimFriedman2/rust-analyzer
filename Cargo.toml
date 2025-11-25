@@ -86,14 +86,14 @@ vfs-notify = { path = "./crates/vfs-notify", version = "0.0.0" }
 vfs = { path = "./crates/vfs", version = "0.0.0" }
 edition = { path = "./crates/edition", version = "0.0.0" }
 
-ra-ap-rustc_lexer = { version = "0.139", default-features = false }
-ra-ap-rustc_parse_format = { version = "0.139", default-features = false }
-ra-ap-rustc_index = { version = "0.139", default-features = false }
-ra-ap-rustc_abi = { version = "0.139", default-features = false }
-ra-ap-rustc_pattern_analysis = { version = "0.139", default-features = false }
-ra-ap-rustc_ast_ir = { version = "0.139", default-features = false }
-ra-ap-rustc_type_ir = { version = "0.139", default-features = false }
-ra-ap-rustc_next_trait_solver = { version = "0.139", default-features = false }
+ra-ap-rustc_lexer = { path = "../rust/compiler/rustc_lexer", package = "rustc_lexer", default-features = false }
+ra-ap-rustc_parse_format = { path = "../rust/compiler/rustc_parse_format", package = "rustc_parse_format", default-features = false }
+ra-ap-rustc_index = { path = "../rust/compiler/rustc_index", package = "rustc_index", default-features = false }
+ra-ap-rustc_abi = { path = "../rust/compiler/rustc_abi", package = "rustc_abi", default-features = false }
+ra-ap-rustc_pattern_analysis = { path = "../rust/compiler/rustc_pattern_analysis", package = "rustc_pattern_analysis", default-features = false }
+ra-ap-rustc_ast_ir = { path = "../rust/compiler/rustc_ast_ir", package = "rustc_ast_ir", default-features = false }
+ra-ap-rustc_type_ir = { path = "../rust/compiler/rustc_type_ir", package = "rustc_type_ir", default-features = false }
+ra-ap-rustc_next_trait_solver = { path = "../rust/compiler/rustc_next_trait_solver", package = "rustc_next_trait_solver", default-features = false }
 
 # local crates that aren't published to crates.io. These should not have versions.
 

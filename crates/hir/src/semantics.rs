@@ -1568,7 +1568,7 @@ impl<'db> SemanticsImpl<'db> {
             it.iter()
                 .map(|adjust| {
                     let target =
-                        Type::new_with_resolver(self.db, &analyzer.resolver, adjust.target);
+                        Type::new_with_resolver(self.db, &analyzer.resolver, adjust.target.clone());
                     let kind = match adjust.kind {
                         hir_ty::Adjust::NeverToAny => Adjust::NeverToAny,
                         hir_ty::Adjust::Deref(Some(hir_ty::OverloadedDeref(m))) => {
@@ -1663,7 +1663,7 @@ impl<'db> SemanticsImpl<'db> {
                 subst.next().expect("too few subst").ty.into()
             });
         assert!(subst.next().is_none(), "too many subst");
-        Some(self.db.lookup_impl_method(env.env, func.into(), substs).0.into())
+        Some(self.db.lookup_impl_method(env.env, func.into(), substs.r()).0.into())
     }
 
     fn resolve_range_pat(&self, range_pat: &ast::RangePat) -> Option<StructId> {

@@ -1,5 +1,3 @@
-pub(crate) use rustc_next_trait_solver::solve::inspect::*;
-
 use rustc_ast_ir::try_visit;
 use rustc_next_trait_solver::{
     canonical::instantiate_canonical_state,
@@ -8,12 +6,12 @@ use rustc_next_trait_solver::{
 };
 use rustc_type_ir::{
     VisitorResult,
-    inherent::{IntoKind, Span as _},
+    inherent::Span as _,
     solve::{Certainty, GoalSource, MaybeCause, NoSolution},
 };
 
 use crate::next_solver::{
-    DbInterner, GenericArg, GenericArgs, Goal, NormalizesTo, ParamEnv, Predicate, PredicateKind,
+    DbInterner, GenericArg, GenericArgs, Goal, NormalizesTo, ParamEnvRef, Predicate, PredicateKind,
     QueryResult, SolverContext, Span, Term,
     fulfill::NextSolverError,
     infer::{
@@ -73,7 +71,7 @@ impl<'a, 'db> std::fmt::Debug for InspectCandidate<'a, 'db> {
 /// not something we want to leak to users. We therefore
 /// treat `NormalizesTo` goals as if they apply the expected
 /// type at the end of each candidate.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 struct NormalizesToTermHack<'db> {
     term: Term<'db>,
     unconstrained_term: Term<'db>,
@@ -86,11 +84,11 @@ impl<'db> NormalizesToTermHack<'db> {
     fn constrain_and(
         &self,
         infcx: &InferCtxt<'db>,
-        param_env: ParamEnv<'db>,
+        param_env: ParamEnvRef<'_, 'db>,
         f: impl FnOnce(&mut ObligationCtxt<'_, 'db>),
     ) -> Result<Certainty, NoSolution> {
         let mut ocx = ObligationCtxt::new(infcx);
-        ocx.eq(&ObligationCause::dummy(), param_env, self.term, self.unconstrained_term)?;
+        ocx.eq(&ObligationCause::dummy(), param_env, self.term.r(), self.unconstrained_term.r())?;
         f(&mut ocx);
         let errors = ocx.evaluate_obligations_error_on_ambiguity();
         if errors.is_empty() {
@@ -113,12 +111,15 @@ pub(crate) struct InspectCandidate<'a, 'db> {
 }
 
 impl<'a, 'db> InspectCandidate<'a, 'db> {
-    pub(crate) fn kind(&self) -> inspect::ProbeKind<DbInterner<'db>> {
-        self.kind
+    pub(crate) fn kind(&self) -> &inspect::ProbeKind<DbInterner<'db>> {
+        &self.kind
     }
 
     pub(crate) fn result(&self) -> Result<Certainty, NoSolution> {
-        self.result.map(|c| c.value.certainty)
+        match &self.result {
+            Ok(c) => Ok(c.value.certainty),
+            Err(it) => Err(*it),
+        }
     }
 
     pub(crate) fn goal(&self) -> &'a InspectGoal<'a, 'db> {
@@ -157,20 +158,20 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
     /// See [`Self::instantiate_impl_args`] if you need the impl args too.
     pub(crate) fn instantiate_nested_goals(&self) -> Vec<InspectGoal<'a, 'db>> {
         let infcx = self.goal.infcx;
-        let param_env = self.goal.goal.param_env;
+        let param_env = self.goal.goal.param_env.r();
         let mut orig_values = self.goal.orig_values.to_vec();
 
         let mut instantiated_goals = vec![];
         for step in &self.steps {
-            match **step {
+            match step {
                 inspect::ProbeStep::AddGoal(source, goal) => instantiated_goals.push((
-                    source,
+                    *source,
                     instantiate_canonical_state(
                         infcx,
                         Span::dummy(),
                         param_env,
                         &mut orig_values,
-                        goal,
+                        goal.clone(),
                     ),
                 )),
                 inspect::ProbeStep::RecordImplArgs { .. } => {}
@@ -184,7 +185,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
             Span::dummy(),
             param_env,
             &mut orig_values,
-            self.final_state,
+            self.final_state.clone(),
         );
 
         if let Some(term_hack) = &self.goal.normalizes_to_term_hack {
@@ -205,18 +206,18 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
     /// `infcx`.
     pub(crate) fn instantiate_impl_args(&self) -> GenericArgs<'db> {
         let infcx = self.goal.infcx;
-        let param_env = self.goal.goal.param_env;
+        let param_env = self.goal.goal.param_env.r();
         let mut orig_values = self.goal.orig_values.to_vec();
 
         for step in &self.steps {
-            match **step {
+            match step {
                 inspect::ProbeStep::RecordImplArgs { impl_args } => {
                     let impl_args = instantiate_canonical_state(
                         infcx,
                         Span::dummy(),
                         param_env,
                         &mut orig_values,
-                        impl_args,
+                        impl_args.clone(),
                     );
 
                     let () = instantiate_canonical_state(
@@ -224,7 +225,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
                         Span::dummy(),
                         param_env,
                         &mut orig_values,
-                        self.final_state,
+                        self.final_state.clone(),
                     );
 
                     // No reason we couldn't support this, but we don't need to for select.
@@ -250,18 +251,21 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
         goal: Goal<'db, Predicate<'db>>,
     ) -> InspectGoal<'a, 'db> {
         let infcx = self.goal.infcx;
-        match goal.predicate.kind().no_bound_vars() {
+        match goal.predicate.kind().no_bound_vars_ref() {
             Some(PredicateKind::NormalizesTo(NormalizesTo { alias, term })) => {
-                let unconstrained_term = infcx.next_term_var_of_kind(term);
-                let goal =
-                    goal.with(infcx.interner, NormalizesTo { alias, term: unconstrained_term });
+                let unconstrained_term = infcx.next_term_var_of_kind(term.r());
+                let goal = goal.with(
+                    infcx.interner,
+                    NormalizesTo { alias: alias.clone(), term: unconstrained_term.clone() },
+                );
                 // We have to use a `probe` here as evaluating a `NormalizesTo` can constrain the
                 // expected term. This means that candidates which only fail due to nested goals
                 // and which normalize to a different term then the final result could ICE: when
                 // building their proof tree, the expected term was unconstrained, but when
                 // instantiating the candidate it is already constrained to the result of another
                 // candidate.
-                let normalizes_to_term_hack = NormalizesToTermHack { term, unconstrained_term };
+                let normalizes_to_term_hack =
+                    NormalizesToTermHack { term: term.clone(), unconstrained_term };
                 let (proof_tree, nested_goals_result) = infcx.probe(|_| {
                     // Here, if we have any nested goals, then we make sure to apply them
                     // considering the constrained RHS, and pass the resulting certainty to
@@ -272,7 +276,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
                     let nested_goals_result = nested.and_then(|nested| {
                         normalizes_to_term_hack.constrain_and(
                             infcx,
-                            proof_tree.uncanonicalized_goal.param_env,
+                            proof_tree.uncanonicalized_goal.param_env.r(),
                             |ocx| {
                                 ocx.register_obligations(nested.0.into_iter().map(|(_, goal)| {
                                     Obligation::new(
@@ -324,18 +328,20 @@ impl<'a, 'db> InspectGoal<'a, 'db> {
         self.infcx
     }
 
-    pub(crate) fn goal(&self) -> Goal<'db, Predicate<'db>> {
-        self.goal
+    pub(crate) fn goal(&self) -> &Goal<'db, Predicate<'db>> {
+        &self.goal
     }
 
     pub(crate) fn result(&self) -> Result<Certainty, NoSolution> {
         self.result
     }
 
+    #[expect(unused, reason = "rustc has this")]
     pub(crate) fn source(&self) -> GoalSource {
         self.source
     }
 
+    #[expect(unused, reason = "rustc has this")]
     pub(crate) fn depth(&self) -> usize {
         self.depth
     }
@@ -382,7 +388,7 @@ impl<'a, 'db> InspectGoal<'a, 'db> {
             }
         }
 
-        match probe.kind {
+        match &probe.kind {
             inspect::ProbeKind::ProjectionCompatibility
             | inspect::ProbeKind::ShadowedEnvProbing => {
                 panic!()
@@ -401,11 +407,11 @@ impl<'a, 'db> InspectGoal<'a, 'db> {
                 if let Some(shallow_certainty) = shallow_certainty {
                     candidates.push(InspectCandidate {
                         goal: self,
-                        kind: probe.kind,
+                        kind: probe.kind.clone(),
                         steps: steps.clone(),
-                        final_state: probe.final_state,
+                        final_state: probe.final_state.clone(),
                         shallow_certainty,
-                        result,
+                        result: result.clone(),
                     });
                 }
             }
@@ -448,7 +454,7 @@ impl<'a, 'db> InspectGoal<'a, 'db> {
         // constraining the normalizes-to RHS and computing the nested goals.
         let result = result.and_then(|ok| {
             let nested_goals_certainty =
-                term_hack_and_nested_certainty.map_or(Ok(Certainty::Yes), |(_, c)| c)?;
+                term_hack_and_nested_certainty.as_ref().map_or(Ok(Certainty::Yes), |(_, c)| *c)?;
             Ok(ok.value.certainty.and(nested_goals_certainty))
         });
 

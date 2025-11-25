@@ -29,8 +29,7 @@ use crate::next_solver::{
 use instantiate::CanonicalExt;
 use macros::{TypeFoldable, TypeVisitable};
 use rustc_index::IndexVec;
-use rustc_type_ir::inherent::IntoKind;
-use rustc_type_ir::{CanonicalVarKind, InferTy, TypeFoldable, UniverseIndex, inherent::Ty as _};
+use rustc_type_ir::{CanonicalVarKind, InferTy, TypeFoldable, UniverseIndex};
 
 pub mod canonicalizer;
 pub mod instantiate;
@@ -70,7 +69,7 @@ impl<'db> InferCtxt<'db> {
 
         let var_values = CanonicalVarValues::instantiate(
             self.interner,
-            canonical.variables,
+            canonical.variables.r(),
             |var_values, info| self.instantiate_canonical_var(info, var_values, |ui| universes[ui]),
         );
         let result = canonical.instantiate(self.interner, &var_values);
@@ -97,13 +96,13 @@ impl<'db> InferCtxt<'db> {
                 // If this inference variable is related to an earlier variable
                 // via subtyping, we need to add that info to the inference context.
                 if let Some(prev) = previous_var_values.get(sub_root.as_usize()) {
-                    if let TyKind::Infer(InferTy::TyVar(sub_root)) = prev.expect_ty().kind() {
+                    if let TyKind::Infer(InferTy::TyVar(sub_root)) = *prev.r().expect_ty().kind() {
                         self.sub_unify_ty_vids_raw(vid, sub_root);
                     } else {
                         unreachable!()
                     }
                 }
-                Ty::new_var(self.interner, vid).into()
+                Ty::new_var(vid).into()
             }
 
             CanonicalVarKind::Int => self.next_int_var().into(),
@@ -113,7 +112,7 @@ impl<'db> InferCtxt<'db> {
             CanonicalVarKind::PlaceholderTy(PlaceholderTy { universe, bound }) => {
                 let universe_mapped = universe_map(universe);
                 let placeholder_mapped = PlaceholderTy { universe: universe_mapped, bound };
-                Ty::new_placeholder(self.interner, placeholder_mapped).into()
+                Ty::new_placeholder(placeholder_mapped).into()
             }
 
             CanonicalVarKind::Region(ui) => {
@@ -125,14 +124,14 @@ impl<'db> InferCtxt<'db> {
                 let placeholder_mapped: crate::next_solver::Placeholder<
                     crate::next_solver::BoundRegion,
                 > = PlaceholderRegion { universe: universe_mapped, bound };
-                Region::new_placeholder(self.interner, placeholder_mapped).into()
+                Region::new_placeholder(placeholder_mapped).into()
             }
 
             CanonicalVarKind::Const(ui) => self.next_const_var_in_universe(universe_map(ui)).into(),
             CanonicalVarKind::PlaceholderConst(PlaceholderConst { universe, bound }) => {
                 let universe_mapped = universe_map(universe);
                 let placeholder_mapped = PlaceholderConst { universe: universe_mapped, bound };
-                Const::new_placeholder(self.interner, placeholder_mapped).into()
+                Const::new_placeholder(placeholder_mapped).into()
             }
         }
     }

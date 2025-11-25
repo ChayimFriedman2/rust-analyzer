@@ -31,10 +31,11 @@ impl<'db, Ctx: AutoderefCtx<'db>> GeneralAutoderef<'db, Ctx> {
             return InferOk { obligations: PredicateObligations::new(), value: vec![] };
         }
 
-        let targets = steps.iter().skip(1).map(|&(ty, _)| ty).chain(iter::once(self.final_ty()));
+        let targets =
+            steps.iter().skip(1).map(|(ty, _)| ty.clone()).chain(iter::once(self.final_ty().o()));
         let steps: Vec<_> = steps
             .iter()
-            .map(|&(_source, kind)| {
+            .map(|(_source, kind)| {
                 if let AutoderefKind::Overloaded = kind {
                     Some(OverloadedDeref(Some(Mutability::Not)))
                 } else {

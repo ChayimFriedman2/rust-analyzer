@@ -1,4 +1,4 @@
-use rustc_type_ir::{AliasRelationDirection, inherent::Term as _};
+use rustc_type_ir::{AliasRelationDirection, inherent::TermRef as _};
 
 use crate::next_solver::{
     Const, PredicateKind, Term, Ty,
@@ -28,13 +28,13 @@ impl<'db> At<'_, 'db> {
         term: Term<'db>,
         fulfill_cx: &mut FulfillmentCtxt<'db>,
     ) -> Result<Term<'db>, Vec<NextSolverError<'db>>> {
-        assert!(!term.is_infer(), "should have resolved vars before calling");
+        assert!(!term.r().is_infer(), "should have resolved vars before calling");
 
-        if term.to_alias_term().is_none() {
+        if !term.r().is_alias_term() {
             return Ok(term);
         }
 
-        let new_infer = self.infcx.next_term_var_of_kind(term);
+        let new_infer = self.infcx.next_term_var_of_kind(term.r());
 
         // We simply emit an `alias-eq` goal here, since that will take care of
         // normalizing the LHS of the projection until it is a rigid projection
@@ -42,8 +42,8 @@ impl<'db> At<'_, 'db> {
         let obligation = Obligation::new(
             self.infcx.interner,
             self.cause.clone(),
-            self.param_env,
-            PredicateKind::AliasRelate(term, new_infer, AliasRelationDirection::Equate),
+            self.param_env.o(),
+            PredicateKind::AliasRelate(term, new_infer.clone(), AliasRelationDirection::Equate),
         );
 
         fulfill_cx.register_predicate_obligation(self.infcx, obligation);

@@ -2,7 +2,7 @@
 
 use rustc_type_ir::{
     BoundVarIndexKind, DebruijnIndex, RegionKind, TypeFoldable, TypeFolder, TypeSuperFoldable,
-    TypeVisitableExt, inherent::IntoKind,
+    TypeVisitableExt,
 };
 
 use crate::next_solver::{BoundConst, FxIndexMap};
@@ -78,7 +78,7 @@ where
     }
 
     fn fold_ty(&mut self, t: Ty<'db>) -> Ty<'db> {
-        match t.kind() {
+        match *t.kind() {
             TyKind::Bound(BoundVarIndexKind::Bound(debruijn), bound_ty)
                 if debruijn == self.current_index =>
             {
@@ -97,19 +97,19 @@ where
     }
 
     fn fold_region(&mut self, r: Region<'db>) -> Region<'db> {
-        match r.kind() {
+        match *r.kind() {
             RegionKind::ReBound(BoundVarIndexKind::Bound(debruijn), br)
                 if debruijn == self.current_index =>
             {
                 let region = self.delegate.replace_region(br);
-                if let RegionKind::ReBound(BoundVarIndexKind::Bound(debruijn1), br) = region.kind()
+                if let RegionKind::ReBound(BoundVarIndexKind::Bound(debruijn1), br) = *region.kind()
                 {
                     // If the callback returns a bound region,
                     // that region should always use the INNERMOST
                     // debruijn index. Then we adjust it to the
                     // correct depth.
                     assert_eq!(debruijn1, DebruijnIndex::ZERO);
-                    Region::new_bound(self.interner, debruijn, br)
+                    Region::new_bound(debruijn, br)
                 } else {
                     region
                 }
@@ -119,7 +119,7 @@ where
     }
 
     fn fold_const(&mut self, ct: Const<'db>) -> Const<'db> {
-        match ct.kind() {
+        match *ct.kind() {
             ConstKind::Bound(BoundVarIndexKind::Bound(debruijn), bound_const)
                 if debruijn == self.current_index =>
             {
@@ -183,7 +183,8 @@ impl<'db> DbInterner<'db> {
         T: TypeFoldable<DbInterner<'db>>,
     {
         let mut region_map = FxIndexMap::default();
-        let real_fld_r = |br: BoundRegion| *region_map.entry(br).or_insert_with(|| fld_r(br));
+        let real_fld_r =
+            |br: BoundRegion| region_map.entry(br).or_insert_with(|| fld_r(br)).clone();
         let value = self.instantiate_bound_regions_uncached(value, real_fld_r);
         (value, region_map)
     }
@@ -217,6 +218,6 @@ impl<'db> DbInterner<'db> {
     where
         T: TypeFoldable<DbInterner<'db>>,
     {
-        self.instantiate_bound_regions(value, |_| Region::new_erased(self)).0
+        self.instantiate_bound_regions(value, |_| Region::new_erased()).0
     }
 }

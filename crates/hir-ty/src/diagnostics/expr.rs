@@ -15,7 +15,7 @@ use intern::sym;
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
 use rustc_pattern_analysis::constructor::Constructor;
-use rustc_type_ir::inherent::{AdtDef, IntoKind};
+use rustc_type_ir::inherent::AdtDef;
 use syntax::{
     AstNode,
     ast::{self, UnaryOp},
@@ -197,7 +197,7 @@ impl<'db> ExprValidator<'db> {
             }
 
             if let Some(receiver_ty) = self.infer.type_of_expr_with_adjust(*receiver) {
-                checker.prev_receiver_ty = Some(receiver_ty);
+                checker.prev_receiver_ty = Some(receiver_ty.o());
             }
         }
     }
@@ -209,6 +209,7 @@ impl<'db> ExprValidator<'db> {
         if scrut_ty.references_non_lt_error() {
             return;
         }
+        let scrut_ty = scrut_ty.o();
 
         let cx = MatchCheckCtx::new(self.owner.module(self.db()), &self.infcx, self.env.clone());
 
@@ -235,8 +236,9 @@ impl<'db> ExprValidator<'db> {
             // necessary.
             //
             // FIXME we should use the type checker for this.
-            if (pat_ty == scrut_ty
+            if (pat_ty == scrut_ty.r()
                 || scrut_ty
+                    .r()
                     .as_reference()
                     .map(|(match_expr_ty, ..)| match_expr_ty == pat_ty)
                     .unwrap_or(false))
@@ -262,11 +264,14 @@ impl<'db> ExprValidator<'db> {
         }
 
         let known_valid_scrutinee = Some(self.is_known_valid_scrutinee(scrutinee_expr));
-        let report =
-            match cx.compute_match_usefulness(m_arms.as_slice(), scrut_ty, known_valid_scrutinee) {
-                Ok(report) => report,
-                Err(()) => return,
-            };
+        let report = match cx.compute_match_usefulness(
+            m_arms.as_slice(),
+            scrut_ty.clone(),
+            known_valid_scrutinee,
+        ) {
+            Ok(report) => report,
+            Err(()) => return,
+        };
 
         // FIXME Report unreachable arms
         // https://github.com/rust-lang/rust/blob/f31622a50/compiler/rustc_mir_build/src/thir/pattern/check_match.rs#L200
@@ -345,6 +350,7 @@ impl<'db> ExprValidator<'db> {
             if ty.references_non_lt_error() {
                 continue;
             }
+            let ty = ty.o();
 
             let mut have_errors = false;
             let deconstructed_pat = self.lower_pattern(&cx, pat, &mut have_errors);
@@ -359,7 +365,7 @@ impl<'db> ExprValidator<'db> {
                 has_guard: false,
                 arm_data: (),
             };
-            let report = match cx.compute_match_usefulness(&[match_arm], ty, None) {
+            let report = match cx.compute_match_usefulness(&[match_arm], ty.clone(), None) {
                 Ok(v) => v,
                 Err(e) => {
                     debug!(?e, "match usefulness error");
@@ -543,7 +549,7 @@ impl<'db> FilterMapNextChecker<'db> {
             let is_dyn_trait = self
                 .prev_receiver_ty
                 .as_ref()
-                .is_some_and(|it| it.strip_references().dyn_trait().is_some());
+                .is_some_and(|it| it.r().strip_references().dyn_trait().is_some());
             if *receiver_expr_id == prev_filter_map_expr_id && !is_dyn_trait {
                 return Some(());
             }
@@ -657,7 +663,7 @@ fn missing_match_arms<'a, 'db>(
         }
     }
 
-    let non_empty_enum = match scrut_ty.as_adt() {
+    let non_empty_enum = match scrut_ty.r().as_adt() {
         Some((AdtId::EnumId(e), _)) => !e.enum_variants(cx.db).variants.is_empty(),
         _ => false,
     };

@@ -1,13 +1,12 @@
 use rustc_next_trait_solver::placeholder::BoundVarReplacer;
 use rustc_type_ir::{
-    AliasRelationDirection, FallibleTypeFolder, Flags, Interner, TermKind, TypeFoldable,
-    TypeFolder, TypeSuperFoldable, TypeVisitableExt, UniverseIndex,
-    inherent::{IntoKind, Term as _},
+    AliasRelationDirection, FallibleTypeFolder, Flags, Interner, TypeFoldable, TypeFolder,
+    TypeSuperFoldable, TypeVisitableExt, UniverseIndex,
 };
 
 use crate::next_solver::{
-    Binder, Const, ConstKind, DbInterner, Goal, ParamEnv, Predicate, PredicateKind, Term, Ty,
-    TyKind,
+    Binder, Const, ConstKind, DbInterner, Goal, OwnedTermKind, ParamEnvRef, Predicate,
+    PredicateKind, Term, Ty, TyKind,
     fulfill::{FulfillmentCtxt, NextSolverError},
     infer::{
         InferCtxt,
@@ -99,12 +98,16 @@ impl<'db> NormalizationFolder<'_, 'db> {
 
         self.depth += 1;
 
-        let infer_term = infcx.next_term_var_of_kind(alias_term);
+        let infer_term = infcx.next_term_var_of_kind(alias_term.r());
         let obligation = Obligation::new(
             interner,
             self.at.cause.clone(),
-            self.at.param_env,
-            PredicateKind::AliasRelate(alias_term, infer_term, AliasRelationDirection::Equate),
+            self.at.param_env.o(),
+            PredicateKind::AliasRelate(
+                alias_term,
+                infer_term.clone(),
+                AliasRelationDirection::Equate,
+            ),
         );
 
         if self.depth > recursion_limit {
@@ -126,9 +129,9 @@ impl<'db> NormalizationFolder<'_, 'db> {
         let term = infcx.resolve_vars_if_possible(infer_term);
         // super-folding the `term` will directly fold the `Ty` or `Const` so
         // we have to match on the term and super-fold them manually.
-        let result = match term.kind() {
-            TermKind::Ty(ty) => ty.try_super_fold_with(self)?.into(),
-            TermKind::Const(ct) => ct.try_super_fold_with(self)?.into(),
+        let result = match term.into_kind() {
+            OwnedTermKind::Ty(ty) => ty.try_super_fold_with(self)?.into(),
+            OwnedTermKind::Const(ct) => ct.try_super_fold_with(self)?.into(),
         };
         self.depth -= 1;
         Ok(result)
@@ -146,7 +149,7 @@ impl<'db> NormalizationFolder<'_, 'db> {
             self.fulfill_cx
                 .drain_stalled_obligations_for_coroutines(self.at.infcx)
                 .into_iter()
-                .map(|obl| obl.as_goal()),
+                .map(|obl| obl.into_goal()),
         );
 
         let errors = self.fulfill_cx.collect_remaining_errors(self.at.infcx);
@@ -177,7 +180,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for NormalizationFolder<'_, 'db> {
 
     fn try_fold_ty(&mut self, ty: Ty<'db>) -> Result<Ty<'db>, Self::Error> {
         let infcx = self.at.infcx;
-        debug_assert_eq!(ty, infcx.shallow_resolve(ty));
+        debug_assert_eq!(ty, infcx.shallow_resolve(ty.clone()));
         if !ty.has_aliases() {
             return Ok(ty);
         }
@@ -203,7 +206,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for NormalizationFolder<'_, 'db> {
 
     fn try_fold_const(&mut self, ct: Const<'db>) -> Result<Const<'db>, Self::Error> {
         let infcx = self.at.infcx;
-        debug_assert_eq!(ct, infcx.shallow_resolve_const(ct));
+        debug_assert_eq!(ct, infcx.shallow_resolve_const(ct.clone()));
         if !ct.has_aliases() {
             return Ok(ct);
         }
@@ -229,9 +232,10 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for NormalizationFolder<'_, 'db> {
 }
 
 // Deeply normalize a value and return it
+#[expect(unused, reason = "rustc has this")]
 pub(crate) fn deeply_normalize_for_diagnostics<'db, T: TypeFoldable<DbInterner<'db>>>(
     infcx: &InferCtxt<'db>,
-    param_env: ParamEnv<'db>,
+    param_env: ParamEnvRef<'_, 'db>,
     t: T,
 ) -> T {
     t.fold_with(&mut DeeplyNormalizeForDiagnosticsFolder {
@@ -253,7 +257,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for DeeplyNormalizeForDiagnosticsFolder<'_
         let result: Result<_, Vec<NextSolverError<'db>>> = infcx.commit_if_ok(|_| {
             deeply_normalize_with_skipped_universes_and_ambiguous_coroutine_goals(
                 self.at,
-                ty,
+                ty.clone(),
                 vec![None; ty.outer_exclusive_binder().as_usize()],
             )
         });
@@ -268,7 +272,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for DeeplyNormalizeForDiagnosticsFolder<'_
         let result: Result<_, Vec<NextSolverError<'db>>> = infcx.commit_if_ok(|_| {
             deeply_normalize_with_skipped_universes_and_ambiguous_coroutine_goals(
                 self.at,
-                ct,
+                ct.clone(),
                 vec![None; ct.outer_exclusive_binder().as_usize()],
             )
         });

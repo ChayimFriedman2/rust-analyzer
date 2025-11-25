@@ -3,10 +3,7 @@ use std::ops::ControlFlow::{self, Break, Continue};
 
 use hir_def::{AdtId, EnumVariantId, ModuleId, VariantId, visibility::Visibility};
 use rustc_hash::FxHashSet;
-use rustc_type_ir::{
-    TypeSuperVisitable, TypeVisitable, TypeVisitor,
-    inherent::{AdtDef, IntoKind},
-};
+use rustc_type_ir::{TypeSuperVisitable, TypeVisitable, TypeVisitor, inherent::AdtDef};
 use triomphe::Arc;
 
 use crate::{
@@ -14,7 +11,7 @@ use crate::{
     consteval::try_const_usize,
     db::HirDatabase,
     next_solver::{
-        DbInterner, EarlyBinder, GenericArgs, Ty, TyKind,
+        DbInterner, EarlyBinder, GenericArgsRef, Ty, TyKind, TyRef,
         infer::{InferCtxt, traits::ObligationCause},
         obligation_ctxt::ObligationCtxt,
     },
@@ -24,7 +21,7 @@ use crate::{
 /// Checks whether a type is visibly uninhabited from a particular module.
 pub(crate) fn is_ty_uninhabited_from<'db>(
     infcx: &InferCtxt<'db>,
-    ty: Ty<'db>,
+    ty: TyRef<'_, 'db>,
     target_mod: ModuleId,
     env: Arc<TraitEnvironment<'db>>,
 ) -> bool {
@@ -39,7 +36,7 @@ pub(crate) fn is_ty_uninhabited_from<'db>(
 pub(crate) fn is_enum_variant_uninhabited_from<'db>(
     infcx: &InferCtxt<'db>,
     variant: EnumVariantId,
-    subst: GenericArgs<'db>,
+    subst: GenericArgsRef<'_, 'db>,
     target_mod: ModuleId,
     env: Arc<TraitEnvironment<'db>>,
 ) -> bool {
@@ -67,28 +64,29 @@ struct VisiblyUninhabited;
 impl<'db> TypeVisitor<DbInterner<'db>> for UninhabitedFrom<'_, 'db> {
     type Result = ControlFlow<VisiblyUninhabited>;
 
-    fn visit_ty(&mut self, mut ty: Ty<'db>) -> ControlFlow<VisiblyUninhabited> {
+    fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> ControlFlow<VisiblyUninhabited> {
+        let mut ty = ty.o();
         if self.recursive_ty.contains(&ty) || self.max_depth == 0 {
             // rustc considers recursive types always inhabited. I think it is valid to consider
             // recursive types as always uninhabited, but we should do what rustc is doing.
             return CONTINUE_OPAQUELY_INHABITED;
         }
-        self.recursive_ty.insert(ty);
+        self.recursive_ty.insert(ty.clone());
         self.max_depth -= 1;
 
         if matches!(ty.kind(), TyKind::Alias(..)) {
             let mut ocx = ObligationCtxt::new(self.infcx);
-            match ocx.structurally_normalize_ty(&ObligationCause::dummy(), self.env.env, ty) {
+            match ocx.structurally_normalize_ty(&ObligationCause::dummy(), self.env.env.r(), ty) {
                 Ok(it) => ty = it,
                 Err(_) => return CONTINUE_OPAQUELY_INHABITED,
             }
         }
 
         let r = match ty.kind() {
-            TyKind::Adt(adt, subst) => self.visit_adt(adt.def_id().0, subst),
+            TyKind::Adt(adt, subst) => self.visit_adt(adt.def_id().0, subst.r()),
             TyKind::Never => BREAK_VISIBLY_UNINHABITED,
             TyKind::Tuple(..) => ty.super_visit_with(self),
-            TyKind::Array(item_ty, len) => match try_const_usize(self.infcx.interner.db, len) {
+            TyKind::Array(item_ty, len) => match try_const_usize(self.infcx.interner.db, len.r()) {
                 Some(0) | None => CONTINUE_OPAQUELY_INHABITED,
                 Some(1..) => item_ty.visit_with(self),
             },
@@ -122,7 +120,7 @@ impl<'a, 'db> UninhabitedFrom<'a, 'db> {
     fn visit_adt(
         &mut self,
         adt: AdtId,
-        subst: GenericArgs<'db>,
+        subst: GenericArgsRef<'_, 'db>,
     ) -> ControlFlow<VisiblyUninhabited> {
         // An ADT is uninhabited iff all its variants uninhabited.
         match adt {
@@ -147,7 +145,7 @@ impl<'a, 'db> UninhabitedFrom<'a, 'db> {
     fn visit_variant(
         &mut self,
         variant: VariantId,
-        subst: GenericArgs<'db>,
+        subst: GenericArgsRef<'_, 'db>,
     ) -> ControlFlow<VisiblyUninhabited> {
         let variant_data = variant.fields(self.db());
         let fields = variant_data.fields();
@@ -169,10 +167,10 @@ impl<'a, 'db> UninhabitedFrom<'a, 'db> {
         &mut self,
         vis: Option<Visibility>,
         ty: &EarlyBinder<'db, Ty<'db>>,
-        subst: GenericArgs<'db>,
+        subst: GenericArgsRef<'_, 'db>,
     ) -> ControlFlow<VisiblyUninhabited> {
         if vis.is_none_or(|it| it.is_visible_from(self.db(), self.target_mod)) {
-            let ty = ty.instantiate(self.interner(), subst);
+            let ty = ty.clone().instantiate(self.interner(), subst);
             ty.visit_with(self)
         } else {
             CONTINUE_OPAQUELY_INHABITED
