@@ -608,11 +608,11 @@ impl<'db> InferenceResult<'db> {
             _ => None,
         })
     }
-    pub fn placeholder_types(&self) -> impl Iterator<Item = (TypeRefId, &Ty<'db>)> {
-        self.type_of_type_placeholder.iter()
+    pub fn placeholder_types(&self) -> impl Iterator<Item = (TypeRefId, TyRef<'_, 'db>)> {
+        self.type_of_type_placeholder.iter().map(|(k, v)| (k, v.r()))
     }
-    pub fn type_of_type_placeholder(&self, type_ref: TypeRefId) -> Option<Ty<'db>> {
-        self.type_of_type_placeholder.get(type_ref).copied()
+    pub fn type_of_type_placeholder(&self, type_ref: TypeRefId) -> Option<TyRef<'_, 'db>> {
+        self.type_of_type_placeholder.get(type_ref).map(|it| it.r())
     }
     pub fn closure_info(&self, closure: InternedClosureId) -> &(Vec<CapturedItem<'db>>, FnTrait) {
         self.closure_info.get(&closure).unwrap()
@@ -987,8 +987,8 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
         }
         type_of_binding.shrink_to_fit();
         for ty in type_of_type_placeholder.values_mut() {
-            *ty = table.resolve_completely(*ty);
-            *has_errors = *has_errors || ty.references_non_lt_error();
+            *ty = table.resolve_completely(ty.clone());
+            *has_errors = *has_errors || ty.r().references_non_lt_error();
         }
         type_of_type_placeholder.shrink_to_fit();
         type_of_opaque.shrink_to_fit();

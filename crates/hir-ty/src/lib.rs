@@ -568,10 +568,10 @@ struct TypeInferenceVarCollector<'db> {
 impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for TypeInferenceVarCollector<'db> {
     type Result = ();
 
-    fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
+    fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
         use crate::rustc_type_ir::Flags;
         if ty.is_ty_var() {
-            self.type_inference_vars.push(ty);
+            self.type_inference_vars.push(ty.o());
         } else if ty.flags().intersects(rustc_type_ir::TypeFlags::HAS_TY_INFER) {
             ty.super_visit_with(self);
         } else {

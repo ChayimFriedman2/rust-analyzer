@@ -43,7 +43,7 @@ use hir_ty::{
 };
 use intern::sym;
 use itertools::Itertools;
-use rustc_type_ir::{AliasTyKind, inherent::AdtDef};
+use rustc_type_ir::{AliasTyKind, inherent::AdtDef, ir_traits::MyToOwned};
 use smallvec::SmallVec;
 use stdx::never;
 use syntax::{
@@ -287,18 +287,22 @@ impl<'db> SourceAnalyzer<'db> {
             let mut inferred_types = vec![];
             TypeRef::walk(type_ref, store, &mut |type_ref_id, type_ref| {
                 if matches!(type_ref, TypeRef::Placeholder) {
-                    inferred_types.push(infer.type_of_type_placeholder(type_ref_id));
+                    inferred_types.push(infer.type_of_type_placeholder(type_ref_id).o());
                 }
             });
             let mut inferred_types = inferred_types.into_iter();
 
-            let substituted_ty = hir_ty::next_solver::fold::fold_tys(interner, ty, |ty| {
-                if ty.is_ty_error() { inferred_types.next().flatten().unwrap_or(ty) } else { ty }
+            let substituted_ty = hir_ty::next_solver::fold::fold_tys(interner, ty.clone(), |ty| {
+                if ty.r().is_ty_error() {
+                    inferred_types.next().flatten().unwrap_or(ty)
+                } else {
+                    ty
+                }
             });
 
             // Only used the result if the placeholder and unknown type counts matched
             let success =
-                inferred_types.next().is_none() && !substituted_ty.references_non_lt_error();
+                inferred_types.next().is_none() && !substituted_ty.r().references_non_lt_error();
             if success {
                 ty = substituted_ty;
             }
