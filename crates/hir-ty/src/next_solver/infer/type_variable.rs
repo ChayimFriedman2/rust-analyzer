@@ -8,7 +8,7 @@ use rustc_type_ir::{TyVid, UniverseIndex};
 use tracing::debug;
 
 use crate::next_solver::{
-    SolverDefId, Ty, TyRef,
+    SolverDefId, Ty,
     infer::{InferCtxtUndoLogs, iter_idx_range},
 };
 
@@ -111,10 +111,10 @@ pub(crate) enum TypeVariableValue<'db> {
 impl<'db> TypeVariableValue<'db> {
     /// If this value is known, returns the type it is known to be.
     /// Otherwise, `None`.
-    pub(crate) fn known(&self) -> Option<TyRef<'_, 'db>> {
+    pub(crate) fn known(&self) -> Option<Ty<'db>> {
         match self {
             TypeVariableValue::Unknown { .. } => None,
-            TypeVariableValue::Known { value } => Some(value.r()),
+            TypeVariableValue::Known { value } => Some(value.clone()),
         }
     }
 
@@ -180,7 +180,7 @@ impl<'db> TypeVariableTable<'_, 'db> {
     /// Precondition: `vid` must not have been previously instantiated.
     pub(crate) fn instantiate(&mut self, vid: TyVid, ty: Ty<'db>) {
         let vid = self.root_var(vid);
-        debug_assert!(!ty.r().is_ty_var(), "instantiating ty var with var: {vid:?} {ty:?}");
+        debug_assert!(!ty.is_ty_var(), "instantiating ty var with var: {vid:?} {ty:?}");
         debug_assert!(self.probe(vid).is_unknown());
         debug_assert!(
             self.eq_relations().probe_value(vid).is_unknown(),

@@ -70,8 +70,7 @@ use crate::{
     method_resolution::{CandidateId, MethodResolutionUnstableFeatures},
     mir::MirSpan,
     next_solver::{
-        AliasTy, Const, DbInterner, DefaultAny, GenericArg, GenericArgs, GenericArgsRef, Region,
-        Ty, TyKind, TyRef, Tys, TysRef,
+        AliasTy, Const, DbInterner, DefaultAny, GenericArg, GenericArgs, Region, Ty, TyKind, Tys,
         abi::Safety,
         default_types,
         infer::{InferCtxt, traits::ObligationCause},
@@ -554,8 +553,8 @@ impl<'db> InferenceResult<'db> {
         }
     }
 
-    pub fn method_resolution(&self, expr: ExprId) -> Option<(FunctionId, GenericArgsRef<'_, 'db>)> {
-        self.method_resolutions.get(&expr).map(|(id, args)| (*id, args.r()))
+    pub fn method_resolution(&self, expr: ExprId) -> Option<(FunctionId, GenericArgs<'db>)> {
+        self.method_resolutions.get(&expr).map(|(id, args)| (*id, args.clone()))
     }
     pub fn field_resolution(&self, expr: ExprId) -> Option<Either<FieldId, TupleFieldId>> {
         self.field_resolutions.get(&expr).copied()
@@ -575,19 +574,16 @@ impl<'db> InferenceResult<'db> {
     pub fn assoc_resolutions_for_expr(
         &self,
         id: ExprId,
-    ) -> Option<(CandidateId, GenericArgsRef<'_, 'db>)> {
-        self.assoc_resolutions.get(&id.into()).map(|(id, args)| (*id, args.r()))
+    ) -> Option<(CandidateId, GenericArgs<'db>)> {
+        self.assoc_resolutions.get(&id.into()).map(|(id, args)| (*id, args.clone()))
     }
-    pub fn assoc_resolutions_for_pat(
-        &self,
-        id: PatId,
-    ) -> Option<(CandidateId, GenericArgsRef<'_, 'db>)> {
-        self.assoc_resolutions.get(&id.into()).map(|(id, args)| (*id, args.r()))
+    pub fn assoc_resolutions_for_pat(&self, id: PatId) -> Option<(CandidateId, GenericArgs<'db>)> {
+        self.assoc_resolutions.get(&id.into()).map(|(id, args)| (*id, args.clone()))
     }
     pub fn assoc_resolutions_for_expr_or_pat(
         &self,
         id: ExprOrPatId,
-    ) -> Option<(CandidateId, GenericArgsRef<'_, 'db>)> {
+    ) -> Option<(CandidateId, GenericArgs<'db>)> {
         match id {
             ExprOrPatId::ExprId(id) => self.assoc_resolutions_for_expr(id),
             ExprOrPatId::PatId(id) => self.assoc_resolutions_for_pat(id),
@@ -608,22 +604,22 @@ impl<'db> InferenceResult<'db> {
             _ => None,
         })
     }
-    pub fn placeholder_types(&self) -> impl Iterator<Item = (TypeRefId, TyRef<'_, 'db>)> {
-        self.type_of_type_placeholder.iter().map(|(k, v)| (k, v.r()))
+    pub fn placeholder_types(&self) -> impl Iterator<Item = (TypeRefId, Ty<'db>)> {
+        self.type_of_type_placeholder.iter().map(|(k, v)| (k, v.clone()))
     }
-    pub fn type_of_type_placeholder(&self, type_ref: TypeRefId) -> Option<TyRef<'_, 'db>> {
-        self.type_of_type_placeholder.get(type_ref).map(|it| it.r())
+    pub fn type_of_type_placeholder(&self, type_ref: TypeRefId) -> Option<Ty<'db>> {
+        self.type_of_type_placeholder.get(type_ref).map(|it| it.clone())
     }
     pub fn closure_info(&self, closure: InternedClosureId) -> &(Vec<CapturedItem<'db>>, FnTrait) {
         self.closure_info.get(&closure).unwrap()
     }
-    pub fn type_of_expr_or_pat(&self, id: ExprOrPatId) -> Option<TyRef<'_, 'db>> {
+    pub fn type_of_expr_or_pat(&self, id: ExprOrPatId) -> Option<Ty<'db>> {
         match id {
-            ExprOrPatId::ExprId(id) => self.type_of_expr.get(id).map(|it| it.r()),
-            ExprOrPatId::PatId(id) => self.type_of_pat.get(id).map(|it| it.r()),
+            ExprOrPatId::ExprId(id) => self.type_of_expr.get(id).map(|it| it.clone()),
+            ExprOrPatId::PatId(id) => self.type_of_pat.get(id).map(|it| it.clone()),
         }
     }
-    pub fn type_of_expr_with_adjust(&self, id: ExprId) -> Option<TyRef<'_, 'db>> {
+    pub fn type_of_expr_with_adjust(&self, id: ExprId) -> Option<Ty<'db>> {
         match self.expr_adjustments.get(&id).and_then(|adjustments| {
             adjustments
                 .iter()
@@ -634,19 +630,19 @@ impl<'db> InferenceResult<'db> {
                         Adjustment {
                             kind: Adjust::NeverToAny,
                             target,
-                        } if target.r().is_never()
+                        } if target.is_never()
                     )
                 })
                 .next_back()
         }) {
-            Some(adjustment) => Some(adjustment.target.r()),
-            None => self.type_of_expr.get(id).map(|it| it.r()),
+            Some(adjustment) => Some(adjustment.target.clone()),
+            None => self.type_of_expr.get(id).map(|it| it.clone()),
         }
     }
-    pub fn type_of_pat_with_adjust(&self, id: PatId) -> Option<TyRef<'_, 'db>> {
+    pub fn type_of_pat_with_adjust(&self, id: PatId) -> Option<Ty<'db>> {
         match self.pat_adjustments.get(&id).and_then(|adjustments| adjustments.last()) {
-            Some(adjusted) => Some(adjusted.r()),
-            None => self.type_of_pat.get(id).map(|it| it.r()),
+            Some(adjusted) => Some(adjusted.clone()),
+            None => self.type_of_pat.get(id).map(|it| it.clone()),
         }
     }
     pub fn is_erroneous(&self) -> bool {
@@ -657,8 +653,8 @@ impl<'db> InferenceResult<'db> {
         &self.diagnostics
     }
 
-    pub fn tuple_field_access_type(&self, id: TupleId) -> TysRef<'_, 'db> {
-        self.tuple_field_access_types[&id].r()
+    pub fn tuple_field_access_type(&self, id: TupleId) -> Tys<'db> {
+        self.tuple_field_access_types[&id].clone()
     }
 
     pub fn pat_adjustment(&self, id: PatId) -> Option<&[Ty<'db>]> {
@@ -674,30 +670,30 @@ impl<'db> InferenceResult<'db> {
     }
 
     // This method is consumed by external tools to run rust-analyzer as a library. Don't remove, please.
-    pub fn expression_types(&self) -> impl Iterator<Item = (ExprId, TyRef<'_, 'db>)> {
-        self.type_of_expr.iter().map(|(k, v)| (k, v.r()))
+    pub fn expression_types(&self) -> impl Iterator<Item = (ExprId, Ty<'db>)> {
+        self.type_of_expr.iter().map(|(k, v)| (k, v.clone()))
     }
 
     // This method is consumed by external tools to run rust-analyzer as a library. Don't remove, please.
-    pub fn pattern_types(&self) -> impl Iterator<Item = (PatId, TyRef<'_, 'db>)> {
-        self.type_of_pat.iter().map(|(k, v)| (k, v.r()))
+    pub fn pattern_types(&self) -> impl Iterator<Item = (PatId, Ty<'db>)> {
+        self.type_of_pat.iter().map(|(k, v)| (k, v.clone()))
     }
 
     // This method is consumed by external tools to run rust-analyzer as a library. Don't remove, please.
-    pub fn binding_types(&self) -> impl Iterator<Item = (BindingId, TyRef<'_, 'db>)> {
-        self.type_of_binding.iter().map(|(k, v)| (k, v.r()))
+    pub fn binding_types(&self) -> impl Iterator<Item = (BindingId, Ty<'db>)> {
+        self.type_of_binding.iter().map(|(k, v)| (k, v.clone()))
     }
 
     // This method is consumed by external tools to run rust-analyzer as a library. Don't remove, please.
     pub fn return_position_impl_trait_types(
         &self,
         db: &'db dyn HirDatabase,
-    ) -> impl Iterator<Item = (ImplTraitIdx<'db>, TyRef<'_, 'db>)> {
+    ) -> impl Iterator<Item = (ImplTraitIdx<'db>, Ty<'db>)> {
         self.type_of_opaque.iter().filter_map(move |(&id, ty)| {
             let ImplTraitId::ReturnTypeImplTrait(_, rpit_idx) = id.loc(db) else {
                 return None;
             };
-            Some((rpit_idx, ty.r()))
+            Some((rpit_idx, ty.clone()))
         })
     }
 }
@@ -973,22 +969,22 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
 
         for ty in type_of_expr.values_mut() {
             *ty = table.resolve_completely(ty.clone());
-            *has_errors = *has_errors || ty.r().references_non_lt_error();
+            *has_errors = *has_errors || ty.references_non_lt_error();
         }
         type_of_expr.shrink_to_fit();
         for ty in type_of_pat.values_mut() {
             *ty = table.resolve_completely(ty.clone());
-            *has_errors = *has_errors || ty.r().references_non_lt_error();
+            *has_errors = *has_errors || ty.references_non_lt_error();
         }
         type_of_pat.shrink_to_fit();
         for ty in type_of_binding.values_mut() {
             *ty = table.resolve_completely(ty.clone());
-            *has_errors = *has_errors || ty.r().references_non_lt_error();
+            *has_errors = *has_errors || ty.references_non_lt_error();
         }
         type_of_binding.shrink_to_fit();
         for ty in type_of_type_placeholder.values_mut() {
             *ty = table.resolve_completely(ty.clone());
-            *has_errors = *has_errors || ty.r().references_non_lt_error();
+            *has_errors = *has_errors || ty.references_non_lt_error();
         }
         type_of_type_placeholder.shrink_to_fit();
         type_of_opaque.shrink_to_fit();
@@ -1008,7 +1004,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                 | UnresolvedMethodCall { receiver: ty, .. } => {
                     *ty = table.resolve_completely(ty.clone());
                     // FIXME: Remove this when we are on par with rustc in terms of inference
-                    if ty.r().references_non_lt_error() {
+                    if ty.references_non_lt_error() {
                         return false;
                     }
 
@@ -1016,7 +1012,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                         && let Some(ty) = field_with_same_name
                     {
                         *ty = table.resolve_completely(ty.clone());
-                        if ty.r().references_non_lt_error() {
+                        if ty.references_non_lt_error() {
                             *field_with_same_name = None;
                         }
                     }
@@ -1031,22 +1027,22 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
         diagnostics.shrink_to_fit();
         for (_, subst) in method_resolutions.values_mut() {
             *subst = table.resolve_completely(subst.clone());
-            *has_errors = *has_errors || subst.r().types().any(|ty| ty.references_non_lt_error());
+            *has_errors = *has_errors || subst.types().any(|ty| ty.references_non_lt_error());
         }
         method_resolutions.shrink_to_fit();
         for (_, subst) in assoc_resolutions.values_mut() {
             *subst = table.resolve_completely(subst.clone());
-            *has_errors = *has_errors || subst.r().types().any(|ty| ty.references_non_lt_error());
+            *has_errors = *has_errors || subst.types().any(|ty| ty.references_non_lt_error());
         }
         assoc_resolutions.shrink_to_fit();
         for adjustment in expr_adjustments.values_mut().flatten() {
             adjustment.target = table.resolve_completely(adjustment.target.clone());
-            *has_errors = *has_errors || adjustment.target.r().references_non_lt_error();
+            *has_errors = *has_errors || adjustment.target.references_non_lt_error();
         }
         expr_adjustments.shrink_to_fit();
         for adjustment in pat_adjustments.values_mut().flatten() {
             *adjustment = table.resolve_completely(adjustment.clone());
-            *has_errors = *has_errors || adjustment.r().references_non_lt_error();
+            *has_errors = *has_errors || adjustment.references_non_lt_error();
         }
         pat_adjustments.shrink_to_fit();
         result.tuple_field_access_types = tuple_field_accesses_rev
@@ -1054,8 +1050,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
             .enumerate()
             .map(|(idx, subst)| (TupleId(idx as u32), table.resolve_completely(subst)))
             .inspect(|(_, subst)| {
-                *has_errors =
-                    *has_errors || subst.r().iter().any(|ty| ty.references_non_lt_error());
+                *has_errors = *has_errors || subst.iter().any(|ty| ty.references_non_lt_error());
             })
             .collect();
         result.tuple_field_access_types.shrink_to_fit();
@@ -1124,7 +1119,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
         for (ty, pat) in param_tys.zip(&*self.body.params) {
             let ty = self.process_user_written_ty(ty);
 
-            self.infer_top_pat(*pat, ty.r(), None);
+            self.infer_top_pat(*pat, ty, None);
         }
         self.return_ty = match data.ret_type {
             Some(return_ty) => {
@@ -1361,7 +1356,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
         self.table.insert_type_vars(ty)
     }
 
-    fn unify(&mut self, ty1: TyRef<'_, 'db>, ty2: TyRef<'_, 'db>) -> bool {
+    fn unify(&mut self, ty1: Ty<'db>, ty2: Ty<'db>) -> bool {
         self.table.unify(ty1, ty2)
     }
 
@@ -1395,7 +1390,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                     AdtId::StructId(struct_id) => {
                         match self.db.field_types(struct_id.into()).values().next_back() {
                             Some(field) => {
-                                ty = field.clone().instantiate(self.interner(), substs.r());
+                                ty = field.clone().instantiate(self.interner(), substs);
                             }
                             None => break,
                         }
@@ -1403,7 +1398,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                     _ => break,
                 },
                 TyKind::Tuple(substs) => match substs.as_slice().split_last() {
-                    Some((last_ty, _)) => ty = last_ty.o(),
+                    Some((last_ty, _)) => ty = last_ty.clone(),
                     None => break,
                 },
                 TyKind::Alias(..) => {
@@ -1446,22 +1441,22 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
     fn demand_eqtype(
         &mut self,
         id: ExprOrPatId,
-        expected: TyRef<'_, 'db>,
-        actual: TyRef<'_, 'db>,
+        expected: Ty<'db>,
+        actual: Ty<'db>,
     ) -> Result<(), ()> {
-        let result = self.demand_eqtype_fixme_no_diag(expected, actual);
+        let result = self.demand_eqtype_fixme_no_diag(expected.clone(), actual.clone());
         if result.is_err() {
             self.result
                 .type_mismatches
-                .insert(id, TypeMismatch { expected: expected.o(), actual: actual.o() });
+                .insert(id, TypeMismatch { expected: expected, actual: actual });
         }
         result
     }
 
     fn demand_eqtype_fixme_no_diag(
         &mut self,
-        expected: TyRef<'_, 'db>,
-        actual: TyRef<'_, 'db>,
+        expected: Ty<'db>,
+        actual: Ty<'db>,
     ) -> Result<(), ()> {
         let result = self
             .table
@@ -1471,7 +1466,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
         result.map_err(drop)
     }
 
-    fn demand_suptype(&mut self, expected: TyRef<'_, 'db>, actual: TyRef<'_, 'db>) {
+    fn demand_suptype(&mut self, expected: Ty<'db>, actual: Ty<'db>) {
         let result = self
             .table
             .at(&ObligationCause::new())
@@ -1497,16 +1492,16 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
         result.unwrap_or_else(|_| self.types.types.error.clone())
     }
 
-    fn expr_ty(&self, expr: ExprId) -> TyRef<'_, 'db> {
-        self.result[expr].r()
+    fn expr_ty(&self, expr: ExprId) -> Ty<'db> {
+        self.result[expr].clone()
     }
 
-    fn expr_ty_after_adjustments(&self, e: ExprId) -> TyRef<'_, 'db> {
+    fn expr_ty_after_adjustments(&self, e: ExprId) -> Ty<'db> {
         let mut ty = None;
         if let Some(it) = self.result.expr_adjustments.get(&e)
             && let Some(it) = it.last()
         {
-            ty = Some(it.target.r());
+            ty = Some(it.target.clone());
         }
         ty.unwrap_or_else(|| self.expr_ty(e))
     }
@@ -1568,14 +1563,14 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                         let ty = self
                             .db
                             .ty(var.lookup(self.db).parent.into())
-                            .instantiate(interner, args.r());
+                            .instantiate(interner, args);
                         let ty = self.insert_type_vars(ty);
                         return (ty, Some(var.into()));
                     }
                     ValueNs::StructId(strukt) => {
                         let args = path_ctx.substs_from_path(strukt.into(), true, false);
                         drop(ctx);
-                        let ty = self.db.ty(strukt.into()).instantiate(interner, args.r());
+                        let ty = self.db.ty(strukt.into()).instantiate(interner, args);
                         let ty = self.insert_type_vars(ty);
                         return (ty, Some(strukt.into()));
                     }
@@ -1597,22 +1592,21 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
             TypeNs::AdtId(AdtId::StructId(strukt)) => {
                 let args = path_ctx.substs_from_path(strukt.into(), true, false);
                 drop(ctx);
-                let ty = self.db.ty(strukt.into()).instantiate(interner, args.r());
+                let ty = self.db.ty(strukt.into()).instantiate(interner, args);
                 let ty = self.insert_type_vars(ty);
                 forbid_unresolved_segments(self, (ty, Some(strukt.into())), unresolved)
             }
             TypeNs::AdtId(AdtId::UnionId(u)) => {
                 let args = path_ctx.substs_from_path(u.into(), true, false);
                 drop(ctx);
-                let ty = self.db.ty(u.into()).instantiate(interner, args.r());
+                let ty = self.db.ty(u.into()).instantiate(interner, args);
                 let ty = self.insert_type_vars(ty);
                 forbid_unresolved_segments(self, (ty, Some(u.into())), unresolved)
             }
             TypeNs::EnumVariantId(var) => {
                 let args = path_ctx.substs_from_path(var.into(), true, false);
                 drop(ctx);
-                let ty =
-                    self.db.ty(var.lookup(self.db).parent.into()).instantiate(interner, args.r());
+                let ty = self.db.ty(var.lookup(self.db).parent.into()).instantiate(interner, args);
                 let ty = self.insert_type_vars(ty);
                 forbid_unresolved_segments(self, (ty, Some(var.into())), unresolved)
             }
@@ -1669,7 +1663,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                     tried_resolving_once = true;
 
                     ty = self.table.process_user_written_ty(ty);
-                    if ty.r().is_ty_error() {
+                    if ty.is_ty_error() {
                         return (self.err_ty(), None);
                     }
 
@@ -1677,7 +1671,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                 }
                 drop(ctx);
 
-                let variant = ty.r().as_adt().and_then(|(id, _)| match id {
+                let variant = ty.as_adt().and_then(|(id, _)| match id {
                     AdtId::StructId(s) => Some(VariantId::StructId(s)),
                     AdtId::UnionId(u) => Some(VariantId::UnionId(u)),
                     AdtId::EnumId(_) => {
@@ -1695,7 +1689,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
                 let args = path_ctx.substs_from_path_segment(it.into(), true, None, false);
                 drop(ctx);
                 let interner = DbInterner::conjure();
-                let ty = self.db.ty(it.into()).instantiate(interner, args.r());
+                let ty = self.db.ty(it.into()).instantiate(interner, args);
                 let ty = self.insert_type_vars(ty);
 
                 self.resolve_variant_on_alias(ty, unresolved, mod_path)
@@ -1741,7 +1735,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
         let ty = self.table.try_structurally_resolve_type(ty);
         match remaining {
             None => {
-                let variant = ty.r().as_adt().and_then(|(adt_id, _)| match adt_id {
+                let variant = ty.as_adt().and_then(|(adt_id, _)| match adt_id {
                     AdtId::StructId(s) => Some(VariantId::StructId(s)),
                     AdtId::UnionId(u) => Some(VariantId::UnionId(u)),
                     AdtId::EnumId(_) => {
@@ -1754,7 +1748,7 @@ impl<'body, 'db> InferenceContext<'body, 'db> {
             Some(1) => {
                 let segment = path.segments().last().unwrap();
                 // this could be an enum variant or associated type
-                if let Some((AdtId::EnumId(enum_id), _)) = ty.r().as_adt() {
+                if let Some((AdtId::EnumId(enum_id), _)) = ty.as_adt() {
                     let enum_data = enum_id.enum_variants(self.db);
                     if let Some(variant) = enum_data.variant(segment) {
                         return (ty, Some(variant.into()));
@@ -1855,7 +1849,7 @@ impl<'db> Expectation<'db> {
     /// The expectation that the type of the expression needs to equal the given
     /// type.
     fn has_type(ty: Ty<'db>) -> Self {
-        if ty.r().is_ty_error() {
+        if ty.is_ty_error() {
             // FIXME: get rid of this?
             Expectation::None
         } else {
@@ -1951,7 +1945,7 @@ impl<'db> Expectation<'db> {
         match self {
             Expectation::HasType(ety) => {
                 let ety = table.structurally_resolve_type(ety.clone());
-                if ety.r().is_ty_var() { Expectation::None } else { Expectation::HasType(ety) }
+                if ety.is_ty_var() { Expectation::None } else { Expectation::HasType(ety) }
             }
             Expectation::RValueLikeUnsized(ety) => Expectation::RValueLikeUnsized(ety.clone()),
             _ => Expectation::None,

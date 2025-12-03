@@ -20,9 +20,9 @@ impl<'db> InferCtxt<'db> {
     /// sure that the item bounds of the opaque are checked.
     pub fn register_hidden_type_in_storage(
         &self,
-        opaque_type_key: &OpaqueTypeKey<'db>,
+        opaque_type_key: OpaqueTypeKey<'db>,
         hidden_ty: OpaqueHiddenType<'db>,
     ) -> Option<Ty<'db>> {
-        self.inner.borrow_mut().opaque_types().register(opaque_type_key.clone(), hidden_ty)
+        self.inner.borrow_mut().opaque_types().register(opaque_type_key, hidden_ty)
     }
 }

@@ -1663,7 +1663,7 @@ impl<'db> SemanticsImpl<'db> {
                 subst.next().expect("too few subst").ty.into()
             });
         assert!(subst.next().is_none(), "too many subst");
-        Some(self.db.lookup_impl_method(env.env, func.into(), substs.r()).0.into())
+        Some(self.db.lookup_impl_method(env.env, func.into(), substs).0.into())
     }
 
     fn resolve_range_pat(&self, range_pat: &ast::RangePat) -> Option<StructId> {

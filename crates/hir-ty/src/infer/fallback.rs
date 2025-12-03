@@ -148,16 +148,16 @@ impl<'db> InferenceContext<'_, 'db> {
         // type, `?T` is not considered unsolved, but `?I` is. The
         // same is true for float variables.)
         let fallback = match ty.kind() {
-            TyKind::Infer(rustc_type_ir::IntVar(_)) => self.types.types.i32.r(),
-            TyKind::Infer(rustc_type_ir::FloatVar(_)) => self.types.types.f64.r(),
+            TyKind::Infer(rustc_type_ir::IntVar(_)) => self.types.types.i32.clone(),
+            TyKind::Infer(rustc_type_ir::FloatVar(_)) => self.types.types.f64.clone(),
             _ => match diverging_fallback.get(&ty) {
-                Some(fallback_ty) => fallback_ty.r(),
+                Some(fallback_ty) => fallback_ty.clone(),
                 None => return false,
             },
         };
         debug!("fallback_if_possible(ty={:?}): defaulting to `{:?}`", ty, fallback);
 
-        _ = self.demand_eqtype_fixme_no_diag(ty.r(), fallback);
+        _ = self.demand_eqtype_fixme_no_diag(ty, fallback);
         true
     }
 
@@ -241,7 +241,7 @@ impl<'db> InferenceContext<'_, 'db> {
 
         // Extract the unsolved type inference variable vids; note that some
         // unsolved variables are integer/float variables and are excluded.
-        let unsolved_vids = unresolved_variables.iter().filter_map(|ty| ty.r().ty_vid());
+        let unsolved_vids = unresolved_variables.iter().filter_map(|ty| ty.ty_vid());
 
         // Compute the diverging root vids D -- that is, the root vid of
         // those type variables that (a) are the target of a coercion from
@@ -254,7 +254,7 @@ impl<'db> InferenceContext<'_, 'db> {
             .diverging_type_vars
             .iter()
             .map(|ty| self.shallow_resolve(ty.clone()))
-            .filter_map(|ty| ty.r().ty_vid())
+            .filter_map(|ty| ty.ty_vid())
             .map(|vid| self.table.infer_ctxt.root_var(vid))
             .collect();
         debug!(
@@ -428,6 +428,6 @@ impl<'db> InferenceContext<'_, 'db> {
 
     /// If `ty` is an unresolved type variable, returns its root vid.
     fn root_vid(&self, ty: Ty<'db>) -> Option<TyVid> {
-        Some(self.table.infer_ctxt.root_var(self.shallow_resolve(ty).r().ty_vid()?))
+        Some(self.table.infer_ctxt.root_var(self.shallow_resolve(ty).ty_vid()?))
     }
 }

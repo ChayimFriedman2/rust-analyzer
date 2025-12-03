@@ -15,9 +15,8 @@ use super::{
     PredicateEmittingRelation, Relate, RelateResult, StructurallyRelateAliases, TypeRelation,
 };
 use crate::next_solver::{
-    AliasTy, Binder, ClauseKind, Const, ConstKind, ConstRef, DbInterner, GenericArgs,
-    GenericArgsRef, PredicateKind, Region, RegionRef, SolverDefId, TermRef, TermVid, Ty, TyKind,
-    TyRef, TypingMode, UnevaluatedConst,
+    AliasTy, Binder, ClauseKind, Const, ConstKind, DbInterner, GenericArgs, PredicateKind, Region,
+    SolverDefId, Term, TermVid, Ty, TyKind, TypingMode, UnevaluatedConst,
     infer::{InferCtxt, relate, type_variable::TypeVariableValue, unify_key::ConstVariableValue},
     util::MaxUniverse,
 };
@@ -42,7 +41,7 @@ impl<'db> InferCtxt<'db> {
         target_is_expected: bool,
         target_vid: TyVid,
         instantiation_variance: Variance,
-        source_ty: TyRef<'_, 'db>,
+        source_ty: Ty<'db>,
     ) -> RelateResult<'db, ()> {
         debug_assert!(self.inner.borrow_mut().type_variables().probe(target_vid).is_unknown());
 
@@ -60,7 +59,7 @@ impl<'db> InferCtxt<'db> {
                 relation.structurally_relate_aliases(),
                 target_vid,
                 instantiation_variance,
-                source_ty,
+                source_ty.clone(),
             )?;
 
         // Constrain `b_vid` to the generalized type `generalized_ty`.
@@ -84,22 +83,28 @@ impl<'db> InferCtxt<'db> {
         // relations wind up attributed to the same spans. We need
         // to associate causes/spans with each of the relations in
         // the stack to get this right.
-        if generalized_ty.r().is_ty_var() {
+        if generalized_ty.is_ty_var() {
             // This happens for cases like `<?0 as Trait>::Assoc == ?0`.
             // We can't instantiate `?0` here as that would result in a
             // cyclic type. We instead delay the unification in case
             // the alias can be normalized to something which does not
             // mention `?0`.
             let (lhs, rhs, direction) = match instantiation_variance {
-                Variance::Invariant => {
-                    (generalized_ty.into(), source_ty.o().into(), AliasRelationDirection::Equate)
-                }
-                Variance::Covariant => {
-                    (generalized_ty.into(), source_ty.o().into(), AliasRelationDirection::Subtype)
-                }
-                Variance::Contravariant => {
-                    (source_ty.o().into(), generalized_ty.into(), AliasRelationDirection::Subtype)
-                }
+                Variance::Invariant => (
+                    generalized_ty.clone().into(),
+                    source_ty.clone().into(),
+                    AliasRelationDirection::Equate,
+                ),
+                Variance::Covariant => (
+                    generalized_ty.clone().into(),
+                    source_ty.clone().into(),
+                    AliasRelationDirection::Subtype,
+                ),
+                Variance::Contravariant => (
+                    source_ty.clone().into(),
+                    generalized_ty.clone().into(),
+                    AliasRelationDirection::Subtype,
+                ),
                 Variance::Bivariant => unreachable!("bivariant generalization"),
             };
 
@@ -123,10 +128,10 @@ impl<'db> InferCtxt<'db> {
             // A rel A'
             // ```
             if target_is_expected {
-                relation.relate(generalized_ty.r(), source_ty)?;
+                relation.relate(generalized_ty, source_ty)?;
             } else {
                 debug!("flip relation");
-                relation.relate(source_ty, generalized_ty.r())?;
+                relation.relate(source_ty, generalized_ty)?;
             }
         }
 
@@ -173,7 +178,7 @@ impl<'db> InferCtxt<'db> {
         relation: &mut R,
         target_is_expected: bool,
         target_vid: ConstVid,
-        source_ct: ConstRef<'_, 'db>,
+        source_ct: Const<'db>,
     ) -> RelateResult<'db, ()> {
         // FIXME(generic_const_exprs): Occurs check failures for unevaluated
         // constants and generic expressions are not yet handled correctly.
@@ -182,10 +187,10 @@ impl<'db> InferCtxt<'db> {
                 relation.structurally_relate_aliases(),
                 target_vid,
                 Variance::Invariant,
-                source_ct,
+                source_ct.clone(),
             )?;
 
-        debug_assert!(!generalized_ct.r().is_ct_infer());
+        debug_assert!(!generalized_ct.is_ct_infer());
         if has_unconstrained_ty_var {
             panic!("unconstrained ty var when generalizing `{source_ct:?}`");
         }
@@ -201,7 +206,7 @@ impl<'db> InferCtxt<'db> {
             relation.relate_with_variance(
                 Variance::Invariant,
                 VarianceDiagInfo::default(),
-                generalized_ct.r(),
+                generalized_ct,
                 source_ct,
             )?;
         } else {
@@ -209,7 +214,7 @@ impl<'db> InferCtxt<'db> {
                 Variance::Invariant,
                 VarianceDiagInfo::default(),
                 source_ct,
-                generalized_ct.r(),
+                generalized_ct,
             )?;
         }
 
@@ -218,7 +223,7 @@ impl<'db> InferCtxt<'db> {
 
     /// Attempts to generalize `source_term` for the type variable `target_vid`.
     /// This checks for cycles -- that is, whether `source_term` references `target_vid`.
-    fn generalize<'a, T: Into<TermRef<'a, 'db>> + Relate<DbInterner<'db>> + Copy>(
+    fn generalize<'a, T: Into<Term<'db>> + Relate<DbInterner<'db>> + Clone>(
         &self,
         structurally_relate_aliases: StructurallyRelateAliases,
         target_vid: impl Into<TermVid>,
@@ -244,14 +249,14 @@ impl<'db> InferCtxt<'db> {
             structurally_relate_aliases,
             root_vid,
             for_universe,
-            root_term: source_term.into(),
+            root_term: source_term.clone().into(),
             ambient_variance,
             in_alias: false,
             cache: Default::default(),
             has_unconstrained_ty_var: false,
         };
 
-        let value_may_be_infer = generalizer.relate(source_term, source_term)?;
+        let value_may_be_infer = generalizer.relate(source_term.clone(), source_term)?;
         let has_unconstrained_ty_var = generalizer.has_unconstrained_ty_var;
         Ok(Generalization { value_may_be_infer, has_unconstrained_ty_var })
     }
@@ -288,7 +293,7 @@ struct Generalizer<'me, 'db> {
     for_universe: UniverseIndex,
 
     /// The root term (const or type) we're generalizing. Used for cycle errors.
-    root_term: TermRef<'me, 'db>,
+    root_term: Term<'db>,
 
     /// After we generalize this type, we are going to relate it to
     /// some other type. What will be the variance at this point?
@@ -310,9 +315,9 @@ struct Generalizer<'me, 'db> {
 impl<'db> Generalizer<'_, 'db> {
     /// Create an error that corresponds to the term kind in `root_term`
     fn cyclic_term_error(&self) -> TypeError<DbInterner<'db>> {
-        match self.root_term.kind() {
-            TermKind::Ty(ty) => TypeError::CyclicTy(ty.o()),
-            TermKind::Const(ct) => TypeError::CyclicConst(ct.o()),
+        match self.root_term.to_kind() {
+            TermKind::Ty(ty) => TypeError::CyclicTy(ty),
+            TermKind::Const(ct) => TypeError::CyclicConst(ct),
         }
     }
 
@@ -390,8 +395,8 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
     fn relate_item_args(
         &mut self,
         item_def_id: SolverDefId,
-        a_arg: GenericArgsRef<'_, 'db>,
-        b_arg: GenericArgsRef<'_, 'db>,
+        a_arg: GenericArgs<'db>,
+        b_arg: GenericArgs<'db>,
     ) -> RelateResult<'db, GenericArgs<'db>> {
         if self.ambient_variance == Variance::Invariant {
             // Avoid fetching the variance if we are in an invariant
@@ -404,7 +409,7 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
             relate::relate_args_with_variances(
                 self,
                 item_def_id,
-                opt_variances.r(),
+                opt_variances,
                 a_arg,
                 b_arg,
                 false,
@@ -431,10 +436,10 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
     }
 
     #[instrument(level = "debug", skip(self, t2), ret)]
-    fn tys(&mut self, t: TyRef<'_, 'db>, t2: TyRef<'_, 'db>) -> RelateResult<'db, Ty<'db>> {
+    fn tys(&mut self, t: Ty<'db>, t2: Ty<'db>) -> RelateResult<'db, Ty<'db>> {
         assert_eq!(t, t2); // we are misusing TypeRelation here; both LHS and RHS ought to be ==
 
-        if let Some(result) = self.cache.get(&(t.o(), self.ambient_variance, self.in_alias)) {
+        if let Some(result) = self.cache.get(&(t.clone(), self.ambient_variance, self.in_alias)) {
             return Ok(result.clone());
         }
 
@@ -461,7 +466,7 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
                     match probe {
                         TypeVariableValue::Known { value: u } => {
                             drop(inner);
-                            self.relate(u.r(), u.r())
+                            self.relate(u.clone(), u)
                         }
                         TypeVariableValue::Unknown { universe } => {
                             match self.ambient_variance {
@@ -469,7 +474,7 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
                                 // if we can name the universe.
                                 Variance::Invariant => {
                                     if self.for_universe.can_name(universe) {
-                                        return Ok(t.o());
+                                        return Ok(t);
                                     }
                                 }
 
@@ -522,12 +527,12 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
                 // No matter what mode we are in,
                 // integer/floating-point types must be equal to be
                 // relatable.
-                Ok(t.o())
+                Ok(t.clone())
             }
 
             TyKind::Placeholder(placeholder) => {
                 if self.for_universe.can_name(placeholder.universe) {
-                    Ok(t.o())
+                    Ok(t.clone())
                 } else {
                     debug!(
                         "root universe {:?} cannot name placeholder in universe {:?}",
@@ -539,35 +544,33 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
 
             TyKind::Alias(_, ref data) => match self.structurally_relate_aliases {
                 StructurallyRelateAliases::No => self.generalize_alias_ty(data),
-                StructurallyRelateAliases::Yes => relate::structurally_relate_tys(self, t, t),
+                StructurallyRelateAliases::Yes => {
+                    relate::structurally_relate_tys(self, t.clone(), t.clone())
+                }
             },
 
-            _ => relate::structurally_relate_tys(self, t, t),
+            _ => relate::structurally_relate_tys(self, t.clone(), t.clone()),
         }?;
 
-        self.cache.insert((t.o(), self.ambient_variance, self.in_alias), g.clone());
+        self.cache.insert((t, self.ambient_variance, self.in_alias), g.clone());
         Ok(g)
     }
 
     #[instrument(level = "debug", skip(self, r2), ret)]
-    fn regions(
-        &mut self,
-        r: RegionRef<'_, 'db>,
-        r2: RegionRef<'_, 'db>,
-    ) -> RelateResult<'db, Region<'db>> {
+    fn regions(&mut self, r: Region<'db>, r2: Region<'db>) -> RelateResult<'db, Region<'db>> {
         assert_eq!(r, r2); // we are misusing TypeRelation here; both LHS and RHS ought to be ==
 
         match r.kind() {
             // Never make variables for regions bound within the type itself,
             // nor for erased regions.
             RegionKind::ReBound(..) | RegionKind::ReErased => {
-                return Ok(r.o());
+                return Ok(r);
             }
 
             // It doesn't really matter for correctness if we generalize ReError,
             // since we're already on a doomed compilation path.
             RegionKind::ReError(_) => {
-                return Ok(r.o());
+                return Ok(r);
             }
 
             RegionKind::RePlaceholder(..)
@@ -583,9 +586,9 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
         // as is, unless it happens to be in some universe that we
         // can't name.
         if let Variance::Invariant = self.ambient_variance {
-            let r_universe = self.infcx.universe_of_region(r);
+            let r_universe = self.infcx.universe_of_region(&r);
             if self.for_universe.can_name(r_universe) {
-                return Ok(r.o());
+                return Ok(r);
             }
         }
 
@@ -593,11 +596,7 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
     }
 
     #[instrument(level = "debug", skip(self, c2), ret)]
-    fn consts(
-        &mut self,
-        c: ConstRef<'_, 'db>,
-        c2: ConstRef<'_, 'db>,
-    ) -> RelateResult<'db, Const<'db>> {
+    fn consts(&mut self, c: Const<'db>, c2: Const<'db>) -> RelateResult<'db, Const<'db>> {
         assert_eq!(c, c2); // we are misusing TypeRelation here; both LHS and RHS ought to be ==
 
         match *c.kind() {
@@ -617,11 +616,11 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
                 match variable_table.probe_value(vid) {
                     ConstVariableValue::Known { value: u } => {
                         drop(inner);
-                        self.relate(u.r(), u.r())
+                        self.relate(u.clone(), u)
                     }
                     ConstVariableValue::Unknown { origin, universe } => {
                         if self.for_universe.can_name(universe) {
-                            Ok(c.o())
+                            Ok(c)
                         } else {
                             let new_var_id = variable_table
                                 .new_key(ConstVariableValue::Unknown {
@@ -662,7 +661,7 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
             }
             ConstKind::Placeholder(placeholder) => {
                 if self.for_universe.can_name(placeholder.universe) {
-                    Ok(c.o())
+                    Ok(c)
                 } else {
                     debug!(
                         "root universe {:?} cannot name placeholder in universe {:?}",
@@ -671,7 +670,7 @@ impl<'db> TypeRelation<DbInterner<'db>> for Generalizer<'_, 'db> {
                     Err(TypeError::Mismatch)
                 }
             }
-            _ => relate::structurally_relate_consts(self, c.o(), c.o()),
+            _ => relate::structurally_relate_consts(self, c.clone(), c),
         }
     }
 

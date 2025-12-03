@@ -9,7 +9,7 @@ use rustc_pattern_analysis::{
     constructor::{Constructor, ConstructorSet, VariantVisibility},
     usefulness::{PlaceValidity, UsefulnessReport, compute_match_usefulness},
 };
-use rustc_type_ir::inherent::{AdtDef, SliceLike};
+use rustc_type_ir::inherent::AdtDef;
 use smallvec::{SmallVec, smallvec};
 use stdx::never;
 use triomphe::Arc;
@@ -19,7 +19,7 @@ use crate::{
     db::HirDatabase,
     inhabitedness::{is_enum_variant_uninhabited_from, is_ty_uninhabited_from},
     next_solver::{
-        Ty, TyKind, TyRef,
+        Ty, TyKind,
         infer::{InferCtxt, traits::ObligationCause},
     },
 };
@@ -96,11 +96,11 @@ impl<'a, 'db> MatchCheckCtx<'a, 'db> {
         scrut_ty: Ty<'db>,
         known_valid_scrutinee: Option<bool>,
     ) -> Result<UsefulnessReport<'b, Self>, ()> {
-        if scrut_ty.r().references_non_lt_error() {
+        if scrut_ty.references_non_lt_error() {
             return Err(());
         }
         for arm in arms {
-            if arm.pat.ty().r().references_non_lt_error() {
+            if arm.pat.ty().references_non_lt_error() {
                 return Err(());
             }
         }
@@ -111,7 +111,7 @@ impl<'a, 'db> MatchCheckCtx<'a, 'db> {
         compute_match_usefulness(self, arms, scrut_ty, place_validity, complexity_limit)
     }
 
-    fn is_uninhabited(&self, ty: TyRef<'_, 'db>) -> bool {
+    fn is_uninhabited(&self, ty: Ty<'db>) -> bool {
         is_ty_uninhabited_from(self.infcx, ty, self.module, self.env.clone())
     }
 
@@ -148,17 +148,17 @@ impl<'a, 'db> MatchCheckCtx<'a, 'db> {
         ty: Ty<'db>,
         variant: VariantId,
     ) -> impl Iterator<Item = (LocalFieldId, Ty<'db>)> {
-        let (_, substs) = ty.r().as_adt().unwrap();
-        let substs = substs.o();
+        let (_, substs) = ty.as_adt().unwrap();
+        let substs = substs;
 
         let field_tys = self.db.field_types(variant);
         let fields_len = variant.fields(self.db).fields().len() as u32;
 
         (0..fields_len).map(|idx| LocalFieldId::from_raw(idx.into())).map(move |fid| {
-            let ty = field_tys[fid].clone().instantiate(self.infcx.interner, substs.r());
+            let ty = field_tys[fid].clone().instantiate(self.infcx.interner, &substs);
             let ty = self
                 .infcx
-                .at(&ObligationCause::dummy(), self.env.env.r())
+                .at(&ObligationCause::dummy(), &self.env.env)
                 .deeply_normalize(ty.clone())
                 .unwrap_or(ty);
             (fid, ty)
@@ -200,7 +200,7 @@ impl<'a, 'db> MatchCheckCtx<'a, 'db> {
                 match pat.ty.kind() {
                     TyKind::Tuple(substs) => {
                         ctor = Struct;
-                        arity = substs.r().len();
+                        arity = substs.len();
                     }
                     TyKind::Adt(adt_def, _) => {
                         let adt = adt_def.def_id().0;
@@ -328,7 +328,7 @@ impl<'a, 'db> PatCx for MatchCheckCtx<'a, 'db> {
     ) -> usize {
         match ctor {
             Struct | Variant(_) | UnionField => match ty.kind() {
-                TyKind::Tuple(tys) => tys.r().len(),
+                TyKind::Tuple(tys) => tys.len(),
                 TyKind::Adt(adt_def, ..) => {
                     let variant =
                         Self::variant_id_for_adt(self.db, ctor, adt_def.def_id().0).unwrap();
@@ -361,7 +361,7 @@ impl<'a, 'db> PatCx for MatchCheckCtx<'a, 'db> {
         let tys: SmallVec<[_; 2]> = match ctor {
             Struct | Variant(_) | UnionField => match ty.kind() {
                 TyKind::Tuple(substs) => {
-                    substs.r().iter().map(|ty| (ty.o(), PrivateUninhabitedField(false))).collect()
+                    substs.iter().map(|ty| (ty.clone(), PrivateUninhabitedField(false))).collect()
                 }
                 TyKind::Ref(_, rty, _) => single(rty.clone()),
                 TyKind::Adt(adt_def, ..) => {
@@ -376,7 +376,7 @@ impl<'a, 'db> PatCx for MatchCheckCtx<'a, 'db> {
                                 matches!(adt, hir_def::AdtId::EnumId(..))
                                     || visibilities[fid].is_visible_from(self.db, self.module)
                             };
-                            let is_uninhabited = self.is_uninhabited(ty.r());
+                            let is_uninhabited = self.is_uninhabited(ty.clone());
                             let private_uninhabited = is_uninhabited && !is_visible();
                             (ty.clone(), PrivateUninhabitedField(private_uninhabited))
                         })
@@ -447,7 +447,7 @@ impl<'a, 'db> PatCx for MatchCheckCtx<'a, 'db> {
                                 let is_uninhabited = is_enum_variant_uninhabited_from(
                                     cx.infcx,
                                     variant,
-                                    subst.r(),
+                                    subst.clone(),
                                     cx.module,
                                     self.env.clone(),
                                 );
@@ -467,11 +467,11 @@ impl<'a, 'db> PatCx for MatchCheckCtx<'a, 'db> {
                     }
                     hir_def::AdtId::UnionId(_) => ConstructorSet::Union,
                     hir_def::AdtId::StructId(_) => {
-                        ConstructorSet::Struct { empty: cx.is_uninhabited(ty.r()) }
+                        ConstructorSet::Struct { empty: cx.is_uninhabited(ty.clone()) }
                     }
                 }
             }
-            TyKind::Tuple(..) => ConstructorSet::Struct { empty: cx.is_uninhabited(ty.r()) },
+            TyKind::Tuple(..) => ConstructorSet::Struct { empty: cx.is_uninhabited(ty.clone()) },
             TyKind::Ref(..) => ConstructorSet::Ref,
             TyKind::Never => ConstructorSet::NoConstructors,
             // This type is one for which we cannot list constructors, like `str` or `f64`.

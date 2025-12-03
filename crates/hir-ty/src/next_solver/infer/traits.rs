@@ -14,8 +14,7 @@ use rustc_type_ir::elaborate::Elaboratable;
 use tracing::debug;
 
 use crate::next_solver::{
-    Binder, Clause, DbInterner, Goal, ParamEnv, Predicate, PredicateRef, Span, TraitPredicate,
-    TraitRef, Ty,
+    Binder, Clause, DbInterner, Goal, ParamEnv, Predicate, Span, TraitPredicate, TraitRef, Ty,
 };
 
 use super::InferCtxt;
@@ -86,8 +85,8 @@ pub struct Obligation<'db, T> {
 /// For [`Obligation`], a sub-obligation is combined with the current obligation's
 /// param-env and cause code.
 impl<'db> Elaboratable<DbInterner<'db>> for PredicateObligation<'db> {
-    fn predicate(&self) -> PredicateRef<'_, 'db> {
-        self.predicate.r()
+    fn predicate(&self) -> Predicate<'db> {
+        self.predicate.clone()
     }
 
     fn child(&self, clause: Clause<'db>) -> Self {
@@ -171,7 +170,7 @@ impl<'db> PredicateObligation<'db> {
         Some(PredicateObligation {
             cause: self.cause,
             param_env: self.param_env,
-            predicate: self.predicate.r().flip_polarity()?,
+            predicate: self.predicate.flip_polarity()?,
             recursion_depth: self.recursion_depth,
         })
     }

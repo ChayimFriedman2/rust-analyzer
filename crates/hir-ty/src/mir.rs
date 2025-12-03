@@ -164,7 +164,7 @@ impl<V, T> ProjectionElem<V, T> {
         // we only bail on mir building when there are type mismatches
         // but error types may pop up resulting in us still attempting to build the mir
         // so just propagate the error type
-        if base.r().is_ty_error() {
+        if base.is_ty_error() {
             return Ty::new_error();
         }
 
@@ -172,7 +172,7 @@ impl<V, T> ProjectionElem<V, T> {
             let mut ocx = ObligationCtxt::new(infcx);
             // FIXME: we should get this from caller
             let env = ParamEnv::empty();
-            match ocx.structurally_normalize_ty(&ObligationCause::dummy(), env.r(), base) {
+            match ocx.structurally_normalize_ty(&ObligationCause::dummy(), &env, base) {
                 Ok(it) => base = it,
                 Err(_) => return Ty::new_error(),
             }
@@ -181,7 +181,7 @@ impl<V, T> ProjectionElem<V, T> {
         match self {
             ProjectionElem::Deref => match base.kind() {
                 TyKind::RawPtr(inner, _) | TyKind::Ref(_, inner, _) => inner.clone(),
-                TyKind::Adt(adt_def, subst) if adt_def.is_box() => subst.r().type_at(0).o(),
+                TyKind::Adt(adt_def, subst) if adt_def.is_box() => subst.type_at(0),
                 _ => {
                     never!(
                         "Overloaded deref on type {} is not a projection",
@@ -192,7 +192,7 @@ impl<V, T> ProjectionElem<V, T> {
             },
             ProjectionElem::Field(Either::Left(f)) => match base.kind() {
                 TyKind::Adt(_, subst) => {
-                    db.field_types(f.parent)[f.local_id].clone().instantiate(interner, subst.r())
+                    db.field_types(f.parent)[f.local_id].clone().instantiate(interner, subst)
                 }
                 ty => {
                     never!("Only adt has field, found {:?}", ty);
@@ -201,7 +201,7 @@ impl<V, T> ProjectionElem<V, T> {
             },
             ProjectionElem::Field(Either::Right(f)) => match base.kind() {
                 TyKind::Tuple(subst) => {
-                    subst.as_slice().get(f.index as usize).map(|it| it.o()).unwrap_or_else(|| {
+                    subst.as_slice().get(f.index as usize).cloned().unwrap_or_else(|| {
                         never!("Out of bound tuple field");
                         Ty::new_error()
                     })
@@ -229,7 +229,7 @@ impl<V, T> ProjectionElem<V, T> {
                 TyKind::Array(inner, c) => {
                     let next_c = usize_const(
                         db,
-                        match try_const_usize(db, c.r()) {
+                        match try_const_usize(db, c.clone()) {
                             None => None,
                             Some(x) => x.checked_sub(u128::from(from + to)),
                         },

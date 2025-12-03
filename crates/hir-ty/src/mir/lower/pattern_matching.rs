@@ -1,7 +1,6 @@
 //! MIR lowering for patterns
 
 use hir_def::{hir::ExprId, signatures::VariantFields};
-use rustc_type_ir::inherent::SliceLike;
 
 use crate::{
     BindingMode,
@@ -148,7 +147,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
                     current_else,
                     args,
                     *ellipsis,
-                    (0..subst.r().len()).map(|i| {
+                    (0..subst.len()).map(|i| {
                         PlaceElem::Field(Either::Right(TupleFieldId {
                             tuple: TupleId(!0), // Dummy as it is unused
                             index: i as u32,
@@ -394,7 +393,7 @@ impl<'db> MirLowerCtx<'_, 'db> {
                         if let Some(x) = self.infer.assoc_resolutions_for_pat(pattern)
                             && let CandidateId::ConstId(c) = x.0
                         {
-                            break 'b (c, x.1.o());
+                            break 'b (c, x.1);
                         }
                         if let ResolveValueResult::ValueNs(ValueNs::ConstId(c), _) = pr {
                             break 'b (c, GenericArgs::default());

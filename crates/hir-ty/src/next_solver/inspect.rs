@@ -11,7 +11,7 @@ use rustc_type_ir::{
 };
 
 use crate::next_solver::{
-    DbInterner, GenericArg, GenericArgs, Goal, NormalizesTo, ParamEnvRef, Predicate, PredicateKind,
+    DbInterner, GenericArg, GenericArgs, Goal, NormalizesTo, ParamEnv, Predicate, PredicateKind,
     QueryResult, SolverContext, Span, Term,
     fulfill::NextSolverError,
     infer::{
@@ -84,11 +84,16 @@ impl<'db> NormalizesToTermHack<'db> {
     fn constrain_and(
         &self,
         infcx: &InferCtxt<'db>,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         f: impl FnOnce(&mut ObligationCtxt<'_, 'db>),
     ) -> Result<Certainty, NoSolution> {
         let mut ocx = ObligationCtxt::new(infcx);
-        ocx.eq(&ObligationCause::dummy(), param_env, self.term.r(), self.unconstrained_term.r())?;
+        ocx.eq(
+            &ObligationCause::dummy(),
+            param_env,
+            self.term.clone(),
+            self.unconstrained_term.clone(),
+        )?;
         f(&mut ocx);
         let errors = ocx.evaluate_obligations_error_on_ambiguity();
         if errors.is_empty() {
@@ -158,7 +163,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
     /// See [`Self::instantiate_impl_args`] if you need the impl args too.
     pub(crate) fn instantiate_nested_goals(&self) -> Vec<InspectGoal<'a, 'db>> {
         let infcx = self.goal.infcx;
-        let param_env = self.goal.goal.param_env.r();
+        let param_env = &self.goal.goal.param_env;
         let mut orig_values = self.goal.orig_values.to_vec();
 
         let mut instantiated_goals = vec![];
@@ -169,7 +174,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
                     instantiate_canonical_state(
                         infcx,
                         Span::dummy(),
-                        param_env,
+                        param_env.clone(),
                         &mut orig_values,
                         goal.clone(),
                     ),
@@ -183,7 +188,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
         let () = instantiate_canonical_state(
             infcx,
             Span::dummy(),
-            param_env,
+            param_env.clone(),
             &mut orig_values,
             self.final_state.clone(),
         );
@@ -206,7 +211,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
     /// `infcx`.
     pub(crate) fn instantiate_impl_args(&self) -> GenericArgs<'db> {
         let infcx = self.goal.infcx;
-        let param_env = self.goal.goal.param_env.r();
+        let param_env = &self.goal.goal.param_env;
         let mut orig_values = self.goal.orig_values.to_vec();
 
         for step in &self.steps {
@@ -215,7 +220,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
                     let impl_args = instantiate_canonical_state(
                         infcx,
                         Span::dummy(),
-                        param_env,
+                        param_env.clone(),
                         &mut orig_values,
                         impl_args.clone(),
                     );
@@ -223,7 +228,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
                     let () = instantiate_canonical_state(
                         infcx,
                         Span::dummy(),
-                        param_env,
+                        param_env.clone(),
                         &mut orig_values,
                         self.final_state.clone(),
                     );
@@ -253,7 +258,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
         let infcx = self.goal.infcx;
         match goal.predicate.kind().no_bound_vars_ref() {
             Some(PredicateKind::NormalizesTo(NormalizesTo { alias, term })) => {
-                let unconstrained_term = infcx.next_term_var_of_kind(term.r());
+                let unconstrained_term = infcx.next_term_var_of_kind(term);
                 let goal = goal.with(
                     infcx.interner,
                     NormalizesTo { alias: alias.clone(), term: unconstrained_term.clone() },
@@ -276,7 +281,7 @@ impl<'a, 'db> InspectCandidate<'a, 'db> {
                     let nested_goals_result = nested.and_then(|nested| {
                         normalizes_to_term_hack.constrain_and(
                             infcx,
-                            proof_tree.uncanonicalized_goal.param_env.r(),
+                            &proof_tree.uncanonicalized_goal.param_env,
                             |ocx| {
                                 ocx.register_obligations(nested.0.into_iter().map(|(_, goal)| {
                                     Obligation::new(

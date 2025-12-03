@@ -69,7 +69,7 @@ impl<'db> InferCtxt<'db> {
 
         let var_values = CanonicalVarValues::instantiate(
             self.interner,
-            canonical.variables.r(),
+            canonical.variables.clone(),
             |var_values, info| self.instantiate_canonical_var(info, var_values, |ui| universes[ui]),
         );
         let result = canonical.instantiate(self.interner, &var_values);
@@ -96,7 +96,7 @@ impl<'db> InferCtxt<'db> {
                 // If this inference variable is related to an earlier variable
                 // via subtyping, we need to add that info to the inference context.
                 if let Some(prev) = previous_var_values.get(sub_root.as_usize()) {
-                    if let TyKind::Infer(InferTy::TyVar(sub_root)) = *prev.r().expect_ty().kind() {
+                    if let TyKind::Infer(InferTy::TyVar(sub_root)) = *prev.expect_ty().kind() {
                         self.sub_unify_ty_vids_raw(vid, sub_root);
                     } else {
                         unreachable!()

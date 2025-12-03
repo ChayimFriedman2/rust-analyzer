@@ -14,7 +14,7 @@ use rustc_type_ir::{
 };
 
 use crate::next_solver::{
-    DbInterner, SolverContext, SolverDefId, Span, Ty, TyKind, TyRef, TypingMode,
+    DbInterner, SolverContext, SolverDefId, Span, Ty, TyKind, TypingMode,
     infer::{
         InferCtxt,
         traits::{PredicateObligation, PredicateObligations},
@@ -302,8 +302,8 @@ impl<'db> ProofTreeVisitor<'db> for StalledOnCoroutines<'_, 'db> {
 impl<'db> TypeVisitor<DbInterner<'db>> for StalledOnCoroutines<'_, 'db> {
     type Result = ControlFlow<()>;
 
-    fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
-        if !self.cache.insert(ty.o()) {
+    fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
+        if !self.cache.insert(ty.clone()) {
             return ControlFlow::Continue(());
         }
 

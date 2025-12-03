@@ -423,7 +423,7 @@ pub use crate::_impl_slice_internable as impl_slice_internable;
 pub trait CollectAndIntern<I: SliceInternable<SliceType = T>, T> {
     type Output;
 
-    fn collect_and_intern<Iter>(header: I::Header, iter: Iter) -> Self::Output
+    fn collect_and_intern<Iter>(header: impl FnOnce(&[T]) -> I::Header, iter: Iter) -> Self::Output
     where
         Iter: Iterator<Item = Self>;
 }
@@ -433,15 +433,25 @@ impl<I: SliceInternable<SliceType = T>, T> CollectAndIntern<I, T> for T {
     type Output = InternedSlice<I>;
 
     /// Equivalent to `f(&iter.collect::<Vec<_>>())`.
-    fn collect_and_intern<Iter>(header: I::Header, mut iter: Iter) -> Self::Output
+    fn collect_and_intern<Iter>(
+        header: impl FnOnce(&[Self]) -> I::Header,
+        mut iter: Iter,
+    ) -> Self::Output
     where
         Iter: Iterator<Item = T>,
     {
         // This code is hot enough that it's worth specializing for the most
         // common length lists, to avoid the overhead of `Vec` creation.
-        let create = |header, args| unsafe {
-            InternedSlice::from_header_and_slice_assume_owned(header, args)
-        };
+        #[inline(always)]
+        fn create<I: SliceInternable>(
+            header: impl FnOnce(&[I::SliceType]) -> I::Header,
+            args: &mut [ManuallyDrop<I::SliceType>],
+        ) -> InternedSlice<I> {
+            let header = header(unsafe {
+                &*(args as *const [ManuallyDrop<I::SliceType>] as *const [I::SliceType])
+            });
+            unsafe { InternedSlice::from_header_and_slice_assume_owned(header, args) }
+        }
 
         let m = ManuallyDrop::new;
 
@@ -482,7 +492,8 @@ impl<I: SliceInternable<SliceType = T>, T> CollectAndIntern<I, T> for T {
         };
 
         let first = [t0, t1, t2, t3, t4, t5, t6, t7, t8];
-        InternedSlice::from_header_and_iter(header, first.into_iter().chain(iter))
+        let vec = first.into_iter().chain(iter).collect::<Vec<_>>();
+        InternedSlice::from_header_and_vec(header(&vec), vec)
     }
 }
 
@@ -492,7 +503,10 @@ impl<I: SliceInternable<SliceType = T>, T, E> CollectAndIntern<I, T> for Result<
     type Output = Result<InternedSlice<I>, E>;
 
     /// Equivalent to `Ok(f(&iter.collect::<Result<Vec<_>>>()?))`.
-    fn collect_and_intern<Iter>(header: I::Header, mut iter: Iter) -> Self::Output
+    fn collect_and_intern<Iter>(
+        header: impl FnOnce(&[T]) -> I::Header,
+        mut iter: Iter,
+    ) -> Self::Output
     where
         Iter: Iterator<Item = Result<T, E>>,
     {
@@ -500,9 +514,16 @@ impl<I: SliceInternable<SliceType = T>, T, E> CollectAndIntern<I, T> for Result<
         // common length lists, to avoid the overhead of `Vec` creation.
         // This code is hot enough that it's worth specializing for the most
         // common length lists, to avoid the overhead of `Vec` creation.
-        let create = |header, args| unsafe {
-            InternedSlice::from_header_and_slice_assume_owned(header, args)
-        };
+        #[inline(always)]
+        fn create<I: SliceInternable>(
+            header: impl FnOnce(&[I::SliceType]) -> I::Header,
+            args: &mut [ManuallyDrop<I::SliceType>],
+        ) -> InternedSlice<I> {
+            let header = header(unsafe {
+                &*(args as *const [ManuallyDrop<I::SliceType>] as *const [I::SliceType])
+            });
+            unsafe { InternedSlice::from_header_and_slice_assume_owned(header, args) }
+        }
 
         let m = ManuallyDrop::new;
 
@@ -555,8 +576,8 @@ impl<I: SliceInternable<SliceType = T>, T, E> CollectAndIntern<I, T> for Result<
         let t8 = t8?;
 
         let first = [t0, t1, t2, t3, t4, t5, t6, t7, t8];
-        let all = first.into_iter().map(Ok).chain(iter).collect::<Result<_, _>>()?;
-        Ok(InternedSlice::from_header_and_vec(header, all))
+        let all = first.into_iter().map(Ok).chain(iter).collect::<Result<Vec<_>, _>>()?;
+        Ok(InternedSlice::from_header_and_vec(header(&all), all))
     }
 }
 
@@ -593,13 +614,13 @@ mod tests {
     #[test]
     fn collect_and_intern() {
         let a = CollectAndIntern::<MyStorage, _>::collect_and_intern(
-            "abc".to_owned(),
+            |_| "abc".to_owned(),
             std::array::repeat::<_, 5>(vec![1]).into_iter(),
         );
         assert_eq!(a.header.header, "abc");
         assert_eq!(a.header.length, 5);
         let b = CollectAndIntern::<MyStorage, _>::collect_and_intern(
-            "abc".to_owned(),
+            |_| "abc".to_owned(),
             std::array::repeat::<_, 3>(Ok::<_, ()>(vec![1]))
                 .into_iter()
                 .chain(std::array::repeat::<_, 2>(Ok(vec![1]))),
@@ -607,17 +628,17 @@ mod tests {
         .unwrap();
         assert_eq!(a, b);
         let c = CollectAndIntern::<MyStorage, _>::collect_and_intern(
-            "abc".to_owned(),
+            |_| "abc".to_owned(),
             std::array::repeat::<_, 100>(vec![1]).into_iter(),
         );
         assert_eq!(c.header.length, 100);
         CollectAndIntern::<MyStorage, _>::collect_and_intern(
-            "abc".to_owned(),
+            |_| "abc".to_owned(),
             std::array::repeat::<_, 2>(Ok(vec![1])).into_iter().chain(std::iter::once(Err(()))),
         )
         .unwrap_err();
         CollectAndIntern::<MyStorage, _>::collect_and_intern(
-            "abc".to_owned(),
+            |_| "abc".to_owned(),
             std::array::repeat::<_, 100>(Ok(vec![1])).into_iter().chain(std::iter::once(Err(()))),
         )
         .unwrap_err();

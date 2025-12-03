@@ -30,8 +30,8 @@ use crate::{
         incoherent_inherent_impls, simplified_type_module,
     },
     next_solver::{
-        Binder, Canonical, ClauseKind, DbInterner, FnSig, GenericArgs, GenericArgsRef, Goal,
-        ParamEnvRef, PolyTraitRef, Predicate, Region, SimplifiedType, TraitRef, Ty, TyKind, TyRef,
+        Binder, Canonical, ClauseKind, DbInterner, FnSig, GenericArgs, Goal, ParamEnv,
+        PolyTraitRef, Predicate, Region, SimplifiedType, TraitRef, Ty, TyKind,
         infer::{
             BoundRegionConversionTime, InferCtxt, InferOk,
             canonical::{QueryResponse, canonicalizer::OriginalQueryValues},
@@ -334,7 +334,7 @@ impl<'a, 'db> MethodResolutionContext<'a, 'db> {
                     .infcx
                     .instantiate_query_response_and_region_obligations(
                         &ObligationCause::new(),
-                        self.env.env.r(),
+                        &self.env.env,
                         &orig_values,
                         ty,
                     )
@@ -374,7 +374,7 @@ impl<'a, 'db> MethodResolutionContext<'a, 'db> {
             // infer var is not an opaque.
             let infcx = self.infcx;
             let (self_ty, inference_vars) = infcx.instantiate_canonical(self_ty);
-            let self_ty_is_opaque = |ty: TyRef<'_, '_>| {
+            let self_ty_is_opaque = |ty: &Ty<'_>| {
                 if let TyKind::Infer(InferTy::TyVar(vid)) = *ty.kind() {
                     infcx.has_opaques_with_sub_unified_hidden_type(vid)
                 } else {
@@ -409,12 +409,12 @@ impl<'a, 'db> MethodResolutionContext<'a, 'db> {
                     .zip(reachable_via_deref)
                     .map(|((ty, d), reachable_via_deref)| {
                         let old_reached_raw_pointer = reached_raw_pointer;
-                        if ty.r().is_raw_ptr() {
+                        if ty.is_raw_ptr() {
                             // all the subsequent steps will be from_unsafe_deref
                             reached_raw_pointer = true;
                         }
                         let step = CandidateStep {
-                            self_ty_is_opaque: self_ty_is_opaque(ty.r()),
+                            self_ty_is_opaque: self_ty_is_opaque(&ty),
                             self_ty: infcx.make_query_response_ignoring_pending_obligations(
                                 inference_vars.clone(),
                                 ty,
@@ -433,12 +433,12 @@ impl<'a, 'db> MethodResolutionContext<'a, 'db> {
                     .by_ref()
                     .map(|(ty, d)| {
                         let old_reached_raw_pointer = reached_raw_pointer;
-                        if ty.r().is_raw_ptr() {
+                        if ty.is_raw_ptr() {
                             // all the subsequent steps will be from_unsafe_deref
                             reached_raw_pointer = true;
                         }
                         let step = CandidateStep {
-                            self_ty_is_opaque: self_ty_is_opaque(ty.r()),
+                            self_ty_is_opaque: self_ty_is_opaque(&ty),
                             self_ty: infcx.make_query_response_ignoring_pending_obligations(
                                 inference_vars.clone(),
                                 ty,
@@ -455,21 +455,19 @@ impl<'a, 'db> MethodResolutionContext<'a, 'db> {
             };
             let final_ty = autoderef_via_deref.final_ty();
             let opt_bad_ty = match final_ty.kind() {
-                TyKind::Infer(InferTy::TyVar(_)) if !self_ty_is_opaque(final_ty) => {
+                TyKind::Infer(InferTy::TyVar(_)) if !self_ty_is_opaque(&final_ty) => {
                     Some(MethodAutoderefBadTy {
                         reached_raw_pointer,
                         ty: infcx.make_query_response_ignoring_pending_obligations(
                             inference_vars,
-                            final_ty.o(),
+                            final_ty,
                         ),
                     })
                 }
                 TyKind::Error(_) => Some(MethodAutoderefBadTy {
                     reached_raw_pointer,
-                    ty: infcx.make_query_response_ignoring_pending_obligations(
-                        inference_vars,
-                        final_ty.o(),
-                    ),
+                    ty: infcx
+                        .make_query_response_ignoring_pending_obligations(inference_vars, final_ty),
                 }),
                 TyKind::Array(elem_ty, _) => {
                     let autoderefs = steps.iter().filter(|s| s.reachable_via_deref).count() - 1;
@@ -514,13 +512,13 @@ trait ProbeChoice<'db>: Sized {
 
     fn consider_candidates(
         this: &ProbeContext<'_, 'db, Self>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         candidates: Vec<&Candidate<'db>>,
     ) -> ControlFlow<Self::Choice>;
 
     fn consider_private_candidates(
         this: &mut ProbeContext<'_, 'db, Self>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     );
 
@@ -533,7 +531,7 @@ trait ProbeChoice<'db>: Sized {
         this: &mut ProbeContext<'_, 'db, Self>,
         by_value_pick: &Self::Choice,
         step: &CandidateStep<'db>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Self::Choice>;
 
@@ -541,7 +539,7 @@ trait ProbeChoice<'db>: Sized {
         this: &mut ProbeContext<'_, 'db, Self>,
         autoref_pick: &Self::Choice,
         step: &CandidateStep<'db>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Self::Choice>;
 
@@ -587,12 +585,12 @@ impl<'db> ProbeChoice<'db> for ProbeForNameChoice<'db> {
 
     fn consider_candidates(
         this: &ProbeContext<'_, 'db, Self>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         mut applicable_candidates: Vec<&Candidate<'db>>,
     ) -> ControlFlow<Self::Choice> {
         if applicable_candidates.len() > 1
             && let Some(pick) =
-                this.collapse_candidates_to_trait_pick(self_ty, &applicable_candidates)
+                this.collapse_candidates_to_trait_pick(self_ty.clone(), &applicable_candidates)
         {
             return ControlFlow::Break(Ok(pick));
         }
@@ -602,26 +600,28 @@ impl<'db> ProbeChoice<'db> for ProbeForNameChoice<'db> {
             // to make sure we don't prefer a unstable subtrait method over a stable
             // supertrait method.
             if this.ctx.unstable_features.supertrait_item_shadowing
-                && let Some(pick) =
-                    this.collapse_candidates_to_subtrait_pick(self_ty, &applicable_candidates)
+                && let Some(pick) = this
+                    .collapse_candidates_to_subtrait_pick(self_ty.clone(), &applicable_candidates)
             {
                 return ControlFlow::Break(Ok(pick));
             }
 
-            let sources =
-                applicable_candidates.iter().map(|p| this.candidate_source(p, self_ty)).collect();
+            let sources = applicable_candidates
+                .iter()
+                .map(|p| this.candidate_source(p, self_ty.clone()))
+                .collect();
             return ControlFlow::Break(Err(MethodError::Ambiguity(sources)));
         }
 
         match applicable_candidates.pop() {
-            Some(probe) => ControlFlow::Break(Ok(probe.to_unadjusted_pick(self_ty.o()))),
+            Some(probe) => ControlFlow::Break(Ok(probe.to_unadjusted_pick(self_ty))),
             None => ControlFlow::Continue(()),
         }
     }
 
     fn consider_private_candidates(
         this: &mut ProbeContext<'_, 'db, Self>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) {
         if this.choice.private_candidate.is_none()
@@ -647,7 +647,7 @@ impl<'db> ProbeChoice<'db> for ProbeForNameChoice<'db> {
         this: &mut ProbeContext<'_, 'db, Self>,
         by_value_pick: &Self::Choice,
         step: &CandidateStep<'db>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Self::Choice> {
         if let Ok(by_value_pick) = by_value_pick
@@ -657,7 +657,7 @@ impl<'db> ProbeChoice<'db> for ProbeForNameChoice<'db> {
                 if let Err(e) = this.check_for_shadowed_autorefd_method(
                     by_value_pick,
                     step,
-                    self_ty,
+                    self_ty.clone(),
                     instantiate_self_ty_obligations,
                     mutbl,
                 ) {
@@ -672,7 +672,7 @@ impl<'db> ProbeChoice<'db> for ProbeForNameChoice<'db> {
         this: &mut ProbeContext<'_, 'db, Self>,
         autoref_pick: &Self::Choice,
         step: &CandidateStep<'db>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Self::Choice> {
         if let Ok(autoref_pick) = autoref_pick.as_ref() {
@@ -731,7 +731,7 @@ impl<'db> ProbeChoice<'db> for ProbeAllChoice<'db> {
 
     fn consider_candidates(
         this: &ProbeContext<'_, 'db, Self>,
-        _self_ty: TyRef<'_, 'db>,
+        _self_ty: Ty<'db>,
         candidates: Vec<&Candidate<'db>>,
     ) -> ControlFlow<Self::Choice> {
         let is_visible = this.choice.considering_visible_candidates;
@@ -748,7 +748,7 @@ impl<'db> ProbeChoice<'db> for ProbeAllChoice<'db> {
 
     fn consider_private_candidates(
         this: &mut ProbeContext<'_, 'db, Self>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) {
         this.choice.considering_visible_candidates = false;
@@ -772,7 +772,7 @@ impl<'db> ProbeChoice<'db> for ProbeAllChoice<'db> {
         _this: &mut ProbeContext<'_, 'db, Self>,
         _by_value_pick: &Self::Choice,
         _step: &CandidateStep<'db>,
-        _self_ty: TyRef<'_, 'db>,
+        _self_ty: Ty<'db>,
         _instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Self::Choice> {
         ControlFlow::Continue(())
@@ -782,7 +782,7 @@ impl<'db> ProbeChoice<'db> for ProbeAllChoice<'db> {
         _this: &mut ProbeContext<'_, 'db, Self>,
         _autoref_pick: &Self::Choice,
         _step: &CandidateStep<'db>,
-        _self_ty: TyRef<'_, 'db>,
+        _self_ty: Ty<'db>,
         _instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Self::Choice> {
         ControlFlow::Continue(())
@@ -836,8 +836,8 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     }
 
     #[inline]
-    fn param_env(&self) -> ParamEnvRef<'a, 'db> {
-        self.ctx.env.env.r()
+    fn param_env(&self) -> &ParamEnv<'db> {
+        &self.ctx.env.env
     }
 
     /// When we're looking up a method by path (UFCS), we relate the receiver
@@ -887,10 +887,10 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
         self_ty: &Canonical<'db, QueryResponse<'db, Ty<'db>>>,
         receiver_steps: usize,
     ) {
-        let raw_self_ty = self_ty.value.value.r();
+        let raw_self_ty = self_ty.value.value.clone();
         match raw_self_ty.kind() {
             TyKind::Dynamic(data, ..) => {
-                if let Some(p) = data.r().principal() {
+                if let Some(p) = data.principal() {
                     // Subtle: we can't use `instantiate_query_response` here: using it will
                     // commit to all of the type equalities assumed by inference going through
                     // autoderef (see the `method-probe-no-guessing` test).
@@ -960,12 +960,12 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
 
     fn assemble_inherent_candidates_for_incoherent_ty(
         &mut self,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         receiver_steps: usize,
     ) {
         let Some(simp) = simplify_type(self.interner(), self_ty, TreatParams::InstantiateWithInfer)
         else {
-            panic!("unexpected incoherent type: {:?}", self_ty)
+            panic!("unexpected incoherent type")
         };
         for &impl_def_id in incoherent_inherent_impls(self.db(), simp) {
             self.assemble_inherent_impl_probe(impl_def_id, receiver_steps);
@@ -1014,7 +1014,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     #[instrument(level = "debug", skip(self))]
     fn assemble_inherent_candidates_from_object(&mut self, self_ty: Ty<'db>) {
         let principal = match self_ty.kind() {
-            TyKind::Dynamic(data, ..) => Some(data.r()),
+            TyKind::Dynamic(data, ..) => Some(data),
             _ => None,
         }
         .and_then(|data| data.principal())
@@ -1038,7 +1038,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     }
 
     #[instrument(level = "debug", skip(self))]
-    fn assemble_inherent_candidates_from_param(&mut self, param_ty: TyRef<'_, 'db>) {
+    fn assemble_inherent_candidates_from_param(&mut self, param_ty: Ty<'db>) {
         debug_assert!(matches!(param_ty.kind(), TyKind::Param(_)));
 
         let interner = self.interner();
@@ -1046,10 +1046,11 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
         // We use `DeepRejectCtxt` here which may return false positive on where clauses
         // with alias self types. We need to later on reject these as inherent candidates
         // in `consider_probe`.
-        let bounds = self.param_env().clauses.iter().filter_map(|predicate| {
-            match predicate.kind_skip_binder() {
+        let param_env = self.param_env().clone();
+        let bounds =
+            param_env.clauses.iter().filter_map(|predicate| match predicate.kind_skip_binder() {
                 ClauseKind::Trait(trait_predicate) => DeepRejectCtxt::relate_rigid_rigid(interner)
-                    .types_may_unify(param_ty, trait_predicate.trait_ref.self_ty())
+                    .types_may_unify(param_ty.clone(), trait_predicate.trait_ref.self_ty())
                     .then(|| predicate.kind().rebind(trait_predicate.trait_ref.clone())),
                 ClauseKind::RegionOutlives(_)
                 | ClauseKind::TypeOutlives(_)
@@ -1059,8 +1060,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                 | ClauseKind::ConstEvaluatable(_)
                 | ClauseKind::UnstableFeature(_)
                 | ClauseKind::HostEffect(..) => None,
-            }
-        });
+            });
 
         self.assemble_candidates_for_bounds(bounds, |this, poly_trait_ref, item| {
             this.push_candidate(
@@ -1161,7 +1161,7 @@ impl<'a, 'db> ProbeContext<'a, 'db, ProbeForNameChoice<'db>> {
         &mut self,
         possible_shadower: &Pick<'db>,
         step: &CandidateStep<'db>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
         mutbl: Mutability,
     ) -> Result<(), MethodError<'db>> {
@@ -1217,7 +1217,7 @@ impl<'a, 'db> ProbeContext<'a, 'db, ProbeForNameChoice<'db>> {
         // in the case of such shadowing.
         let potentially_shadowed_pick = self.pick_autorefd_method(
             step,
-            self_ty.o(),
+            self_ty,
             instantiate_self_ty_obligations,
             mutbl,
             Some(&pick_constraints),
@@ -1247,7 +1247,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                 debug!("pick_all_method: step={:?}", step);
                 // skip types that are from a type error or that would require dereferencing
                 // a raw pointer
-                !step.self_ty.value.value.r().references_non_lt_error() && !step.from_unsafe_deref
+                !step.self_ty.value.value.references_non_lt_error() && !step.from_unsafe_deref
             })
             .try_for_each(|step| {
                 let InferOk { value: self_ty, obligations: instantiate_self_ty_obligations } = self
@@ -1260,8 +1260,11 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     )
                     .unwrap_or_else(|_| panic!("{:?} was applicable but now isn't?", step.self_ty));
 
-                let by_value_pick =
-                    self.pick_by_value_method(step, self_ty.r(), &instantiate_self_ty_obligations);
+                let by_value_pick = self.pick_by_value_method(
+                    step,
+                    self_ty.clone(),
+                    &instantiate_self_ty_obligations,
+                );
 
                 // Check for shadowing of a by-reference method by a by-value method (see comments on check_for_shadowing)
                 if let ControlFlow::Break(by_value_pick) = by_value_pick {
@@ -1269,7 +1272,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                         self,
                         &by_value_pick,
                         step,
-                        self_ty.r(),
+                        self_ty,
                         &instantiate_self_ty_obligations,
                     )?;
                     return ControlFlow::Break(by_value_pick);
@@ -1288,7 +1291,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                         self,
                         &autoref_pick,
                         step,
-                        self_ty.r(),
+                        self_ty,
                         &instantiate_self_ty_obligations,
                     )?;
                     return ControlFlow::Break(autoref_pick);
@@ -1324,7 +1327,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     Mutability::Mut,
                     None,
                 )?;
-                self.pick_const_ptr_method(step, self_ty.r(), &instantiate_self_ty_obligations)
+                self.pick_const_ptr_method(step, self_ty, &instantiate_self_ty_obligations)
             })
     }
 
@@ -1337,7 +1340,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     fn pick_by_value_method(
         &mut self,
         step: &CandidateStep<'db>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Choice::Choice> {
         if step.unsize {
@@ -1384,15 +1387,16 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
         let region = Region::new_erased();
 
         let autoref_ty = Ty::new_ref(region, self_ty, mutbl);
-        self.pick_method(autoref_ty.r(), instantiate_self_ty_obligations, pick_constraints)
-            .map_break(|r| {
+        self.pick_method(autoref_ty, instantiate_self_ty_obligations, pick_constraints).map_break(
+            |r| {
                 Choice::map_choice_pick(r, |mut pick| {
                     pick.autoderefs = step.autoderefs;
                     pick.autoref_or_ptr_adjustment =
                         Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
                     pick
                 })
-            })
+            },
+        )
     }
 
     /// If `self_ty` is `*mut T` then this picks `*const T` methods. The reason why we have a
@@ -1401,7 +1405,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     fn pick_const_ptr_method(
         &mut self,
         step: &CandidateStep<'db>,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
     ) -> ControlFlow<Choice::Choice> {
         // Don't convert an unsized reference to ptr
@@ -1414,7 +1418,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
         };
 
         let const_ptr_ty = Ty::new_ptr(ty.clone(), Mutability::Not);
-        self.pick_method(const_ptr_ty.r(), instantiate_self_ty_obligations, None).map_break(|r| {
+        self.pick_method(const_ptr_ty, instantiate_self_ty_obligations, None).map_break(|r| {
             Choice::map_choice_pick(r, |mut pick| {
                 pick.autoderefs = step.autoderefs;
                 pick.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::ToConstPtr);
@@ -1425,7 +1429,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
 
     fn pick_method(
         &mut self,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
         pick_constraints: Option<&PickConstraintsForShadowed>,
     ) -> ControlFlow<Choice::Choice> {
@@ -1436,7 +1440,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
         {
             debug!("searching {} candidates", kind);
             self.consider_candidates(
-                self_ty,
+                self_ty.clone(),
                 instantiate_self_ty_obligations,
                 candidates,
                 pick_constraints,
@@ -1450,7 +1454,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
 
     fn consider_candidates(
         &self,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
         candidates: &[Candidate<'db>],
         pick_constraints: Option<&PickConstraintsForShadowed>,
@@ -1463,7 +1467,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     .unwrap_or(true)
             })
             .filter(|probe| {
-                self.consider_probe(self_ty, instantiate_self_ty_obligations, probe)
+                self.consider_probe(self_ty.clone(), instantiate_self_ty_obligations, probe)
                     != ProbeResult::NoMatch
             })
             .collect();
@@ -1480,7 +1484,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
         let obligation = Obligation::new(
             self.interner(),
             ObligationCause::new(),
-            self.param_env().o(),
+            self.param_env().clone(),
             trait_ref,
         );
         self.infcx().select(&obligation)
@@ -1488,11 +1492,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
 
     /// Used for ambiguous method call error reporting. Uses probing that throws away the result internally,
     /// so do not use to make a decision that may lead to a successful compilation.
-    fn candidate_source(
-        &self,
-        candidate: &Candidate<'db>,
-        self_ty: TyRef<'_, 'db>,
-    ) -> CandidateSource {
+    fn candidate_source(&self, candidate: &Candidate<'db>, self_ty: Ty<'db>) -> CandidateSource {
         match &candidate.kind {
             &InherentImplCandidate { impl_def_id, .. } => CandidateSource::Impl(impl_def_id),
             ObjectCandidate(trait_ref) | WhereClauseCandidate(trait_ref) => {
@@ -1504,13 +1504,13 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     trait_ref.clone(),
                 );
                 let (xform_self_ty, _) =
-                    self.xform_self_ty(candidate.item, trait_ref.self_ty(), trait_ref.args.r());
+                    self.xform_self_ty(candidate.item, trait_ref.self_ty(), trait_ref.args.clone());
                 // Guide the trait selection to show impls that have methods whose type matches
                 // up with the `self` parameter of the method.
                 let _ = self
                     .infcx()
                     .at(&ObligationCause::dummy(), self.param_env())
-                    .sup(xform_self_ty.r(), self_ty);
+                    .sup(xform_self_ty, self_ty);
                 let trait_id = trait_ref.def_id.0;
                 match self.select_trait_candidate(trait_ref) {
                     Ok(Some(ImplSource::UserDefined(ref impl_data))) => {
@@ -1537,7 +1537,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     #[instrument(level = "debug", skip(self), ret)]
     fn consider_probe(
         &self,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         instantiate_self_ty_obligations: &[PredicateObligation<'db>],
         probe: &Candidate<'db>,
     ) -> ProbeResult {
@@ -1568,15 +1568,15 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     let impl_ty = self
                         .db()
                         .impl_self_ty(impl_def_id)
-                        .instantiate(self.interner(), impl_args.r());
+                        .instantiate(self.interner(), &impl_args);
                     (xform_self_ty, xform_ret_ty) =
-                        self.xform_self_ty(probe.item, impl_ty.r(), impl_args.r());
+                        self.xform_self_ty(probe.item, impl_ty, impl_args.clone());
                     match ocx.relate(
                         cause,
                         self.param_env(),
                         self.variance(),
                         self_ty,
-                        xform_self_ty.r(),
+                        xform_self_ty,
                     ) {
                         Ok(()) => {}
                         Err(err) => {
@@ -1587,7 +1587,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     // Check whether the impl imposes obligations we have to worry about.
                     let impl_bounds = GenericPredicates::query_all(self.db(), impl_def_id.into());
                     let impl_bounds = clauses_as_obligations(
-                        impl_bounds.iter_instantiated_owned(self.interner(), impl_args.r()),
+                        impl_bounds.iter_instantiated_cloned(self.interner(), impl_args.as_slice()),
                         ObligationCause::new(),
                         self.param_env(),
                     );
@@ -1609,7 +1609,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
 
                     // Some trait methods are excluded for boxed slices before 2024.
                     // (`boxed_slice.into_iter()` wants a slice iterator for compatibility.)
-                    if self_ty.boxed_ty().is_some_and(TyRef::is_slice)
+                    if self_ty.boxed_ty().is_some_and(|ty| ty.is_slice())
                         && !self.ctx.edition.at_least_2024()
                     {
                         let trait_signature = self.db().trait_signature(poly_trait_ref.def_id().0);
@@ -1626,13 +1626,13 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                         poly_trait_ref.clone(),
                     );
                     (xform_self_ty, xform_ret_ty) =
-                        self.xform_self_ty(probe.item, trait_ref.self_ty(), trait_ref.args.r());
+                        self.xform_self_ty(probe.item, trait_ref.self_ty(), trait_ref.args.clone());
                     match ocx.relate(
                         cause,
                         self.param_env(),
                         self.variance(),
                         self_ty,
-                        xform_self_ty.r(),
+                        xform_self_ty,
                     ) {
                         Ok(()) => {}
                         Err(err) => {
@@ -1643,7 +1643,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     let obligation = Obligation::new(
                         self.interner(),
                         cause.clone(),
-                        self.param_env().o(),
+                        self.param_env().clone(),
                         Binder::dummy(trait_ref.clone()),
                     );
 
@@ -1658,7 +1658,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                         poly_trait_ref.clone(),
                     );
                     (xform_self_ty, xform_ret_ty) =
-                        self.xform_self_ty(probe.item, trait_ref.self_ty(), trait_ref.args.r());
+                        self.xform_self_ty(probe.item, trait_ref.self_ty(), trait_ref.args.clone());
 
                     if matches!(probe.kind, WhereClauseCandidate(_)) {
                         // `WhereClauseCandidate` requires that the self type is a param,
@@ -1667,7 +1667,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                         match ocx.structurally_normalize_ty(
                             cause,
                             self.param_env(),
-                            trait_ref.self_ty().o(),
+                            trait_ref.self_ty(),
                         ) {
                             Ok(ty) => {
                                 if !matches!(ty.kind(), TyKind::Param(_)) {
@@ -1687,7 +1687,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                         self.param_env(),
                         self.variance(),
                         self_ty,
-                        xform_self_ty.r(),
+                        xform_self_ty,
                     ) {
                         Ok(()) => {}
                         Err(err) => {
@@ -1713,7 +1713,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                 ocx.register_obligation(Obligation::new(
                     self.interner(),
                     cause.clone(),
-                    self.param_env().o(),
+                    self.param_env().clone(),
                     ClauseKind::WellFormed(xform_ret_ty.into()),
                 ));
             }
@@ -1766,7 +1766,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
         // Check whether the trait candidate would not be applicable if the
         // opaque type were rigid.
         if let Some(predicate) = trait_predicate {
-            let goal = Goal { param_env: self.param_env().o(), predicate };
+            let goal = Goal { param_env: self.param_env().clone(), predicate };
             if !self.infcx().goal_may_hold_opaque_types_jank(goal) {
                 return true;
             }
@@ -1798,7 +1798,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                         return false;
                     }
 
-                    !self.infcx().resolve_vars_if_possible(self_ty).r().is_ty_var()
+                    !self.infcx().resolve_vars_if_possible(self_ty).is_ty_var()
                 });
                 if constrained_opaque {
                     debug!("opaque type has been constrained");
@@ -1829,7 +1829,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     /// use, so it's ok to just commit to "using the method from the trait Foo".
     fn collapse_candidates_to_trait_pick(
         &self,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         probes: &[&Candidate<'db>],
     ) -> Option<Pick<'db>> {
         // Do all probes correspond to the same trait?
@@ -1852,7 +1852,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
             kind: TraitPick(container),
             autoderefs: 0,
             autoref_or_ptr_adjustment: None,
-            self_ty: self_ty.o(),
+            self_ty: self_ty,
             receiver_steps: None,
             shadowed_candidates: vec![],
         })
@@ -1865,7 +1865,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     /// This implements RFC #3624.
     fn collapse_candidates_to_subtrait_pick(
         &self,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         probes: &[&Candidate<'db>],
     ) -> Option<Pick<'db>> {
         let mut child_candidate = probes[0];
@@ -1930,7 +1930,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
             kind: TraitPick(child_trait),
             autoderefs: 0,
             autoref_or_ptr_adjustment: None,
-            self_ty: self_ty.o(),
+            self_ty: self_ty,
             shadowed_candidates: probes
                 .iter()
                 .map(|c| c.item)
@@ -1970,21 +1970,21 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
     fn xform_self_ty(
         &self,
         item: CandidateId,
-        impl_ty: TyRef<'_, 'db>,
-        args: GenericArgsRef<'_, 'db>,
+        impl_ty: Ty<'db>,
+        args: GenericArgs<'db>,
     ) -> (Ty<'db>, Option<Ty<'db>>) {
         if let CandidateId::FunctionId(item) = item
             && self.mode == Mode::MethodCall
         {
             let sig = self.xform_method_sig(item, args);
-            (sig.inputs()[0].o(), Some(sig.output().o()))
+            (sig.inputs()[0].clone(), Some(sig.output()))
         } else {
-            (impl_ty.o(), None)
+            (impl_ty, None)
         }
     }
 
     #[instrument(level = "debug", skip(self))]
-    fn xform_method_sig(&self, method: FunctionId, args: GenericArgsRef<'_, 'db>) -> FnSig<'db> {
+    fn xform_method_sig(&self, method: FunctionId, args: GenericArgs<'db>) -> FnSig<'db> {
         let fn_sig = self.db().callable_item_signature(method.into());
         debug!(?fn_sig);
 
@@ -2006,7 +2006,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                 |param_index, param_id, _| {
                     let i = param_index as usize;
                     if i < args.len() {
-                        args[i].o()
+                        args[i].clone()
                     } else {
                         match param_id {
                             GenericParamId::LifetimeParamId(_) => {
@@ -2019,7 +2019,7 @@ impl<'a, 'db, Choice: ProbeChoice<'db>> ProbeContext<'a, 'db, Choice> {
                     }
                 },
             );
-            fn_sig.instantiate(self.interner(), args.r())
+            fn_sig.instantiate(self.interner(), args)
         };
 
         self.interner().instantiate_bound_regions_with_erased(xform_fn_sig)

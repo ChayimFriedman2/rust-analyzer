@@ -14,8 +14,8 @@ use rustc_type_ir::{
 };
 
 use crate::next_solver::{
-    AsBorrowedSlice, BoundConst, ConstRef, FxIndexMap, ParamEnvRef, Placeholder, PlaceholderConst,
-    PlaceholderRegion, PolyTraitRef, PredicateRef, RegionRef, TyRef, default_types,
+    BoundConst, Const, FxIndexMap, ParamEnv, Placeholder, PlaceholderConst, PlaceholderRegion,
+    PolyTraitRef, Predicate, Region, Ty, default_types,
     infer::{
         InferCtxt,
         traits::{Obligation, ObligationCause, PredicateObligation},
@@ -23,8 +23,8 @@ use crate::next_solver::{
 };
 
 use super::{
-    Binder, BoundRegion, BoundTy, Clause, ClauseKind, Const, DbInterner, EarlyBinder, GenericArgs,
-    PredicateKind, Region, SolverDefId, Ty, TyKind,
+    Binder, BoundRegion, BoundTy, Clause, ClauseKind, DbInterner, EarlyBinder, GenericArgs,
+    PredicateKind, SolverDefId, TyKind,
     fold::{BoundVarReplacer, FnMutDelegate},
 };
 
@@ -41,7 +41,7 @@ impl<'db> Discr<'db> {
         self.checked_add(interner, 1).0
     }
     pub fn checked_add(self, interner: DbInterner<'db>, n: u128) -> (Self, bool) {
-        let (size, signed) = self.ty.r().int_size_and_signed(interner);
+        let (size, signed) = self.ty.int_size_and_signed(interner);
         let (val, oflo) = if signed {
             let min = size.signed_int_min();
             let max = size.signed_int_max();
@@ -275,15 +275,15 @@ impl<'db> HasDataLayout for DbInterner<'db> {
     }
 }
 
-pub trait CoroutineArgsExt<'a, 'db> {
-    fn discr_ty(self) -> TyRef<'a, 'db>;
+pub trait CoroutineArgsExt<'db> {
+    fn discr_ty(&self) -> Ty<'db>;
 }
 
-impl<'a, 'db> CoroutineArgsExt<'a, 'db> for CoroutineArgs<'a, DbInterner<'db>> {
+impl<'db> CoroutineArgsExt<'db> for CoroutineArgs<DbInterner<'db>> {
     /// The type of the state discriminant used in the coroutine type.
     #[inline]
-    fn discr_ty(self) -> TyRef<'a, 'db> {
-        default_types().types.u32.r()
+    fn discr_ty(&self) -> Ty<'db> {
+        default_types().types.u32.clone()
     }
 }
 
@@ -311,7 +311,7 @@ impl MaxUniverse {
 impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse {
     type Result = ();
 
-    fn visit_ty(&mut self, t: TyRef<'_, 'db>) {
+    fn visit_ty(&mut self, t: Ty<'db>) {
         if let TyKind::Placeholder(placeholder) = t.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
@@ -321,7 +321,7 @@ impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse {
         t.super_visit_with(self)
     }
 
-    fn visit_const(&mut self, c: ConstRef<'_, 'db>) {
+    fn visit_const(&mut self, c: Const<'db>) {
         if let ConstKind::Placeholder(placeholder) = c.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
@@ -331,7 +331,7 @@ impl<'db> TypeVisitor<DbInterner<'db>> for MaxUniverse {
         c.super_visit_with(self)
     }
 
-    fn visit_region(&mut self, r: RegionRef<'_, 'db>) {
+    fn visit_region(&mut self, r: Region<'db>) {
         if let RegionKind::RePlaceholder(placeholder) = r.kind() {
             self.max_universe = UniverseIndex::from_u32(
                 self.max_universe.as_u32().max(placeholder.universe.as_u32()),
@@ -383,7 +383,7 @@ where
 pub fn sizedness_constraint_for_ty<'db>(
     interner: DbInterner<'db>,
     sizedness: SizedTraitKind,
-    ty: TyRef<'_, 'db>,
+    ty: Ty<'db>,
 ) -> Option<Ty<'db>> {
     use rustc_type_ir::TyKind::*;
 
@@ -396,37 +396,37 @@ pub fn sizedness_constraint_for_ty<'db>(
         // these are never sized
         Str | Slice(..) | Dynamic(_, _) => match sizedness {
             // Never `Sized`
-            SizedTraitKind::Sized => Some(ty.o()),
+            SizedTraitKind::Sized => Some(ty),
             // Always `MetaSized`
             SizedTraitKind::MetaSized => None,
         },
 
         // Maybe `Sized` or `MetaSized`
-        Param(..) | Alias(..) | Error(_) => Some(ty.o()),
+        Param(..) | Alias(..) | Error(_) => Some(ty),
 
         // We cannot instantiate the binder, so just return the *original* type back,
         // but only if the inner type has a sized constraint. Thus we skip the binder,
         // but don't actually use the result from `sized_constraint_for_ty`.
         UnsafeBinder(inner_ty) => {
-            sizedness_constraint_for_ty(interner, sizedness, inner_ty.skip_binder_ref().r())
-                .map(|_| ty.o())
+            sizedness_constraint_for_ty(interner, sizedness, inner_ty.skip_binder_ref().clone())
+                .map(|_| ty)
         }
 
         // Never `MetaSized` or `Sized`
-        Foreign(..) => Some(ty.o()),
+        Foreign(..) => Some(ty),
 
         // Recursive cases
-        Pat(ty, _) => sizedness_constraint_for_ty(interner, sizedness, ty.r()),
+        Pat(ty, _) => sizedness_constraint_for_ty(interner, sizedness, ty.clone()),
 
         Tuple(tys) => {
-            tys.r().last().and_then(|ty| sizedness_constraint_for_ty(interner, sizedness, *ty))
+            tys.last().and_then(|ty| sizedness_constraint_for_ty(interner, sizedness, ty.clone()))
         }
 
         Adt(adt, args) => {
             let tail_ty =
                 EarlyBinder::bind(adt.all_field_tys(interner).skip_binder().into_iter().last()?)
-                    .instantiate(interner, args.r());
-            sizedness_constraint_for_ty(interner, sizedness, tail_ty.r())
+                    .instantiate(interner, args);
+            sizedness_constraint_for_ty(interner, sizedness, tail_ty)
         }
 
         Placeholder(..) | Bound(..) | Infer(..) => {
@@ -440,10 +440,9 @@ pub fn apply_args_to_binder<'db, T: TypeFoldable<DbInterner<'db>>>(
     args: GenericArgs<'db>,
     interner: DbInterner<'db>,
 ) -> T {
-    let types = &mut |ty: BoundTy| args.as_slice()[ty.var.index()].expect_ty().o();
-    let regions =
-        &mut |region: BoundRegion| args.as_slice()[region.var.index()].expect_region().o();
-    let consts = &mut |const_: BoundConst| args.as_slice()[const_.var.index()].expect_const().o();
+    let types = &mut |ty: BoundTy| args.as_slice()[ty.var.index()].expect_ty();
+    let regions = &mut |region: BoundRegion| args.as_slice()[region.var.index()].expect_region();
+    let consts = &mut |const_: BoundConst| args.as_slice()[const_.var.index()].expect_const();
     let mut instantiate = BoundVarReplacer::new(interner, FnMutDelegate { types, regions, consts });
     b.skip_binder().fold_with(&mut instantiate)
 }
@@ -454,13 +453,11 @@ pub fn explicit_item_bounds<'db>(
 ) -> EarlyBinder<'db, impl DoubleEndedIterator<Item = Clause<'db>> + ExactSizeIterator> {
     let db = interner.db();
     let clauses = match def_id {
-        SolverDefId::TypeAliasId(type_alias) => {
-            crate::lower::type_alias_bounds(db, type_alias).map_bound(|it| it.as_borrowed_slice())
-        }
+        SolverDefId::TypeAliasId(type_alias) => crate::lower::type_alias_bounds(db, type_alias),
         SolverDefId::InternedOpaqueTyId(id) => id.predicates(db),
         _ => panic!("Unexpected GenericDefId"),
     };
-    clauses.map_bound(|clauses| clauses.iter().map(|it| it.o()))
+    clauses.map_bound(|clauses| clauses.iter().map(|it| it).cloned())
 }
 
 pub struct ContainsTypeErrors;
@@ -468,7 +465,7 @@ pub struct ContainsTypeErrors;
 impl<'db> TypeVisitor<DbInterner<'db>> for ContainsTypeErrors {
     type Result = ControlFlow<()>;
 
-    fn visit_ty(&mut self, t: TyRef<'_, 'db>) -> Self::Result {
+    fn visit_ty(&mut self, t: Ty<'db>) -> Self::Result {
         match t.kind() {
             rustc_type_ir::TyKind::Error(_) => ControlFlow::Break(()),
             _ => t.super_visit_with(self),
@@ -624,8 +621,8 @@ impl<'db> TypeFolder<DbInterner<'db>> for PlaceholderReplacer<'_, 'db> {
 
 pub fn sizedness_fast_path<'db>(
     tcx: DbInterner<'db>,
-    predicate: PredicateRef<'_, 'db>,
-    param_env: ParamEnvRef<'_, 'db>,
+    predicate: Predicate<'db>,
+    param_env: ParamEnv<'db>,
 ) -> bool {
     // Proving `Sized`/`MetaSized`, very often on "obviously sized" types like
     // `&T`, accounts for about 60% percentage of the predicates we have to prove. No need to
@@ -693,11 +690,11 @@ pub(crate) fn upcast_choices<'db>(
 pub(crate) fn clauses_as_obligations<'db>(
     clauses: impl IntoIterator<Item = Clause<'db>>,
     cause: ObligationCause,
-    param_env: ParamEnvRef<'_, 'db>,
+    param_env: &ParamEnv<'db>,
 ) -> impl Iterator<Item = PredicateObligation<'db>> {
     clauses.into_iter().map(move |clause| Obligation {
         cause: cause.clone(),
-        param_env: param_env.o(),
+        param_env: param_env.clone(),
         predicate: clause.into_predicate(),
         recursion_depth: 0,
     })

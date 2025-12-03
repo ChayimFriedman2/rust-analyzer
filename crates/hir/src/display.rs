@@ -17,7 +17,7 @@ use hir_ty::{
         HirDisplay, HirDisplayError, HirDisplayWithExpressionStore, HirFormatter, SizedByDefault,
         hir_display_with_store, write_bounds_like_dyn_trait_with_prefix, write_visibility,
     },
-    next_solver::{AsOwnedSlice, ClauseKind},
+    next_solver::ClauseKind,
 };
 use itertools::Itertools;
 
@@ -486,10 +486,10 @@ impl<'db> HirDisplay<'db> for TypeParam {
         let ty = self.ty(f.db).ty;
         let predicates = GenericPredicates::query_all(f.db, self.id.parent());
         let predicates = predicates
-            .iter_identity_copied()
+            .iter_identity_cloned()
             .filter(|wc| match wc.kind().skip_binder() {
-                ClauseKind::Trait(tr) => tr.self_ty() == ty.r(),
-                ClauseKind::Projection(proj) => proj.self_ty() == ty.r(),
+                ClauseKind::Trait(tr) => tr.self_ty() == ty,
+                ClauseKind::Projection(proj) => proj.self_ty() == ty,
                 ClauseKind::TypeOutlives(to) => to.0 == ty,
                 _ => false,
             })
@@ -504,8 +504,8 @@ impl<'db> HirDisplay<'db> for TypeParam {
                     return write_bounds_like_dyn_trait_with_prefix(
                         f,
                         "impl",
-                        Either::Left(ty.r()),
-                        predicates.as_owned_slice(),
+                        Either::Left(ty),
+                        &predicates,
                         SizedByDefault::Sized { anchor: krate },
                     );
                 }
@@ -531,8 +531,8 @@ impl<'db> HirDisplay<'db> for TypeParam {
             write_bounds_like_dyn_trait_with_prefix(
                 f,
                 ":",
-                Either::Left(ty.r()),
-                predicates.as_owned_slice(),
+                Either::Left(ty),
+                &predicates,
                 default_sized,
             )?;
         }

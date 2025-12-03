@@ -96,7 +96,7 @@ pub(crate) fn rpit_hidden_types<'db>(
     let infer = db.infer(function.into());
     let mut result = ArenaMap::new();
     for (opaque, hidden_type) in infer.return_position_impl_trait_types(db) {
-        result.insert(opaque, EarlyBinder::bind(hidden_type.o()));
+        result.insert(opaque, EarlyBinder::bind(hidden_type));
     }
     result.shrink_to_fit();
     result
@@ -122,7 +122,7 @@ pub(crate) fn tait_hidden_types<'db>(
     let mut ocx = ObligationCtxt::new(&infcx);
     let cause = ObligationCause::dummy();
     let env = db.trait_environment(type_alias.into());
-    let param_env = env.env.r();
+    let param_env = &env.env;
 
     let defining_bodies = tait_defining_bodies(db, &loc);
 
@@ -147,8 +147,8 @@ pub(crate) fn tait_hidden_types<'db>(
                     _ = ocx.eq(
                         &cause,
                         param_env,
-                        entry.get().map_bound_ref(|it| it.r()).instantiate_identity(),
-                        hidden_type.r(),
+                        entry.get().clone().instantiate_identity(),
+                        hidden_type,
                     );
                 }
             }

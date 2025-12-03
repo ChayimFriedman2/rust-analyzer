@@ -20,8 +20,7 @@ use crate::{
     infer::InferenceContext,
     mir::{MirEvalError, MirLowerError},
     next_solver::{
-        Const, ConstBytes, ConstKind, ConstRef, ErrorGuaranteed, GenericArg, GenericArgs, Ty,
-        ValueConst,
+        Const, ConstBytes, ConstKind, ErrorGuaranteed, GenericArg, GenericArgs, Ty, ValueConst,
     },
 };
 
@@ -131,7 +130,7 @@ pub fn usize_const<'db>(db: &'db dyn HirDatabase, value: Option<u128>, krate: Cr
     )
 }
 
-pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: ConstRef<'_, 'db>) -> Option<u128> {
+pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: Const<'db>) -> Option<u128> {
     match c.kind() {
         ConstKind::Param(_) => None,
         ConstKind::Infer(_) => None,
@@ -141,11 +140,11 @@ pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: ConstRef<'_, 'db>) -> O
             GeneralConstId::ConstId(id) => {
                 let subst = unevaluated_const.args.clone();
                 let ec = db.const_eval(id, subst, None).ok()?;
-                try_const_usize(db, ec.r())
+                try_const_usize(db, ec)
             }
             GeneralConstId::StaticId(id) => {
                 let ec = db.const_eval_static(id).ok()?;
-                try_const_usize(db, ec.r())
+                try_const_usize(db, ec)
             }
         },
         ConstKind::Value(val) => Some(u128::from_le_bytes(pad16(&val.value.bytes().memory, false))),
@@ -154,7 +153,7 @@ pub fn try_const_usize<'db>(db: &'db dyn HirDatabase, c: ConstRef<'_, 'db>) -> O
     }
 }
 
-pub fn try_const_isize<'db>(db: &'db dyn HirDatabase, c: ConstRef<'_, 'db>) -> Option<i128> {
+pub fn try_const_isize<'db>(db: &'db dyn HirDatabase, c: Const<'db>) -> Option<i128> {
     match c.kind() {
         ConstKind::Param(_) => None,
         ConstKind::Infer(_) => None,
@@ -164,11 +163,11 @@ pub fn try_const_isize<'db>(db: &'db dyn HirDatabase, c: ConstRef<'_, 'db>) -> O
             GeneralConstId::ConstId(id) => {
                 let subst = unevaluated_const.args.clone();
                 let ec = db.const_eval(id, subst, None).ok()?;
-                try_const_isize(db, ec.r())
+                try_const_isize(db, ec)
             }
             GeneralConstId::StaticId(id) => {
                 let ec = db.const_eval_static(id).ok()?;
-                try_const_isize(db, ec.r())
+                try_const_isize(db, ec)
             }
         },
         ConstKind::Value(val) => Some(i128::from_le_bytes(pad16(&val.value.bytes().memory, true))),
@@ -204,9 +203,9 @@ pub(crate) fn const_eval_discriminant_variant<'db>(
         db.monomorphized_mir_body(def, GenericArgs::default(), db.trait_environment_for_body(def))?;
     let c = interpret_mir(db, mir_body, false, None)?.0?;
     let c = if is_signed {
-        try_const_isize(db, c.r()).unwrap()
+        try_const_isize(db, c).unwrap()
     } else {
-        try_const_usize(db, c.r()).unwrap() as i128
+        try_const_usize(db, c).unwrap() as i128
     };
     Ok(c)
 }

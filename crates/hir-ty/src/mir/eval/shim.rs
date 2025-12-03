@@ -17,7 +17,7 @@ use crate::{
         InternedClosure, Interval, IntervalAndTy, IntervalOrOwned, ItemContainerId, LangItem,
         Layout, Locals, Lookup, MirEvalError, MirSpan, Mutability, Result, Ty, TyKind, pad16,
     },
-    next_solver::{IteratorOwnedExt, Region, Tys},
+    next_solver::{Region, Tys},
 };
 
 mod simd;
@@ -116,7 +116,7 @@ impl<'db> Evaluator<'db> {
             // Clone has special impls for tuples and function pointers
             if matches!(self_ty.kind(), TyKind::FnPtr(..) | TyKind::Tuple(..) | TyKind::Closure(..))
             {
-                self.exec_clone(def, args, self_ty.o(), locals, destination, span)?;
+                self.exec_clone(def, args, self_ty, locals, destination, span)?;
                 return Ok(true);
             }
             // Return early to prevent caching clone as non special fn.
@@ -173,7 +173,7 @@ impl<'db> Evaluator<'db> {
                 let (captures, _) = infer.closure_info(id.0);
                 let layout = self.layout(self_ty.clone())?;
                 let db = self.db;
-                let ty_iter = captures.iter().map(|c| c.ty(db, subst.r()));
+                let ty_iter = captures.iter().map(|c| c.ty(db, subst.clone()));
                 self.exec_clone_for_fields(ty_iter, layout, addr, def, locals, destination, span)?;
             }
             TyKind::Tuple(subst) => {
@@ -183,7 +183,7 @@ impl<'db> Evaluator<'db> {
                 let addr = Address::from_bytes(arg.get(self)?)?;
                 let layout = self.layout(self_ty.clone())?;
                 self.exec_clone_for_fields(
-                    subst.r().iter().owned(),
+                    subst.iter().cloned(),
                     layout,
                     addr,
                     def,
@@ -319,7 +319,7 @@ impl<'db> Evaluator<'db> {
                     ))?
                     .clone();
                 while let TyKind::Ref(_, ty, _) = arg.ty.kind() {
-                    if ty.r().is_str() {
+                    if ty.is_str() {
                         let (pointee, metadata) = arg.interval.get(self)?.split_at(self.ptr_size());
                         let len = from_bytes!(usize, metadata);
 
@@ -361,7 +361,7 @@ impl<'db> Evaluator<'db> {
                 ))?;
                 let arg = arg.interval.get(self)?.to_owned();
                 self.run_drop_glue_deep(
-                    ty.o(),
+                    ty,
                     locals,
                     Address::from_bytes(&arg[0..self.ptr_size()])?,
                     &arg[self.ptr_size()..],
@@ -460,8 +460,8 @@ impl<'db> Evaluator<'db> {
                     ));
                 };
                 let arg0_addr = Address::from_bytes(arg0.get(self)?)?;
-                let key_ty = if let Some((ty, ..)) = arg0.ty.r().as_reference_or_ptr() {
-                    ty.o()
+                let key_ty = if let Some((ty, ..)) = arg0.ty.as_reference_or_ptr() {
+                    ty
                 } else {
                     return Err(MirEvalError::InternalError(
                         "pthread_key_create arg0 is not a pointer".into(),
@@ -741,7 +741,7 @@ impl<'db> Evaluator<'db> {
                         "size_of generic arg is not provided".into(),
                     ));
                 };
-                let size = self.size_of_sized(ty.o(), locals, "size_of arg")?;
+                let size = self.size_of_sized(ty, locals, "size_of arg")?;
                 destination.write_from_bytes(self, &size.to_le_bytes()[0..destination.size])
             }
             // FIXME: `min_align_of` was renamed to `align_of` in Rust 1.89
@@ -752,7 +752,7 @@ impl<'db> Evaluator<'db> {
                         "align_of generic arg is not provided".into(),
                     ));
                 };
-                let align = self.layout(ty.o())?.align.bytes();
+                let align = self.layout(ty)?.align.bytes();
                 destination.write_from_bytes(self, &align.to_le_bytes()[0..destination.size])
             }
             "size_of_val" => {
@@ -766,11 +766,11 @@ impl<'db> Evaluator<'db> {
                         "size_of_val args are not provided".into(),
                     ));
                 };
-                if let Some((size, _)) = self.size_align_of(ty.o(), locals)? {
+                if let Some((size, _)) = self.size_align_of(ty.clone(), locals)? {
                     destination.write_from_bytes(self, &size.to_le_bytes())
                 } else {
                     let metadata = arg.interval.slice(self.ptr_size()..self.ptr_size() * 2);
-                    let (size, _) = self.size_align_of_unsized(ty.o(), metadata, locals)?;
+                    let (size, _) = self.size_align_of_unsized(ty, metadata, locals)?;
                     destination.write_from_bytes(self, &size.to_le_bytes())
                 }
             }
@@ -787,11 +787,11 @@ impl<'db> Evaluator<'db> {
                         "align_of_val args are not provided".into(),
                     ));
                 };
-                if let Some((_, align)) = self.size_align_of(ty.o(), locals)? {
+                if let Some((_, align)) = self.size_align_of(ty.clone(), locals)? {
                     destination.write_from_bytes(self, &align.to_le_bytes())
                 } else {
                     let metadata = arg.interval.slice(self.ptr_size()..self.ptr_size() * 2);
-                    let (_, align) = self.size_align_of_unsized(ty.o(), metadata, locals)?;
+                    let (_, align) = self.size_align_of_unsized(ty, metadata, locals)?;
                     destination.write_from_bytes(self, &align.to_le_bytes())
                 }
             }
@@ -828,7 +828,7 @@ impl<'db> Evaluator<'db> {
                         "size_of generic arg is not provided".into(),
                     ));
                 };
-                let result = match has_drop_glue(&self.infcx, ty.o(), self.trait_env.clone()) {
+                let result = match has_drop_glue(&self.infcx, ty, self.trait_env.clone()) {
                     DropGlue::HasDropGlue => true,
                     DropGlue::None => false,
                     DropGlue::DependOnParams => {
@@ -896,7 +896,7 @@ impl<'db> Evaluator<'db> {
                         "ptr_offset_from generic arg is not provided".into(),
                     ));
                 };
-                let size = self.size_of_sized(ty.o(), locals, "ptr_offset_from arg")? as i128;
+                let size = self.size_of_sized(ty, locals, "ptr_offset_from arg")? as i128;
                 let ans = ans / size;
                 destination.write_from_bytes(self, &ans.to_le_bytes()[0..destination.size])
             }
@@ -1020,7 +1020,7 @@ impl<'db> Evaluator<'db> {
                 let src = Address::from_bytes(src.get(self)?)?;
                 let dst = Address::from_bytes(dst.get(self)?)?;
                 let offset = from_bytes!(usize, offset.get(self)?);
-                let size = self.size_of_sized(ty.o(), locals, "copy_nonoverlapping ptr type")?;
+                let size = self.size_of_sized(ty, locals, "copy_nonoverlapping ptr type")?;
                 let size = offset * size;
                 let src = Interval { addr: src, size };
                 let dst = Interval { addr: dst, size };
@@ -1064,7 +1064,7 @@ impl<'db> Evaluator<'db> {
                             "arith_offset generic arg is not provided".into(),
                         ));
                     };
-                    ty.o()
+                    ty
                 };
                 let ptr = u128::from_le_bytes(pad16(ptr.get(self)?, false));
                 let offset = u128::from_le_bytes(pad16(offset.get(self)?, false));
@@ -1190,9 +1190,9 @@ impl<'db> Evaluator<'db> {
                     ));
                 };
                 let addr = Address::from_bytes(arg.get(self)?)?;
-                let size = self.size_of_sized(ty.o(), locals, "discriminant_value ptr type")?;
+                let size = self.size_of_sized(ty.clone(), locals, "discriminant_value ptr type")?;
                 let interval = Interval { addr, size };
-                let r = self.compute_discriminant(ty.o(), interval.get(self)?)?;
+                let r = self.compute_discriminant(ty, interval.get(self)?)?;
                 destination.write_from_bytes(self, &r.to_le_bytes()[0..destination.size])
             }
             "const_eval_select" => {
@@ -1208,10 +1208,10 @@ impl<'db> Evaluator<'db> {
                     ));
                 };
                 let layout = self.layout(tuple.ty.clone())?;
-                for (i, field) in fields.r().iter().enumerate() {
+                for (i, field) in fields.iter().enumerate() {
                     let offset = layout.fields.offset(i).bytes_usize();
                     let addr = tuple.interval.addr.offset(offset);
-                    args.push(IntervalAndTy::new(addr, field.o(), self, locals)?);
+                    args.push(IntervalAndTy::new(addr, field.clone(), self, locals)?);
                 }
                 if let Some(target) = LangItem::FnOnce.resolve_trait(self.db, self.crate_id)
                     && let Some(def) = target
@@ -1253,7 +1253,7 @@ impl<'db> Evaluator<'db> {
                         "write_via_copy generic arg is not provided".into(),
                     ));
                 };
-                let size = self.size_of_sized(ty.o(), locals, "write_via_move ptr type")?;
+                let size = self.size_of_sized(ty, locals, "write_via_move ptr type")?;
                 Interval { addr: dst, size }.write_from_interval(self, val.interval)?;
                 Ok(())
             }
@@ -1271,7 +1271,7 @@ impl<'db> Evaluator<'db> {
                     ));
                 };
                 let dst = Address::from_bytes(dst.get(self)?)?;
-                let size = self.size_of_sized(ty.o(), locals, "copy_nonoverlapping ptr type")?;
+                let size = self.size_of_sized(ty, locals, "copy_nonoverlapping ptr type")?;
                 let size = count * size;
                 self.write_memory_using_ref(dst, size)?.fill(val);
                 Ok(())
@@ -1385,7 +1385,7 @@ impl<'db> Evaluator<'db> {
                     .unwrap()
                     .1
                     .clone()
-                    .instantiate(self.interner(), subst.r());
+                    .instantiate(self.interner(), subst);
                 let sized_part_size =
                     layout.fields.offset(field_types.iter().count() - 1).bytes_usize();
                 let sized_part_align = layout.align.bytes() as usize;
@@ -1441,7 +1441,7 @@ impl<'db> Evaluator<'db> {
         let arg0_addr = Address::from_bytes(arg0.get(self)?)?;
         let arg0_interval = Interval::new(
             arg0_addr,
-            self.size_of_sized(ty.o(), locals, "atomic intrinsic type arg")?,
+            self.size_of_sized(ty.clone(), locals, "atomic intrinsic type arg")?,
         );
         if name.starts_with("load_") {
             return destination.write_from_interval(self, arg0_interval);
@@ -1512,7 +1512,7 @@ impl<'db> Evaluator<'db> {
             } else {
                 (arg0_interval, false)
             };
-            let result_ty = Ty::new(TyKind::Tuple(Tys::new_from_array([ty.o(), Ty::new_bool()])));
+            let result_ty = Ty::new(TyKind::Tuple(Tys::new_from_array([ty, Ty::new_bool()])));
             let layout = self.layout(result_ty)?;
             let result = self.construct_with_layout(
                 layout.size.bytes_usize(),

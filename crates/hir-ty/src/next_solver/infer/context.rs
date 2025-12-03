@@ -1,14 +1,13 @@
 //! Definition of `InferCtxtLike` from the librarified type layer.
 
 use rustc_type_ir::{
-    ConstVid, FloatVarValue, FloatVid, GenericArgKind, InferConst, InferTy, IntVarValue, IntVid,
-    RegionVid, TyVid, TypeFoldable, TypingMode, UniverseIndex,
-    relate::combine::PredicateEmittingRelation,
+    ConstVid, FloatVarValue, FloatVid, InferConst, InferTy, IntVarValue, IntVid, RegionVid, TyVid,
+    TypeFoldable, TypingMode, UniverseIndex, relate::combine::PredicateEmittingRelation,
 };
 
 use crate::next_solver::{
-    Binder, Const, ConstKind, DbInterner, ErrorGuaranteed, GenericArgRef, GenericArgs,
-    OpaqueTypeKey, Region, SolverDefId, Span, Ty, TyKind,
+    Binder, Const, ConstKind, DbInterner, ErrorGuaranteed, GenericArg, GenericArgKindRef,
+    GenericArgs, OpaqueTypeKey, Region, SolverDefId, Span, Ty, TyKind,
     infer::opaque_types::{OpaqueHiddenType, table::OpaqueTypeStorageEntries},
 };
 
@@ -83,14 +82,14 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
         self.inner.borrow_mut().unwrap_region_constraints().opportunistic_resolve_var(vid)
     }
 
-    fn is_changed_arg(&self, arg: GenericArgRef<'_, 'db>) -> bool {
+    fn is_changed_arg(&self, arg: GenericArg<'db>) -> bool {
         match arg.kind() {
-            GenericArgKind::Lifetime(_) => {
+            GenericArgKindRef::Lifetime(_) => {
                 // Lifetimes should not change affect trait selection.
                 false
             }
-            GenericArgKind::Type(ty) => {
-                if let TyKind::Infer(infer_ty) = *ty.kind() {
+            GenericArgKindRef::Type(ty) => {
+                if let TyKind::Infer(infer_ty) = *ty {
                     match infer_ty {
                         InferTy::TyVar(vid) => {
                             !self.probe_ty_var(vid).is_err_and(|_| self.root_var(vid) == vid)
@@ -119,8 +118,8 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
                     true
                 }
             }
-            GenericArgKind::Const(ct) => {
-                if let ConstKind::Infer(infer_ct) = *ct.kind() {
+            GenericArgKindRef::Const(ct) => {
+                if let ConstKind::Infer(infer_ct) = *ct {
                     match infer_ct {
                         InferConst::Var(vid) => !self
                             .probe_const_var(vid)
@@ -194,7 +193,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
             target_is_expected,
             target_vid,
             instantiation_variance,
-            source_ty.r(),
+            source_ty,
         )
     }
 
@@ -221,7 +220,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
         target_vid: rustc_type_ir::ConstVid,
         source_ct: Const<'db>,
     ) -> RelateResult<'db, ()> {
-        self.instantiate_const_var(relation, target_is_expected, target_vid, source_ct.r())
+        self.instantiate_const_var(relation, target_is_expected, target_vid, source_ct)
     }
 
     fn set_tainted_by_errors(&self, e: ErrorGuaranteed) {
@@ -247,11 +246,11 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
     }
 
     fn sub_regions(&self, sub: Region<'db>, sup: Region<'db>, _span: Span) {
-        self.inner.borrow_mut().unwrap_region_constraints().make_subregion(sub.r(), sup.r());
+        self.inner.borrow_mut().unwrap_region_constraints().make_subregion(sub, sup);
     }
 
     fn equate_regions(&self, a: Region<'db>, b: Region<'db>, _span: Span) {
-        self.inner.borrow_mut().unwrap_region_constraints().make_eqregion(a.r(), b.r());
+        self.inner.borrow_mut().unwrap_region_constraints().make_eqregion(a, b);
     }
 
     fn register_ty_outlives(&self, _ty: Ty<'db>, _r: Region<'db>, _span: Span) {
@@ -288,7 +287,7 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
 
     fn register_hidden_type_in_storage(
         &self,
-        opaque_type_key: &OpaqueTypeKey<'db>,
+        opaque_type_key: OpaqueTypeKey<'db>,
         hidden_ty: Ty<'db>,
         _span: Span,
     ) -> Option<Ty<'db>> {
@@ -296,14 +295,14 @@ impl<'db> rustc_type_ir::InferCtxtLike for InferCtxt<'db> {
     }
     fn add_duplicate_opaque_type(
         &self,
-        opaque_type_key: &OpaqueTypeKey<'db>,
+        opaque_type_key: OpaqueTypeKey<'db>,
         hidden_ty: Ty<'db>,
         _span: Span,
     ) {
         self.inner
             .borrow_mut()
             .opaque_types()
-            .add_duplicate(opaque_type_key.clone(), OpaqueHiddenType { ty: hidden_ty })
+            .add_duplicate(opaque_type_key, OpaqueHiddenType { ty: hidden_ty })
     }
 
     fn reset_opaque_types(&self) {

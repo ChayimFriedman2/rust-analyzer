@@ -43,7 +43,7 @@ use rustc_type_ir::{
     ExistentialTraitRef, FnSig, OutlivesPredicate,
     TyKind::{self},
     TypeVisitableExt, Upcast,
-    inherent::{GenericArg as _, SliceLike, Ty as _},
+    inherent::Ty as _,
 };
 use salsa::plumbing::AsId;
 use smallvec::{SmallVec, smallvec};
@@ -56,10 +56,10 @@ use crate::{
     db::{HirDatabase, InternedOpaqueTyId},
     generics::{Generics, generics, trait_self_param_idx},
     next_solver::{
-        AliasTy, AsBorrowedSlice, Binder, BoundExistentialPredicates, Clause, ClauseKind,
-        ClauseRef, Clauses, Const, DbInterner, EarlyBinder, EarlyParamRegion, GenericArg,
-        GenericArgs, IteratorOwnedExt, ParamConst, ParamEnv, ParamTy, PolyFnSig, Predicate, Region,
-        SolverDefId, TraitPredicate, TraitRef, Ty, TyRef, Tys, UnevaluatedConst, abi::Safety,
+        AliasTy, Binder, BoundExistentialPredicates, Clause, ClauseKind, Clauses, Const,
+        DbInterner, EarlyBinder, EarlyParamRegion, GenericArg, GenericArgs, ParamConst, ParamEnv,
+        ParamTy, PolyFnSig, Predicate, Region, SolverDefId, TraitPredicate, TraitRef, Ty, Tys,
+        UnevaluatedConst, abi::Safety,
     },
 };
 
@@ -622,11 +622,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
                     }
                 }
                 let self_ty = self.lower_ty(*target);
-                Either::Left(Either::Right(self.lower_type_bound(
-                    bound,
-                    self_ty.r(),
-                    ignore_bindings,
-                )))
+                Either::Left(Either::Right(self.lower_type_bound(bound, self_ty, ignore_bindings)))
             }
             &WherePredicate::Lifetime { bound, target } => Either::Right(iter::once(Clause(
                 Predicate::new(Binder::dummy(rustc_type_ir::PredicateKind::Clause(
@@ -643,7 +639,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
     pub(crate) fn lower_type_bound<'b>(
         &'b mut self,
         bound: &'b TypeBound,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         ignore_bindings: bool,
     ) -> impl Iterator<Item = Clause<'db>> + use<'b, 'a, 'db> {
         let mut assoc_bounds = None;
@@ -652,7 +648,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
             &TypeBound::Path(path, TraitBoundModifier::None) | &TypeBound::ForLifetime(_, path) => {
                 // FIXME Don't silently drop the hrtb lifetimes here
                 if let Some((trait_ref, mut ctx)) =
-                    self.lower_trait_ref_from_path(path, self_ty.o())
+                    self.lower_trait_ref_from_path(path, self_ty.clone())
                 {
                     // FIXME(sized-hierarchy): Remove this bound modifications once we have implemented
                     // sized-hierarchy correctly.
@@ -664,7 +660,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
                         // Ignore this bound
                     } else if pointee_sized.is_some_and(|it| it == trait_ref.def_id.0) {
                         // Regard this as `?Sized` bound
-                        ctx.ty_ctx().unsized_types.insert(self_ty.o());
+                        ctx.ty_ctx().unsized_types.insert(self_ty);
                     } else {
                         if !ignore_bindings {
                             assoc_bounds =
@@ -687,17 +683,17 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
                 // `?Sized` has no of them.
                 // If we got another trait here ignore the bound completely.
                 let trait_id = self
-                    .lower_trait_ref_from_path(path, self_ty.o())
+                    .lower_trait_ref_from_path(path, self_ty.clone())
                     .map(|(trait_ref, _)| trait_ref.def_id.0);
                 if trait_id == sized_trait {
-                    self.unsized_types.insert(self_ty.o());
+                    self.unsized_types.insert(self_ty);
                 }
             }
             &TypeBound::Lifetime(l) => {
                 let lifetime = self.lower_lifetime(l);
                 clause = Some(Clause(Predicate::new(Binder::dummy(
                     rustc_type_ir::PredicateKind::Clause(rustc_type_ir::ClauseKind::TypeOutlives(
-                        OutlivesPredicate(self_ty.o(), lifetime),
+                        OutlivesPredicate(self_ty, lifetime),
                     )),
                 ))));
             }
@@ -723,7 +719,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
             > = Vec::new();
             for b in bounds {
                 let db = ctx.db;
-                ctx.lower_type_bound(b, self_ty.r(), false).for_each(|b| {
+                ctx.lower_type_bound(b, self_ty.clone(), false).for_each(|b| {
                     if let Some(bound) = b
                         .kind()
                         .map_bound(|c| match c {
@@ -870,7 +866,7 @@ impl<'db, 'a> TyLoweringContext<'db, 'a> {
         let predicates = self.with_shifted_in(DebruijnIndex::from_u32(1), |ctx| {
             let mut predicates = Vec::new();
             for b in bounds {
-                predicates.extend(ctx.lower_type_bound(b, self_ty.r(), false));
+                predicates.extend(ctx.lower_type_bound(b, self_ty.clone(), false));
             }
 
             if !ctx.unsized_types.contains(&self_ty) {
@@ -957,10 +953,7 @@ pub(crate) fn impl_trait_with_diagnostics_query<'db>(
 
 impl<'db> ImplTraitId<'db> {
     #[inline]
-    pub fn predicates(
-        self,
-        db: &'db dyn HirDatabase,
-    ) -> EarlyBinder<'db, &'db [ClauseRef<'db, 'db>]> {
+    pub fn predicates(self, db: &'db dyn HirDatabase) -> EarlyBinder<'db, &'db [Clause<'db>]> {
         let (impl_traits, idx) = match self {
             ImplTraitId::ReturnTypeImplTrait(owner, idx) => {
                 (ImplTraits::return_type_impl_traits(db, owner), idx)
@@ -972,16 +965,13 @@ impl<'db> ImplTraitId<'db> {
         impl_traits
             .as_deref()
             .expect("owner should have opaque type")
-            .map_bound_ref(|it| it.impl_traits[idx].predicates.as_borrowed_slice())
+            .map_bound_ref(|it| &*it.impl_traits[idx].predicates)
     }
 }
 
 impl InternedOpaqueTyId {
     #[inline]
-    pub fn predicates<'db>(
-        self,
-        db: &'db dyn HirDatabase,
-    ) -> EarlyBinder<'db, &'db [ClauseRef<'db, 'db>]> {
+    pub fn predicates<'db>(self, db: &'db dyn HirDatabase) -> EarlyBinder<'db, &'db [Clause<'db>]> {
         self.loc(db).predicates(db)
     }
 }
@@ -1439,7 +1429,7 @@ pub(crate) fn generic_predicates_for_param<'db>(
     }
 
     let args = GenericArgs::identity_for_item(interner, def.into());
-    if !args.r().is_empty() {
+    if !args.is_empty() {
         let explicitly_unsized_tys = ctx.unsized_types;
         if let Some(implicitly_sized_predicates) =
             implicitly_sized_clauses(db, param_id.parent, &explicitly_unsized_tys, &args, &resolver)
@@ -1489,7 +1479,7 @@ pub fn type_alias_bounds_with_diagnostics<'db>(
 
     let mut bounds = Vec::new();
     for bound in &type_alias_data.bounds {
-        ctx.lower_type_bound(bound, interner_ty.r(), false).for_each(|pred| {
+        ctx.lower_type_bound(bound, interner_ty.clone(), false).for_each(|pred| {
             bounds.push(pred);
         });
     }
@@ -1545,7 +1535,7 @@ impl<'db> GenericPredicates<'db> {
     pub fn query_all(
         db: &'db dyn HirDatabase,
         def: GenericDefId,
-    ) -> EarlyBinder<'db, &'db [ClauseRef<'db, 'db>]> {
+    ) -> EarlyBinder<'db, &'db [Clause<'db>]> {
         Self::query(db, def).all_predicates()
     }
 
@@ -1553,7 +1543,7 @@ impl<'db> GenericPredicates<'db> {
     pub fn query_own(
         db: &'db dyn HirDatabase,
         def: GenericDefId,
-    ) -> EarlyBinder<'db, &'db [ClauseRef<'db, 'db>]> {
+    ) -> EarlyBinder<'db, &'db [Clause<'db>]> {
         Self::query(db, def).own_predicates()
     }
 
@@ -1561,28 +1551,28 @@ impl<'db> GenericPredicates<'db> {
     pub fn query_explicit(
         db: &'db dyn HirDatabase,
         def: GenericDefId,
-    ) -> EarlyBinder<'db, &'db [ClauseRef<'db, 'db>]> {
+    ) -> EarlyBinder<'db, &'db [Clause<'db>]> {
         Self::query(db, def).explicit_predicates()
     }
 
     #[inline]
-    fn predicates(&self) -> EarlyBinder<'db, &[ClauseRef<'_, 'db>]> {
-        self.predicates.map_bound_ref(|it| it.as_borrowed_slice())
+    fn predicates(&self) -> EarlyBinder<'db, &[Clause<'db>]> {
+        self.predicates.map_bound_ref(|it| &**it)
     }
 
     #[inline]
-    pub fn all_predicates(&self) -> EarlyBinder<'db, &[ClauseRef<'_, 'db>]> {
+    pub fn all_predicates(&self) -> EarlyBinder<'db, &[Clause<'db>]> {
         self.predicates()
     }
 
     #[inline]
-    pub fn own_predicates(&self) -> EarlyBinder<'db, &[ClauseRef<'_, 'db>]> {
+    pub fn own_predicates(&self) -> EarlyBinder<'db, &[Clause<'db>]> {
         self.predicates().map_bound(|it| &it[self.own_predicates_start as usize..])
     }
 
     /// Returns the predicates, minus the implicit `Self: Trait` predicate for a trait.
     #[inline]
-    pub fn explicit_predicates(&self) -> EarlyBinder<'db, &[ClauseRef<'_, 'db>]> {
+    pub fn explicit_predicates(&self) -> EarlyBinder<'db, &[Clause<'db>]> {
         self.predicates().map_bound(|it| {
             &it[usize::from(self.parent_is_trait)..it.len() - usize::from(self.is_trait)]
         })
@@ -1608,14 +1598,13 @@ pub(crate) fn trait_environment_query<'db>(
     let interner = DbInterner::new_with(db, Some(module.krate()), module.containing_block());
     let predicates = GenericPredicates::query_all(db, def);
     let traits_in_scope = predicates
-        .iter_identity_copied()
-        .filter_map(|pred| match pred.kind().skip_binder() {
-            ClauseKind::Trait(tr) => Some((tr.self_ty().o(), tr.def_id().0)),
+        .iter_identity_cloned()
+        .filter_map(|pred| match pred.kind_skip_binder() {
+            ClauseKind::Trait(tr) => Some((tr.self_ty(), tr.def_id().0)),
             _ => None,
         })
         .collect();
-    let clauses =
-        rustc_type_ir::elaborate::elaborate(interner, predicates.iter_identity_copied().owned());
+    let clauses = rustc_type_ir::elaborate::elaborate(interner, predicates.iter_identity_cloned());
     let clauses = Clauses::new_from_iter(clauses);
     let env = ParamEnv { clauses };
 
@@ -1830,21 +1819,20 @@ fn implicitly_sized_clauses<'a, 'subst, 'db>(
     let trait_self_idx = trait_self_param_idx(db, def);
 
     Some(
-        args.r()
-            .iter()
+        args.iter()
             .enumerate()
             .filter_map(
                 move |(idx, generic_arg)| {
                     if Some(idx) == trait_self_idx { None } else { Some(generic_arg) }
                 },
             )
-            .filter_map(|generic_arg| generic_arg.as_type())
-            .filter(move |self_ty| !explicitly_unsized_tys.contains(&self_ty.o()))
+            .filter_map(|generic_arg| generic_arg.ty())
+            .filter(move |self_ty| !explicitly_unsized_tys.contains(&self_ty))
             .map(move |self_ty| {
                 let trait_ref = TraitRef::new_from_args(
                     interner,
                     sized_trait.into(),
-                    GenericArgs::new_from_array([self_ty.o().into()]),
+                    GenericArgs::new_from_array([self_ty.into()]),
                 );
                 Clause(Predicate::new(Binder::dummy(rustc_type_ir::PredicateKind::Clause(
                     rustc_type_ir::ClauseKind::Trait(TraitPredicate {
@@ -2068,7 +2056,7 @@ pub(crate) fn associated_ty_item_bounds<'db>(
 
     let mut bounds = Vec::new();
     for bound in &type_alias_data.bounds {
-        ctx.lower_type_bound(bound, self_ty.r(), false).for_each(|pred| {
+        ctx.lower_type_bound(bound, self_ty.clone(), false).for_each(|pred| {
             if let Some(bound) = pred
                 .kind()
                 .map_bound(|c| match c {
@@ -2204,7 +2192,7 @@ fn named_associated_type_shorthand_candidates<'db, R>(
                     _ => continue,
                 };
                 let sup_trait_ref =
-                    EarlyBinder::bind(sup_trait_ref).instantiate(interner, trait_ref.args.r());
+                    EarlyBinder::bind(sup_trait_ref).instantiate(interner, &trait_ref.args);
                 stack.push(sup_trait_ref.clone());
             }
             tracing::debug!(?stack);
@@ -2243,10 +2231,12 @@ fn named_associated_type_shorthand_candidates<'db, R>(
             let predicates =
                 generic_predicates_for_param(db, def, param_id.into(), assoc_name.clone());
             predicates
-                .map_bound_ref(|it| it.as_borrowed_slice())
-                .iter_identity_copied()
-                .find_map(|pred| match pred.kind().skip_binder() {
-                    rustc_type_ir::ClauseKind::Trait(trait_predicate) => Some(trait_predicate),
+                .map_bound_ref(|it| &**it)
+                .iter_identity_cloned()
+                .find_map(|pred| match pred.kind_skip_binder() {
+                    rustc_type_ir::ClauseKind::Trait(trait_predicate) => {
+                        Some(trait_predicate.clone())
+                    }
                     _ => None,
                 })
                 .and_then(|trait_predicate| {

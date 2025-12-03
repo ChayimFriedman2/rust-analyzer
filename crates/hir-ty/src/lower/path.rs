@@ -18,7 +18,7 @@ use hir_def::{
     type_ref::{TypeRef, TypeRefId},
 };
 use hir_expand::name::Name;
-use rustc_type_ir::{AliasTerm, AliasTy, AliasTyKind, inherent::SliceLike};
+use rustc_type_ir::{AliasTerm, AliasTy, AliasTyKind};
 use smallvec::SmallVec;
 use stdx::never;
 
@@ -32,8 +32,8 @@ use crate::{
         LifetimeElisionKind, PathDiagnosticCallbackData, named_associated_type_shorthand_candidates,
     },
     next_solver::{
-        AsBorrowedSlice, Binder, Clause, Const, DbInterner, GenericArg, GenericArgs,
-        IteratorOwnedExt, Predicate, ProjectionPredicate, Region, TraitRef, Ty,
+        Binder, Clause, Const, DbInterner, GenericArg, GenericArgs, Predicate, ProjectionPredicate,
+        Region, TraitRef, Ty,
     },
 };
 
@@ -204,12 +204,9 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                                 let args = GenericArgs::new_from_iter(
                                     trait_ref
                                         .args
-                                        .r()
                                         .iter()
-                                        .chain(
-                                            substitution.r().iter().skip(trait_ref.args.r().len()),
-                                        )
-                                        .owned(),
+                                        .chain(substitution.iter().skip(trait_ref.args.len()))
+                                        .cloned(),
                                 );
                                 Ty::new_alias(
                                     AliasTyKind::Projection,
@@ -497,7 +494,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                 self.substs_from_path_segment(associated_ty.into(), infer_args, None, true);
 
             let substs = GenericArgs::new_from_iter(
-                t.args.r().iter().chain(substs.r().iter().skip(t.args.r().len())).owned(),
+                t.args.iter().chain(substs.iter().skip(t.args.len())).cloned(),
             );
 
             Some(Ty::new_alias(
@@ -525,7 +522,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
         };
         let args = self.substs_from_path_segment(generic_def, infer_args, None, false);
         let ty = ty_query(self.ctx.db, typeable);
-        ty.instantiate(self.ctx.interner, args.r())
+        ty.instantiate(self.ctx.interner, args)
     }
 
     /// Collect generic arguments from a path into a `Substs`. See also
@@ -732,12 +729,12 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                 infer_args: bool,
                 preceding_args: &[GenericArg<'db>],
             ) -> GenericArg<'db> {
-                let default = || {
-                    self.ctx.ctx.db.generic_defaults(def).get(preceding_args.len()).map(|default| {
-                        default
-                            .instantiate(self.ctx.ctx.interner, preceding_args.as_borrowed_slice())
-                    })
-                };
+                let default =
+                    || {
+                        self.ctx.ctx.db.generic_defaults(def).get(preceding_args.len()).map(
+                            |default| default.instantiate(self.ctx.ctx.interner, preceding_args),
+                        )
+                    };
                 match param {
                     GenericParamDataRef::LifetimeParamData(_) => Region::new_error().into(),
                     GenericParamDataRef::TypeParamData(param) => {
@@ -863,7 +860,7 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                             binding.args.as_ref(),
                             associated_ty.into(),
                             false, // this is not relevant
-                            Some(super_trait_ref.self_ty().o()),
+                            Some(super_trait_ref.self_ty()),
                             PathGenericsSource::AssocType {
                                 segment: this.current_segment_u32(),
                                 assoc_type: binding_idx as u32,
@@ -875,10 +872,9 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                 let args = GenericArgs::new_from_iter(
                     super_trait_ref
                         .args
-                        .r()
                         .iter()
-                        .chain(args.r().iter().skip(super_trait_ref.args.r().len()))
-                        .owned(),
+                        .chain(args.iter().skip(super_trait_ref.args.len()))
+                        .cloned(),
                 );
                 let projection_term =
                     AliasTerm::new_from_args(interner, associated_ty.into(), args.clone());
@@ -917,21 +913,18 @@ impl<'a, 'b, 'db> PathLoweringContext<'a, 'b, 'db> {
                     })
                 }
                 for bound in binding.bounds.iter() {
-                    predicates.extend(
-                        self.ctx.lower_type_bound(
-                            bound,
-                            Ty::new_alias(
-                                AliasTyKind::Projection,
-                                AliasTy::new_from_args(
-                                    self.ctx.interner,
-                                    associated_ty.into(),
-                                    args.clone(),
-                                ),
-                            )
-                            .r(),
-                            false,
+                    predicates.extend(self.ctx.lower_type_bound(
+                        bound,
+                        Ty::new_alias(
+                            AliasTyKind::Projection,
+                            AliasTy::new_from_args(
+                                self.ctx.interner,
+                                associated_ty.into(),
+                                args.clone(),
+                            ),
                         ),
-                    );
+                        false,
+                    ));
                 }
                 predicates
             })

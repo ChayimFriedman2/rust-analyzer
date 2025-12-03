@@ -25,7 +25,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use rustc_type_ir::{
     TypeVisitableExt,
     fast_reject::{TreatParams, simplify_type},
-    inherent::{BoundExistentialPredicates, SliceLike},
+    inherent::BoundExistentialPredicates,
 };
 use stdx::impl_from;
 use triomphe::Arc;
@@ -36,8 +36,8 @@ use crate::{
     infer::{InferenceContext, unify::InferenceTable},
     lower::GenericPredicates,
     next_solver::{
-        Binder, ClauseKind, DbInterner, FnSig, GenericArgs, GenericArgsRef, IteratorOwnedExt,
-        PredicateKind, SimplifiedType, SolverDefId, TraitRef, Ty, TyKind, TyRef, TypingMode,
+        Binder, ClauseKind, DbInterner, FnSig, GenericArgs, PredicateKind, SimplifiedType,
+        SolverDefId, TraitRef, Ty, TyKind, TypingMode,
         infer::{
             BoundRegionConversionTime, DbInternerInferExt, InferCtxt, InferOk,
             select::ImplSource,
@@ -232,7 +232,7 @@ impl<'db> InferenceTable<'db> {
         cause: ObligationCause,
         method_name: Symbol,
         trait_def_id: TraitId,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         mut opt_rhs_ty: Option<Ty<'db>>,
         treat_opaques: TreatNotYetDefinedOpaques,
     ) -> Option<InferOk<'db, MethodCallee<'db>>> {
@@ -246,7 +246,7 @@ impl<'db> InferenceTable<'db> {
                 }
                 GenericParamId::TypeParamId(_) => {
                     if param_idx == 0 {
-                        self_ty.o().into()
+                        self_ty.clone().into()
                     } else if let Some(rhs_ty) = opt_rhs_ty.take() {
                         assert_eq!(param_idx, 1, "did not expect >1 param on operator trait");
                         rhs_ty.into()
@@ -304,7 +304,7 @@ impl<'db> InferenceTable<'db> {
         // function signature so that normalization does not need to deal
         // with bound regions.
         let fn_sig =
-            self.db.callable_item_signature(method_item.into()).instantiate(interner, args.r());
+            self.db.callable_item_signature(method_item.into()).instantiate(interner, &args);
         let fn_sig = self
             .infer_ctxt
             .instantiate_binder_with_fresh_vars(BoundRegionConversionTime::FnCall, fn_sig);
@@ -319,9 +319,9 @@ impl<'db> InferenceTable<'db> {
         // any late-bound regions appearing in its bounds.
         let bounds = GenericPredicates::query_all(self.db, method_item.into());
         let bounds = clauses_as_obligations(
-            bounds.iter_instantiated_owned(interner, args.as_slice()),
+            bounds.iter_instantiated_cloned(interner, args.as_slice()),
             ObligationCause::new(),
-            self.trait_env.env.r(),
+            &self.trait_env.env,
         );
 
         obligations.extend(bounds);
@@ -331,12 +331,12 @@ impl<'db> InferenceTable<'db> {
             "lookup_method_in_trait: matched method fn_sig={:?} obligation={:?}",
             fn_sig, obligation
         );
-        for ty in fn_sig.inputs_and_output.r() {
+        for ty in &fn_sig.inputs_and_output {
             obligations.push(Obligation::new(
                 interner,
                 obligation.cause.clone(),
                 self.trait_env.env.clone(),
-                Binder::dummy(PredicateKind::Clause(ClauseKind::WellFormed(ty.o().into()))),
+                Binder::dummy(PredicateKind::Clause(ClauseKind::WellFormed(ty.clone().into()))),
             ));
         }
 
@@ -351,28 +351,28 @@ pub fn lookup_impl_const<'db>(
     infcx: &InferCtxt<'db>,
     env: Arc<TraitEnvironment<'db>>,
     const_id: ConstId,
-    subs: GenericArgsRef<'_, 'db>,
+    subs: GenericArgs<'db>,
 ) -> (ConstId, GenericArgs<'db>) {
     let interner = infcx.interner;
     let db = interner.db;
 
     let trait_id = match const_id.loc(db).container {
         ItemContainerId::TraitId(id) => id,
-        _ => return (const_id, subs.o()),
+        _ => return (const_id, subs),
     };
-    let trait_ref = TraitRef::new_from_args(interner, trait_id.into(), subs.o());
+    let trait_ref = TraitRef::new_from_args(interner, trait_id.into(), subs.clone());
 
     let const_signature = db.const_signature(const_id);
     let name = match const_signature.name.as_ref() {
         Some(name) => name,
-        None => return (const_id, subs.o()),
+        None => return (const_id, subs),
     };
 
     lookup_impl_assoc_item_for_trait_ref(infcx, trait_ref, env, name)
         .and_then(
             |assoc| if let (AssocItemId::ConstId(id), s) = assoc { Some((id, s)) } else { None },
         )
-        .unwrap_or_else(|| (const_id, subs.o()))
+        .unwrap_or_else(|| (const_id, subs))
 }
 
 /// Checks if the self parameter of `Trait` method is the `dyn Trait` and we should
@@ -381,7 +381,7 @@ pub fn is_dyn_method<'db>(
     interner: DbInterner<'db>,
     _env: Arc<TraitEnvironment<'db>>,
     func: FunctionId,
-    fn_subst: GenericArgsRef<'_, 'db>,
+    fn_subst: GenericArgs<'db>,
 ) -> Option<usize> {
     let db = interner.db;
 
@@ -400,7 +400,6 @@ pub fn is_dyn_method<'db>(
         // rustc doesn't accept `impl Foo<2> for dyn Foo<5>`, so if the trait id is equal, no matter
         // what the generics are, we are sure that the method is come from the vtable.
         let is_my_trait_in_bounds = d
-            .r()
             .principal_def_id()
             .is_some_and(|trait_| all_super_traits(db, trait_.0).contains(&trait_id));
         if is_my_trait_in_bounds {
@@ -417,13 +416,13 @@ pub(crate) fn lookup_impl_method_query<'db>(
     db: &'db dyn HirDatabase,
     env: Arc<TraitEnvironment<'db>>,
     func: FunctionId,
-    fn_subst: GenericArgsRef<'_, 'db>,
+    fn_subst: GenericArgs<'db>,
 ) -> (FunctionId, GenericArgs<'db>) {
     let interner = DbInterner::new_with(db, Some(env.krate), env.block);
     let infcx = interner.infer_ctxt().build(TypingMode::PostAnalysis);
 
     let ItemContainerId::TraitId(trait_id) = func.loc(db).container else {
-        return (func, fn_subst.o());
+        return (func, fn_subst);
     };
     let trait_params = db.generic_params(trait_id.into()).len();
     let trait_ref = TraitRef::new_from_args(
@@ -438,13 +437,13 @@ pub(crate) fn lookup_impl_method_query<'db>(
             if let (AssocItemId::FunctionId(id), subst) = assoc { Some((id, subst)) } else { None }
         })
     else {
-        return (func, fn_subst.o());
+        return (func, fn_subst);
     };
 
     (
         impl_fn,
         GenericArgs::new_from_iter(
-            impl_subst.r().iter().chain(fn_subst.iter().skip(trait_params)).owned(),
+            impl_subst.iter().chain(fn_subst.iter().skip(trait_params)).cloned(),
         ),
     )
 }
@@ -471,7 +470,7 @@ pub(crate) fn find_matching_impl<'db>(
     trait_ref: TraitRef<'db>,
 ) -> Option<(ImplId, GenericArgs<'db>)> {
     let trait_ref =
-        infcx.at(&ObligationCause::dummy(), env.env.r()).deeply_normalize(trait_ref).ok()?;
+        infcx.at(&ObligationCause::dummy(), &env.env).deeply_normalize(trait_ref).ok()?;
 
     let obligation =
         Obligation::new(infcx.interner, ObligationCause::dummy(), env.env.clone(), trait_ref);
@@ -602,7 +601,7 @@ impl InherentImpls {
                     let self_ty = db.impl_self_ty(impl_id);
                     let self_ty = self_ty.instantiate_identity();
                     if let Some(self_ty) =
-                        simplify_type(interner, self_ty.r(), TreatParams::InstantiateWithInfer)
+                        simplify_type(interner, self_ty, TreatParams::InstantiateWithInfer)
                     {
                         map.entry(self_ty).or_default().push(impl_id);
                     }

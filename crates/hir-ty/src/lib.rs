@@ -61,9 +61,7 @@ use indexmap::{IndexMap, map::Entry};
 use intern::{Symbol, sym};
 use mir::{MirEvalError, VTableMap};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
-use rustc_type_ir::{
-    BoundVarIndexKind, TypeSuperVisitable, TypeVisitableExt, UpcastFrom, inherent::SliceLike,
-};
+use rustc_type_ir::{BoundVarIndexKind, TypeSuperVisitable, TypeVisitableExt, UpcastFrom};
 use syntax::ast::{ConstArg, make};
 use traits::FnTrait;
 use triomphe::Arc;
@@ -74,9 +72,8 @@ use crate::{
     infer::unify::InferenceTable,
     next_solver::{
         AliasTy, Binder, BoundConst, BoundRegion, BoundRegionKind, BoundTy, BoundTyKind, Canonical,
-        CanonicalVarKind, CanonicalVars, Const, ConstKind, ConstRef, DbInterner, FnSig,
-        IteratorOwnedExt, PolyFnSig, Predicate, Region, RegionKind, TraitRef, Ty, TyKind, TyRef,
-        Tys, abi,
+        CanonicalVarKind, CanonicalVars, Const, ConstKind, DbInterner, FnSig, PolyFnSig, Predicate,
+        Region, RegionKind, TraitRef, Ty, TyKind, Tys, abi,
     },
 };
 
@@ -508,7 +505,7 @@ pub fn callable_sig_from_fn_trait<'db>(
                     return None;
                 };
                 let inputs_and_output =
-                    Tys::new_from_iter(params.r().iter().owned().chain(std::iter::once(ret_ty)));
+                    Tys::new_from_iter(params.iter().cloned().chain(std::iter::once(ret_ty)));
 
                 return Some((
                     fn_x,
@@ -534,7 +531,7 @@ struct ParamCollector {
 impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for ParamCollector {
     type Result = ();
 
-    fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
+    fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
         if let TyKind::Param(param) = *ty.kind() {
             self.params.insert(param.id.into());
         }
@@ -542,7 +539,7 @@ impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for ParamCollector {
         ty.super_visit_with(self);
     }
 
-    fn visit_const(&mut self, konst: ConstRef<'_, 'db>) -> Self::Result {
+    fn visit_const(&mut self, konst: Const<'db>) -> Self::Result {
         if let ConstKind::Param(param) = *konst.kind() {
             self.params.insert(param.id.into());
         }
@@ -568,10 +565,10 @@ struct TypeInferenceVarCollector<'db> {
 impl<'db> rustc_type_ir::TypeVisitor<DbInterner<'db>> for TypeInferenceVarCollector<'db> {
     type Result = ();
 
-    fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> Self::Result {
+    fn visit_ty(&mut self, ty: Ty<'db>) -> Self::Result {
         use crate::rustc_type_ir::Flags;
         if ty.is_ty_var() {
-            self.type_inference_vars.push(ty.o());
+            self.type_inference_vars.push(ty);
         } else if ty.flags().intersects(rustc_type_ir::TypeFlags::HAS_TY_INFER) {
             ty.super_visit_with(self);
         } else {

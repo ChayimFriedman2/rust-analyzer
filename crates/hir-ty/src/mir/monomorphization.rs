@@ -10,7 +10,6 @@
 use hir_def::DefWithBodyId;
 use rustc_type_ir::{
     FallibleTypeFolder, TypeFlags, TypeFoldable, TypeSuperFoldable, TypeVisitableExt,
-    ir_traits::MyToOwned,
 };
 use triomphe::Arc;
 
@@ -53,11 +52,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for Filler<'db> {
 
                 let mut ocx = ObligationCtxt::new(&self.infcx);
                 let ty = ocx
-                    .structurally_normalize_ty(
-                        &ObligationCause::dummy(),
-                        self.trait_env.env.r(),
-                        ty,
-                    )
+                    .structurally_normalize_ty(&ObligationCause::dummy(), &self.trait_env.env, ty)
                     .map_err(|_| MirLowerError::NotSupported("can't normalize alias".to_owned()))?;
                 ty.try_super_fold_with(self)
             }
@@ -65,7 +60,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for Filler<'db> {
                 .subst
                 .as_slice()
                 .get(param.index as usize)
-                .and_then(|arg| arg.ty().o())
+                .and_then(|arg| arg.ty())
                 .ok_or_else(|| {
                     MirLowerError::GenericArgNotProvided(param.id.into(), self.subst.clone())
                 })?),
@@ -77,7 +72,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for Filler<'db> {
         let ConstKind::Param(param) = ct.kind() else {
             return ct.try_super_fold_with(self);
         };
-        self.subst.as_slice().get(param.index as usize).and_then(|arg| arg.konst().o()).ok_or_else(
+        self.subst.as_slice().get(param.index as usize).and_then(|arg| arg.konst()).ok_or_else(
             || MirLowerError::GenericArgNotProvided(param.id.into(), self.subst.clone()),
         )
     }
@@ -86,7 +81,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for Filler<'db> {
         let RegionKind::ReEarlyParam(param) = region.kind() else {
             return Ok(region);
         };
-        self.subst.as_slice().get(param.index as usize).and_then(|arg| arg.region().o()).ok_or_else(
+        self.subst.as_slice().get(param.index as usize).and_then(|arg| arg.region()).ok_or_else(
             || MirLowerError::GenericArgNotProvided(param.id.into(), self.subst.clone()),
         )
     }

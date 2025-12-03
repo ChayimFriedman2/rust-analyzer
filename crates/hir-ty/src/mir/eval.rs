@@ -26,7 +26,7 @@ use rustc_ast_ir::Mutability;
 use rustc_hash::{FxHashMap, FxHashSet};
 use rustc_type_ir::{
     AliasTyKind,
-    inherent::{AdtDef, GenericArgsRef as _, SliceLike},
+    inherent::{AdtDef, GenericArgs as _, SliceLike},
 };
 use span::FileId;
 use stdx::never;
@@ -42,8 +42,8 @@ use crate::{
     layout::{Layout, LayoutError, RustcEnumVariantIdx},
     method_resolution::{is_dyn_method, lookup_impl_const},
     next_solver::{
-        Const, ConstBytes, ConstKind, DbInterner, GenericArgs, IteratorOwnedExt, Region, Ty,
-        TyKind, TypingMode, UnevaluatedConst, ValueConst,
+        Const, ConstBytes, ConstKind, DbInterner, GenericArgs, Region, Ty, TyKind, TypingMode,
+        UnevaluatedConst, ValueConst,
         infer::{DbInternerInferExt, InferCtxt, traits::ObligationCause},
         obligation_ctxt::ObligationCtxt,
     },
@@ -718,7 +718,8 @@ impl<'db> Evaluator<'db> {
                 let InternedClosure(def, _) = self.db.lookup_intern_closure(c);
                 let infer = self.db.infer(def);
                 let (captures, _) = infer.closure_info(c);
-                let parent_subst = subst.r().as_closure().parent_args();
+                let subst = subst.clone().as_closure();
+                let parent_subst = subst.parent_args();
                 captures
                     .get(f)
                     .expect("broken closure field")
@@ -769,7 +770,7 @@ impl<'db> Evaluator<'db> {
                 &ProjectionElem::ConstantIndex { from_end, offset } => {
                     let offset = if from_end {
                         let len = match prev_ty.kind() {
-                            TyKind::Array(_, c) => match try_const_usize(self.db, c.r()) {
+                            TyKind::Array(_, c) => match try_const_usize(self.db, c.clone()) {
                                 Some(it) => it as u64,
                                 None => {
                                     not_supported!("indexing array with unknown const from end")
@@ -1218,7 +1219,7 @@ impl<'db> Evaluator<'db> {
                 let mut ty = self.operand_ty(lhs, locals)?;
                 while let TyKind::Ref(_, z, _) = ty.kind() {
                     ty = z.clone();
-                    let size = if ty.r().is_str() {
+                    let size = if ty.is_str() {
                         if *op != BinOp::Eq {
                             never!("Only eq is builtin for `str`");
                         }
@@ -1430,7 +1431,7 @@ impl<'db> Evaluator<'db> {
                 Owned(result.to_le_bytes().to_vec())
             }
             Rvalue::Repeat(it, len) => {
-                let len = match try_const_usize(self.db, len.r()) {
+                let len = match try_const_usize(self.db, len.clone()) {
                     Some(it) => it as usize,
                     None => not_supported!("non evaluatable array len in repeat Rvalue"),
                 };
@@ -1696,10 +1697,8 @@ impl<'db> Evaluator<'db> {
             && let AdtId::StructId(struct_id) = adt_ef.def_id().0
         {
             let field_types = self.db.field_types(struct_id.into());
-            if let Some(ty) = field_types
-                .iter()
-                .last()
-                .map(|it| it.1.clone().instantiate(self.interner(), subst.r()))
+            if let Some(ty) =
+                field_types.iter().last().map(|it| it.1.clone().instantiate(self.interner(), subst))
             {
                 return self.coerce_unsized_look_through_fields(ty, goal);
             }
@@ -1736,7 +1735,7 @@ impl<'db> Evaluator<'db> {
         Ok(match &target_ty.kind() {
             TyKind::Slice(_) => match &current_ty.kind() {
                 TyKind::Array(_, size) => {
-                    let len = match try_const_usize(self.db, size.r()) {
+                    let len = match try_const_usize(self.db, size.clone()) {
                         None => {
                             not_supported!("unevaluatble len of array in coerce unsized")
                         }
@@ -1778,10 +1777,10 @@ impl<'db> Evaluator<'db> {
                     };
                     let target_last_field = self.db.field_types(id.into())[last_field]
                         .clone()
-                        .instantiate(self.interner(), target_subst.r());
+                        .instantiate(self.interner(), target_subst);
                     let current_last_field = self.db.field_types(id.into())[last_field]
                         .clone()
-                        .instantiate(self.interner(), current_subst.r());
+                        .instantiate(self.interner(), current_subst);
                     return self.unsizing_ptr_from_addr(
                         target_last_field,
                         current_last_field,
@@ -1925,8 +1924,7 @@ impl<'db> Evaluator<'db> {
                 let mut id = const_id.0;
                 let mut subst = subst.clone();
                 if let hir_def::GeneralConstId::ConstId(c) = id {
-                    let (c, s) =
-                        lookup_impl_const(&self.infcx, self.trait_env.clone(), c, subst.r());
+                    let (c, s) = lookup_impl_const(&self.infcx, self.trait_env.clone(), c, subst);
                     id = hir_def::GeneralConstId::ConstId(c);
                     subst = s;
                 }
@@ -2100,7 +2098,7 @@ impl<'db> Evaluator<'db> {
                 .then(|| (layout.size.bytes_usize(), layout.align.bytes() as usize)));
         }
         if let DefWithBodyId::VariantId(f) = locals.body.owner
-            && let Some((AdtId::EnumId(e), _)) = ty.r().as_adt()
+            && let Some((AdtId::EnumId(e), _)) = ty.as_adt()
             && f.lookup(self.db).parent == e
         {
             // Computing the exact size of enums require resolving the enum discriminants. In order to prevent loops (and
@@ -2242,7 +2240,7 @@ impl<'db> Evaluator<'db> {
                     }
                 }
                 TyKind::Array(inner, len) => {
-                    let len = match try_const_usize(this.db, len.r()) {
+                    let len = match try_const_usize(this.db, len.clone()) {
                         Some(it) => it as usize,
                         None => not_supported!("non evaluatable array len in patching addresses"),
                     };
@@ -2261,13 +2259,13 @@ impl<'db> Evaluator<'db> {
                 }
                 TyKind::Tuple(subst) => {
                     let layout = this.layout(ty.clone())?;
-                    for (id, ty) in subst.r().iter().enumerate() {
+                    for (id, ty) in subst.iter().enumerate() {
                         let offset = layout.fields.offset(id).bytes_usize();
-                        let size = this.layout(ty.o())?.size.bytes_usize();
+                        let size = this.layout(ty.clone())?.size.bytes_usize();
                         rec(
                             this,
                             &bytes[offset..offset + size],
-                            ty.o(),
+                            ty.clone(),
                             locals,
                             mm,
                             stack_depth_limit - 1,
@@ -2284,7 +2282,7 @@ impl<'db> Evaluator<'db> {
                                 .fields
                                 .offset(u32::from(f.into_raw()) as usize)
                                 .bytes_usize();
-                            let ty = field_types[f].clone().instantiate(this.interner(), subst.r());
+                            let ty = field_types[f].clone().instantiate(this.interner(), subst);
                             let size = this.layout(ty.clone())?.size.bytes_usize();
                             rec(
                                 this,
@@ -2310,8 +2308,7 @@ impl<'db> Evaluator<'db> {
                             for (f, _) in data.fields().iter() {
                                 let offset =
                                     l.fields.offset(u32::from(f.into_raw()) as usize).bytes_usize();
-                                let ty =
-                                    field_types[f].clone().instantiate(this.interner(), subst.r());
+                                let ty = field_types[f].clone().instantiate(this.interner(), subst);
                                 let size = this.layout(ty.clone())?.size.bytes_usize();
                                 rec(
                                     this,
@@ -2331,7 +2328,7 @@ impl<'db> Evaluator<'db> {
                     let ty = ocx
                         .structurally_normalize_ty(
                             &ObligationCause::dummy(),
-                            this.trait_env.env.r(),
+                            &this.trait_env.env,
                             ty,
                         )
                         .map_err(|_| MirEvalError::NotSupported("couldn't normalize".to_owned()))?;
@@ -2386,7 +2383,7 @@ impl<'db> Evaluator<'db> {
                 AdtId::StructId(s) => {
                     for (i, (_, ty)) in self.db.field_types(s.into()).iter().enumerate() {
                         let offset = layout.fields.offset(i).bytes_usize();
-                        let ty = ty.clone().instantiate(self.interner(), args.r());
+                        let ty = ty.clone().instantiate(self.interner(), args);
                         self.patch_addresses(
                             patch_map,
                             ty_of_bytes,
@@ -2407,7 +2404,7 @@ impl<'db> Evaluator<'db> {
                     ) {
                         for (i, (_, ty)) in self.db.field_types(ev.into()).iter().enumerate() {
                             let offset = layout.fields.offset(i).bytes_usize();
-                            let ty = ty.clone().instantiate(self.interner(), args.r());
+                            let ty = ty.clone().instantiate(self.interner(), args);
                             self.patch_addresses(
                                 patch_map,
                                 ty_of_bytes,
@@ -2420,19 +2417,19 @@ impl<'db> Evaluator<'db> {
                 }
             },
             TyKind::Tuple(tys) => {
-                for (id, ty) in tys.r().iter().enumerate() {
+                for (id, ty) in tys.iter().enumerate() {
                     let offset = layout.fields.offset(id).bytes_usize();
                     self.patch_addresses(
                         patch_map,
                         ty_of_bytes,
                         addr.offset(offset),
-                        ty.o(),
+                        ty.clone(),
                         locals,
                     )?;
                 }
             }
             TyKind::Array(inner, len) => {
-                let len = match consteval::try_const_usize(self.db, len.r()) {
+                let len = match consteval::try_const_usize(self.db, len.clone()) {
                     Some(it) => it as usize,
                     None => not_supported!("non evaluatable array len in patching addresses"),
                 };
@@ -2524,12 +2521,12 @@ impl<'db> Evaluator<'db> {
             .db
             .monomorphized_mir_body_for_closure(closure, generic_args, self.trait_env.clone())
             .map_err(|it| MirEvalError::MirLowerErrorForClosure(closure, it))?;
-        let closure_data =
-            if mir_body.locals[mir_body.param_locals[0]].ty.r().as_reference().is_some() {
-                closure_data.addr.to_bytes().to_vec()
-            } else {
-                closure_data.get(self)?.to_owned()
-            };
+        let closure_data = if mir_body.locals[mir_body.param_locals[0]].ty.as_reference().is_some()
+        {
+            closure_data.addr.to_bytes().to_vec()
+        } else {
+            closure_data.get(self)?.to_owned()
+        };
         let arg_bytes = iter::once(Ok(closure_data))
             .chain(args.iter().map(|it| Ok(it.get(self)?.to_owned())))
             .collect::<Result<'db, Vec<_>>>()?;
@@ -2618,12 +2615,12 @@ impl<'db> Evaluator<'db> {
         }
         let (def, generic_args) = pair;
         let r = if let Some(self_ty_idx) =
-            is_dyn_method(self.interner(), self.trait_env.clone(), def, generic_args.r())
+            is_dyn_method(self.interner(), self.trait_env.clone(), def, generic_args.clone())
         {
             MirOrDynIndex::Dyn(self_ty_idx)
         } else {
             let (imp, generic_args) =
-                self.db.lookup_impl_method(self.trait_env.clone(), def, generic_args.r());
+                self.db.lookup_impl_method(self.trait_env.clone(), def, generic_args.clone());
 
             let mir_body = self
                 .db
@@ -2682,9 +2679,8 @@ impl<'db> Evaluator<'db> {
                 };
                 let generics_for_target = GenericArgs::new_from_iter(
                     generic_args
-                        .r()
                         .iter()
-                        .owned()
+                        .cloned()
                         .enumerate()
                         .map(|(i, it)| if i == self_ty_idx { ty.clone().into() } else { it }),
                 );
@@ -2780,7 +2776,7 @@ impl<'db> Evaluator<'db> {
             TyKind::Closure(closure, subst) => self.exec_closure(
                 closure.0,
                 func_data,
-                GenericArgs::new_from_slice(subst.r().as_closure().parent_args()),
+                GenericArgs::new_from_slice(subst.clone().as_closure().parent_args()),
                 destination,
                 &args[1..],
                 locals,
@@ -2934,7 +2930,7 @@ impl<'db> Evaluator<'db> {
                                     let addr = addr.offset(offset);
                                     let ty = field_types[field]
                                         .clone()
-                                        .instantiate(self.interner(), subst.r());
+                                        .instantiate(self.interner(), subst);
                                     self.run_drop_glue_deep(ty, locals, addr, &[], span)?;
                                 }
                             }

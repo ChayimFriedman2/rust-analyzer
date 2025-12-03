@@ -8,7 +8,7 @@ use std::iter;
 use hir_def::{DefWithBodyId, HasModule};
 use la_arena::ArenaMap;
 use rustc_hash::FxHashMap;
-use rustc_type_ir::inherent::GenericArgsRef as _;
+use rustc_type_ir::inherent::GenericArgs as _;
 use stdx::never;
 use triomphe::Arc;
 
@@ -124,7 +124,8 @@ fn make_fetch_closure_field<'db>(
         let InternedClosure(def, _) = db.lookup_intern_closure(c);
         let infer = db.infer(def);
         let (captures, _) = infer.closure_info(c);
-        let parent_subst = subst.r().as_closure().parent_args();
+        let subst = subst.as_closure();
+        let parent_subst = subst.parent_args();
         let interner = DbInterner::new_with(db, None, None);
         captures
             .get(f)
@@ -147,7 +148,7 @@ fn moved_out_of_ref<'db>(
             let mut ty: Ty<'db> = body.locals[p.local].ty.clone();
             let mut is_dereference_of_ref = false;
             for proj in p.projection.lookup(&body.projection_store) {
-                if *proj == ProjectionElem::Deref && ty.r().as_reference().is_some() {
+                if *proj == ProjectionElem::Deref && ty.as_reference().is_some() {
                     is_dereference_of_ref = true;
                 }
                 ty = proj.projected_ty(
@@ -159,7 +160,7 @@ fn moved_out_of_ref<'db>(
             }
             if is_dereference_of_ref
                 && !infcx.type_is_copy_modulo_regions(env.env.clone(), ty.clone())
-                && !ty.r().references_non_lt_error()
+                && !ty.references_non_lt_error()
             {
                 result.push(MovedOutOfRef { span: op.span.unwrap_or(span), ty });
             }
@@ -254,7 +255,7 @@ fn partially_moved<'db>(
                 );
             }
             if !infcx.type_is_copy_modulo_regions(env.env.clone(), ty.clone())
-                && !ty.r().references_non_lt_error()
+                && !ty.references_non_lt_error()
             {
                 result.push(PartiallyMoved { span, ty, local: p.local });
             }
@@ -390,7 +391,7 @@ fn place_case<'db>(
     let mut ty = body.locals[lvalue.local].ty.clone();
     for proj in lvalue.projection.lookup(&body.projection_store).iter() {
         match proj {
-            ProjectionElem::Deref if ty.r().as_adt().is_none() => return ProjectionCase::Indirect, // It's indirect in case of reference and raw
+            ProjectionElem::Deref if ty.as_adt().is_none() => return ProjectionCase::Indirect, // It's indirect in case of reference and raw
             ProjectionElem::Deref // It's direct in case of `Box<T>`
             | ProjectionElem::ConstantIndex { .. }
             | ProjectionElem::Subslice { .. }

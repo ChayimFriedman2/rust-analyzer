@@ -32,7 +32,7 @@ impl<'db, Ctx: AutoderefCtx<'db>> GeneralAutoderef<'db, Ctx> {
         }
 
         let targets =
-            steps.iter().skip(1).map(|(ty, _)| ty.clone()).chain(iter::once(self.final_ty().o()));
+            steps.iter().skip(1).map(|(ty, _)| ty.clone()).chain(iter::once(self.final_ty()));
         let steps: Vec<_> = steps
             .iter()
             .map(|(_source, kind)| {

@@ -36,7 +36,7 @@ impl<'db> Evaluator<'db> {
                             };
                             let field_ty = self.db.field_types(id.into())[first_field]
                                 .clone()
-                                .instantiate(self.interner(), subst.r());
+                                .instantiate(self.interner(), subst);
                             return Ok((fields.len(), field_ty));
                         }
                         return Err(MirEvalError::InternalError(
@@ -51,7 +51,7 @@ impl<'db> Evaluator<'db> {
                                 "simd type with no ty param".into(),
                             ));
                         };
-                        Ok((len as usize, ty.o()))
+                        Ok((len as usize, ty))
                     }
                     None => Err(MirEvalError::InternalError(
                         "simd type with unevaluatable len param".into(),
@@ -154,7 +154,7 @@ impl<'db> Evaluator<'db> {
                         "simd_shuffle index argument has non-array type".into(),
                     ));
                 };
-                let index_len = match try_const_usize(self.db, index_len.r()) {
+                let index_len = match try_const_usize(self.db, index_len.clone()) {
                     Some(it) => it as usize,
                     None => {
                         return Err(MirEvalError::InternalError(

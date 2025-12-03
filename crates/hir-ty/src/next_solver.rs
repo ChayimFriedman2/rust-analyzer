@@ -11,7 +11,6 @@ pub mod infer;
 pub(crate) mod inspect;
 pub mod interner;
 mod ir_print;
-mod ir_trait_impls;
 pub mod normalize;
 pub mod obligation_ctxt;
 mod opaques;
@@ -31,7 +30,6 @@ pub use interner::*;
 pub use opaques::*;
 pub use predicate::*;
 pub use region::*;
-use rustc_type_ir::ir_traits::MyToOwned;
 pub use solver::*;
 pub use ty::*;
 
@@ -51,58 +49,6 @@ pub type TypingMode<'db> = rustc_type_ir::TypingMode<DbInterner<'db>>;
 pub type TypeError<'db> = rustc_type_ir::error::TypeError<DbInterner<'db>>;
 pub type QueryResult<'db> = rustc_type_ir::solve::QueryResult<DbInterner<'db>>;
 pub type FxIndexMap<K, V> = rustc_type_ir::data_structures::IndexMap<K, V>;
-
-pub unsafe trait SameRepr: Sized {
-    type Borrowed<'a>
-    where
-        Self: 'a;
-}
-
-pub trait AsBorrowedSlice {
-    type Borrowed<'a>
-    where
-        Self: 'a;
-
-    fn as_borrowed_slice(&self) -> &[Self::Borrowed<'_>];
-
-    fn as_owned_slice<'a>(slice: &'a [Self::Borrowed<'_>]) -> &'a Self;
-}
-
-impl<T: SameRepr> AsBorrowedSlice for [T] {
-    type Borrowed<'a>
-        = T::Borrowed<'a>
-    where
-        T: 'a;
-
-    #[inline(always)]
-    fn as_borrowed_slice(&self) -> &[Self::Borrowed<'_>] {
-        unsafe { &*(self as *const [T] as *const [Self::Borrowed<'_>]) }
-    }
-
-    #[inline(always)]
-    fn as_owned_slice<'a>(slice: &'a [Self::Borrowed<'_>]) -> &'a Self {
-        unsafe { &*(slice as *const [Self::Borrowed<'_>] as *const [T]) }
-    }
-}
-
-pub trait AsOwnedSlice {
-    type Owned;
-
-    fn as_owned_slice(&self) -> &[Self::Owned];
-}
-
-pub trait IteratorOwnedExt<'db, T> {
-    fn owned(self) -> impl Iterator<Item = T>;
-}
-
-impl<'db, I: Iterator<Item: MyToOwned<DbInterner<'db>>>>
-    IteratorOwnedExt<'db, <I::Item as MyToOwned<DbInterner<'db>>>::Owned> for I
-{
-    #[inline]
-    fn owned(self) -> impl Iterator<Item = <I::Item as MyToOwned<DbInterner<'db>>>::Owned> {
-        self.map(|it| it.o())
-    }
-}
 
 pub struct DefaultTypes<'db> {
     pub usize: Ty<'db>,

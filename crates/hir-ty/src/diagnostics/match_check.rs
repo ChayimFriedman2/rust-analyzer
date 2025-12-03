@@ -16,7 +16,6 @@ use hir_def::{
     item_tree::FieldsShape,
 };
 use hir_expand::name::Name;
-use rustc_type_ir::inherent::SliceLike;
 use span::Edition;
 use stdx::{always, never, variance::PhantomCovariantLifetime};
 
@@ -141,7 +140,7 @@ impl<'a, 'db> PatCtxt<'a, 'db> {
 
             hir_def::hir::Pat::Tuple { ref args, ellipsis } => {
                 let arity = match ty.kind() {
-                    TyKind::Tuple(tys) => tys.r().len(),
+                    TyKind::Tuple(tys) => tys.len(),
                     _ => {
                         never!("unexpected type for tuple pattern: {:?}", ty);
                         self.errors.push(PatternError::UnexpectedType);
@@ -318,7 +317,7 @@ impl<'db> HirDisplay<'db> for Pat<'db> {
             PatKind::Variant { subpatterns, .. } | PatKind::Leaf { subpatterns } => {
                 let variant = match *self.kind {
                     PatKind::Variant { enum_variant, .. } => Some(VariantId::from(enum_variant)),
-                    _ => self.ty.r().as_adt().and_then(|(adt, _)| match adt {
+                    _ => self.ty.as_adt().and_then(|(adt, _)| match adt {
                         AdtId::StructId(s) => Some(s.into()),
                         AdtId::UnionId(u) => Some(u.into()),
                         AdtId::EnumId(_) => None,

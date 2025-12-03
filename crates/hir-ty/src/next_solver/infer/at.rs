@@ -33,9 +33,9 @@ use rustc_type_ir::{
 };
 
 use crate::next_solver::{
-    AliasTerm, AliasTy, Binder, ConstRef, DbInterner, GenericArgRef, Goal, ParamEnvRef,
-    PolyExistentialProjection, PolyExistentialTraitRef, PolyFnSig, Predicate, RegionRef, Span,
-    TermRef, TraitRef, TyRef,
+    AliasTerm, AliasTy, Binder, Const, DbInterner, GenericArg, Goal, ParamEnv,
+    PolyExistentialProjection, PolyExistentialTraitRef, PolyFnSig, Predicate, Region, Span, Term,
+    TraitRef, Ty,
     fulfill::NextSolverError,
     infer::relate::lattice::{LatticeOp, LatticeOpKind},
 };
@@ -49,7 +49,7 @@ use super::{
 pub struct At<'a, 'db> {
     pub infcx: &'a InferCtxt<'db>,
     pub cause: &'a ObligationCause,
-    pub param_env: ParamEnvRef<'a, 'db>,
+    pub param_env: &'a ParamEnv<'db>,
 }
 
 impl<'db> InferCtxt<'db> {
@@ -57,7 +57,7 @@ impl<'db> InferCtxt<'db> {
     pub fn at<'a>(
         &'a self,
         cause: &'a ObligationCause,
-        param_env: ParamEnvRef<'a, 'db>,
+        param_env: &'a ParamEnv<'db>,
     ) -> At<'a, 'db> {
         At { infcx: self, cause, param_env }
     }
@@ -107,7 +107,7 @@ impl<'a, 'db> At<'a, 'db> {
     {
         RelateExt::relate(
             self.infcx,
-            self.param_env,
+            self.param_env.clone(),
             expected,
             Variance::Contravariant,
             actual,
@@ -123,7 +123,7 @@ impl<'a, 'db> At<'a, 'db> {
     {
         RelateExt::relate(
             self.infcx,
-            self.param_env,
+            self.param_env.clone(),
             expected,
             Variance::Covariant,
             actual,
@@ -139,7 +139,7 @@ impl<'a, 'db> At<'a, 'db> {
     {
         RelateExt::relate(
             self.infcx,
-            self.param_env,
+            self.param_env.clone(),
             expected,
             Variance::Invariant,
             actual,
@@ -187,7 +187,7 @@ impl<'a, 'db> At<'a, 'db> {
         let mut op = LatticeOp::new(
             self.infcx,
             ToTrace::to_trace(self.cause, expected.clone(), actual.clone()),
-            self.param_env,
+            self.param_env.clone(),
             LatticeOpKind::Lub,
         );
         let value = op.relate(expected, actual)?;
@@ -212,59 +212,53 @@ impl<'a, 'db> At<'a, 'db> {
     }
 }
 
-impl<'db> ToTrace<'db> for TyRef<'_, 'db> {
+impl<'db> ToTrace<'db> for Ty<'db> {
     fn to_trace(cause: &ObligationCause, a: Self, b: Self) -> TypeTrace<'db> {
         TypeTrace {
             cause: cause.clone(),
-            values: ValuePairs::Terms(ExpectedFound::new(a.o().into(), b.o().into())),
+            values: ValuePairs::Terms(ExpectedFound::new(a.into(), b.into())),
         }
     }
 }
 
-impl<'db> ToTrace<'db> for RegionRef<'_, 'db> {
+impl<'db> ToTrace<'db> for Region<'db> {
+    fn to_trace(cause: &ObligationCause, a: Self, b: Self) -> TypeTrace<'db> {
+        TypeTrace { cause: cause.clone(), values: ValuePairs::Regions(ExpectedFound::new(a, b)) }
+    }
+}
+
+impl<'db> ToTrace<'db> for Const<'db> {
     fn to_trace(cause: &ObligationCause, a: Self, b: Self) -> TypeTrace<'db> {
         TypeTrace {
             cause: cause.clone(),
-            values: ValuePairs::Regions(ExpectedFound::new(a.o(), b.o())),
+            values: ValuePairs::Terms(ExpectedFound::new(a.into(), b.into())),
         }
     }
 }
 
-impl<'db> ToTrace<'db> for ConstRef<'_, 'db> {
+impl<'db> ToTrace<'db> for GenericArg<'db> {
     fn to_trace(cause: &ObligationCause, a: Self, b: Self) -> TypeTrace<'db> {
         TypeTrace {
             cause: cause.clone(),
-            values: ValuePairs::Terms(ExpectedFound::new(a.o().into(), b.o().into())),
-        }
-    }
-}
-
-impl<'db> ToTrace<'db> for GenericArgRef<'_, 'db> {
-    fn to_trace(cause: &ObligationCause, a: Self, b: Self) -> TypeTrace<'db> {
-        TypeTrace {
-            cause: cause.clone(),
-            values: match (a.kind(), b.kind()) {
+            values: match (a.into_kind(), b.into_kind()) {
                 (GenericArgKind::Lifetime(a), GenericArgKind::Lifetime(b)) => {
-                    ValuePairs::Regions(ExpectedFound::new(a.o(), b.o()))
+                    ValuePairs::Regions(ExpectedFound::new(a, b))
                 }
                 (GenericArgKind::Type(a), GenericArgKind::Type(b)) => {
-                    ValuePairs::Terms(ExpectedFound::new(a.o().into(), b.o().into()))
+                    ValuePairs::Terms(ExpectedFound::new(a.into(), b.into()))
                 }
                 (GenericArgKind::Const(a), GenericArgKind::Const(b)) => {
-                    ValuePairs::Terms(ExpectedFound::new(a.o().into(), b.o().into()))
+                    ValuePairs::Terms(ExpectedFound::new(a.into(), b.into()))
                 }
-                _ => panic!("relating different kinds: {a:?} {b:?}"),
+                _ => panic!("relating different kinds"),
             },
         }
     }
 }
 
-impl<'db> ToTrace<'db> for TermRef<'_, 'db> {
+impl<'db> ToTrace<'db> for Term<'db> {
     fn to_trace(cause: &ObligationCause, a: Self, b: Self) -> TypeTrace<'db> {
-        TypeTrace {
-            cause: cause.clone(),
-            values: ValuePairs::Terms(ExpectedFound::new(a.o(), b.o())),
-        }
+        TypeTrace { cause: cause.clone(), values: ValuePairs::Terms(ExpectedFound::new(a, b)) }
     }
 }
 

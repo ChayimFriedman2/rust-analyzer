@@ -5,8 +5,8 @@ use rustc_type_ir::{
 };
 
 use crate::next_solver::{
-    Binder, Const, ConstKind, DbInterner, Goal, OwnedTermKind, ParamEnvRef, Predicate,
-    PredicateKind, Term, Ty, TyKind,
+    Binder, Const, ConstKind, DbInterner, Goal, ParamEnv, Predicate, PredicateKind, Term, TermKind,
+    Ty, TyKind,
     fulfill::{FulfillmentCtxt, NextSolverError},
     infer::{
         InferCtxt,
@@ -98,11 +98,11 @@ impl<'db> NormalizationFolder<'_, 'db> {
 
         self.depth += 1;
 
-        let infer_term = infcx.next_term_var_of_kind(alias_term.r());
+        let infer_term = infcx.next_term_var_of_kind(&alias_term);
         let obligation = Obligation::new(
             interner,
             self.at.cause.clone(),
-            self.at.param_env.o(),
+            self.at.param_env.clone(),
             PredicateKind::AliasRelate(
                 alias_term,
                 infer_term.clone(),
@@ -130,8 +130,8 @@ impl<'db> NormalizationFolder<'_, 'db> {
         // super-folding the `term` will directly fold the `Ty` or `Const` so
         // we have to match on the term and super-fold them manually.
         let result = match term.into_kind() {
-            OwnedTermKind::Ty(ty) => ty.try_super_fold_with(self)?.into(),
-            OwnedTermKind::Const(ct) => ct.try_super_fold_with(self)?.into(),
+            TermKind::Ty(ty) => ty.try_super_fold_with(self)?.into(),
+            TermKind::Const(ct) => ct.try_super_fold_with(self)?.into(),
         };
         self.depth -= 1;
         Ok(result)
@@ -190,7 +190,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for NormalizationFolder<'_, 'db> {
         if ty.has_escaping_bound_vars() {
             let (ty, mapped_regions, mapped_types, mapped_consts) =
                 BoundVarReplacer::replace_bound_vars(infcx, &mut self.universes, ty);
-            let result = self.normalize_alias_term(ty.into())?.expect_type();
+            let result = self.normalize_alias_term(ty.into())?.expect_ty();
             Ok(PlaceholderReplacer::replace_placeholders(
                 infcx,
                 mapped_regions,
@@ -200,7 +200,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for NormalizationFolder<'_, 'db> {
                 result,
             ))
         } else {
-            Ok(self.normalize_alias_term(ty.into())?.expect_type())
+            Ok(self.normalize_alias_term(ty.into())?.expect_ty())
         }
     }
 
@@ -235,7 +235,7 @@ impl<'db> FallibleTypeFolder<DbInterner<'db>> for NormalizationFolder<'_, 'db> {
 #[expect(unused, reason = "rustc has this")]
 pub(crate) fn deeply_normalize_for_diagnostics<'db, T: TypeFoldable<DbInterner<'db>>>(
     infcx: &InferCtxt<'db>,
-    param_env: ParamEnvRef<'_, 'db>,
+    param_env: &ParamEnv<'db>,
     t: T,
 ) -> T {
     t.fold_with(&mut DeeplyNormalizeForDiagnosticsFolder {

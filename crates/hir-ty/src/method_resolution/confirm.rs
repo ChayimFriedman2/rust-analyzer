@@ -8,11 +8,7 @@ use hir_def::{
     lang_item::LangItem,
 };
 use itertools::Itertools;
-use rustc_type_ir::{
-    TypeFoldable,
-    elaborate::elaborate,
-    inherent::{BoundExistentialPredicates, SliceLike},
-};
+use rustc_type_ir::{TypeFoldable, elaborate::elaborate, inherent::BoundExistentialPredicates};
 use tracing::debug;
 
 use crate::{
@@ -26,9 +22,9 @@ use crate::{
     },
     method_resolution::{CandidateId, MethodCallee, probe},
     next_solver::{
-        AsOwnedSlice, Binder, Clause, ClauseKind, Const, DbInterner, EarlyParamRegion, FnSig,
-        GenericArg, GenericArgs, GenericArgsRef, IteratorOwnedExt, ParamConst, ParamTy,
-        PolyExistentialTraitRef, PolyTraitRef, Region, TraitRef, Ty, TyKind, TyRef,
+        Binder, Clause, ClauseKind, Const, DbInterner, EarlyParamRegion, FnSig, GenericArg,
+        GenericArgs, ParamConst, ParamTy, PolyExistentialTraitRef, PolyTraitRef, Region, TraitRef,
+        Ty, TyKind,
         infer::{
             BoundRegionConversionTime, InferCtxt,
             traits::{Obligation, ObligationCause, PredicateObligation},
@@ -105,13 +101,13 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
         let (self_ty, adjustments) = self.adjust_self_ty(unadjusted_self_ty, pick);
 
         // Create generic args for the method's type parameters.
-        let rcvr_args = self.fresh_receiver_args(self_ty.r(), pick);
-        let all_args = self.instantiate_method_args(generic_args, rcvr_args.r());
+        let rcvr_args = self.fresh_receiver_args(self_ty.clone(), pick);
+        let all_args = self.instantiate_method_args(generic_args, &rcvr_args);
 
         debug!("rcvr_args={rcvr_args:?}, all_args={all_args:?}");
 
         // Create the final signature for the method, replacing late-bound regions.
-        let (method_sig, method_predicates) = self.instantiate_method_sig(pick, all_args.r());
+        let (method_sig, method_predicates) = self.instantiate_method_sig(pick, &all_args);
 
         // If there is a `Self: Sized` bound and `Self` is a trait object, it is possible that
         // something which derefs to `Self` actually implements the trait and the caller
@@ -124,7 +120,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
         let filler_args = GenericArgs::fill_rest(
             self.interner(),
             self.candidate.into(),
-            rcvr_args.r().iter().owned(),
+            rcvr_args.iter().cloned(),
             |index, id, _| match id {
                 GenericParamId::TypeParamId(id) => Ty::new_param(ParamTy { id, index }).into(),
                 GenericParamId::ConstParamId(id) => {
@@ -137,7 +133,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
         );
         let illegal_sized_bound = self.predicates_require_illegal_sized_bound(
             GenericPredicates::query_all(self.db(), self.candidate.into())
-                .iter_instantiated_owned(self.interner(), filler_args.r()),
+                .iter_instantiated_cloned(self.interner(), &filler_args),
         );
 
         // Unify the (adjusted) self type with what the method expects.
@@ -146,12 +142,12 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
         // traits, no trait system method can be called before this point because they
         // could alter our Self-type, except for normalizing the receiver from the
         // signature (which is also done during probing).
-        let method_sig_rcvr = method_sig.inputs().as_slice()[0];
+        let method_sig_rcvr = method_sig.inputs()[0].clone();
         debug!(
             "confirm: self_ty={:?} method_sig_rcvr={:?} method_sig={:?}",
             self_ty, method_sig_rcvr, method_sig
         );
-        self.unify_receivers(self_ty.r(), method_sig_rcvr, pick);
+        self.unify_receivers(self_ty, method_sig_rcvr, pick);
 
         // Make sure nobody calls `drop()` explicitly.
         self.check_for_illegal_method_calls();
@@ -163,7 +159,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
         // We won't add these if we encountered an illegal sized bound, so that we can use
         // a custom error in that case.
         if !illegal_sized_bound {
-            self.add_obligations(&method_sig, all_args.r(), method_predicates);
+            self.add_obligations(&method_sig, all_args.clone(), method_predicates);
         } else {
             drop(method_predicates);
         }
@@ -252,7 +248,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
     /// these are instantiated later in the `instantiate_method_sig` routine.
     fn fresh_receiver_args(
         &mut self,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         pick: &probe::Pick<'db>,
     ) -> GenericArgs<'db> {
         match &pick.kind {
@@ -269,7 +265,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
                     return GenericArgs::error_for_item(self.interner(), trait_def_id.into());
                 }
 
-                self.extract_existential_trait_ref(self_ty.o(), |this, object_ty, principal| {
+                self.extract_existential_trait_ref(self_ty, |this, object_ty, principal| {
                     // The object data has no entry for the Self
                     // Type. For the purposes of this method call, we
                     // instantiate the object type itself. This
@@ -334,7 +330,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
             .find_map(|(ty, _)| match ty.kind() {
                 TyKind::Dynamic(data, ..) => {
                     let principal =
-                        data.r().principal().expect("calling trait method on empty object?");
+                        data.principal().expect("calling trait method on empty object?");
                     Some(closure(self, ty, principal))
                 }
                 _ => None,
@@ -345,7 +341,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
     fn instantiate_method_args(
         &mut self,
         generic_args: Option<&HirGenericArgs>,
-        parent_args: GenericArgsRef<'_, 'db>,
+        parent_args: &GenericArgs<'db>,
     ) -> GenericArgs<'db> {
         struct LowererCtx<'a, 'b, 'db> {
             ctx: &'a mut InferenceContext<'b, 'db>,
@@ -464,18 +460,14 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
             LifetimeElisionKind::Infer,
             false,
             None,
-            &mut LowererCtx {
-                ctx: self.ctx,
-                expr: self.expr,
-                parent_args: parent_args.as_slice().as_owned_slice(),
-            },
+            &mut LowererCtx { ctx: self.ctx, expr: self.expr, parent_args: parent_args.as_slice() },
         )
     }
 
     fn unify_receivers(
         &mut self,
-        self_ty: TyRef<'_, 'db>,
-        method_self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
+        method_self_ty: Ty<'db>,
         pick: &probe::Pick<'db>,
     ) {
         debug!(
@@ -483,7 +475,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
             self_ty, method_self_ty, pick
         );
         let cause = ObligationCause::new();
-        match self.ctx.table.at(&cause).sup(method_self_ty, self_ty) {
+        match self.ctx.table.at(&cause).sup(method_self_ty.clone(), self_ty.clone()) {
             Ok(infer_ok) => {
                 self.ctx.table.register_infer_ok(infer_ok);
             }
@@ -491,7 +483,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
                 if self.ctx.unstable_features.arbitrary_self_types {
                     self.ctx.result.type_mismatches.insert(
                         self.expr.into(),
-                        TypeMismatch { expected: method_self_ty.o(), actual: self_ty.o() },
+                        TypeMismatch { expected: method_self_ty, actual: self_ty },
                     );
                 }
             }
@@ -501,11 +493,11 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
     // NOTE: this returns the *unnormalized* predicates and method sig. Because of
     // inference guessing, the predicates and method signature can't be normalized
     // until we unify the `Self` type.
-    fn instantiate_method_sig<'c>(
+    fn instantiate_method_sig<'c, 'd>(
         &mut self,
         pick: &probe::Pick<'db>,
-        all_args: GenericArgsRef<'c, 'db>,
-    ) -> (FnSig<'db>, impl Iterator<Item = PredicateObligation<'db>> + use<'c, 'db>) {
+        all_args: &'d GenericArgs<'db>,
+    ) -> (FnSig<'db>, impl Iterator<Item = PredicateObligation<'db>> + use<'c, 'd, 'db>) {
         debug!("instantiate_method_sig(pick={:?}, all_args={:?})", pick, all_args);
 
         // Instantiate the bounds on the method with the
@@ -515,7 +507,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
         let method_predicates = {
             let param_env = self.ctx.table.trait_env.env.clone();
             GenericPredicates::query_all(self.db(), def_id.into())
-                .iter_instantiated_owned(self.interner(), all_args)
+                .iter_instantiated_cloned(self.interner(), all_args)
                 .map(move |clause| Obligation {
                     cause: ObligationCause::new(),
                     param_env: param_env.clone(),
@@ -537,7 +529,7 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
     fn add_obligations(
         &mut self,
         sig: &FnSig<'db>,
-        all_args: GenericArgsRef<'_, 'db>,
+        all_args: GenericArgs<'db>,
         method_predicates: impl Iterator<Item = PredicateObligation<'db>>,
     ) {
         debug!("add_obligations: sig={:?} all_args={:?}", sig, all_args);
@@ -551,8 +543,8 @@ impl<'a, 'b, 'db> ConfirmContext<'a, 'b, 'db> {
         // the function type must also be well-formed (this is not
         // implied by the args being well-formed because of inherent
         // impls and late-bound regions - see issue #28609).
-        for ty in sig.inputs_and_output.r() {
-            self.ctx.table.register_wf_obligation(ty.o().into(), ObligationCause::new());
+        for ty in &sig.inputs_and_output {
+            self.ctx.table.register_wf_obligation(ty.clone().into(), ObligationCause::new());
         }
     }
 

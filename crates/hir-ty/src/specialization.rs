@@ -69,7 +69,7 @@ fn specializes_query(
 
     // create a parameter environment corresponding to an identity instantiation of the specializing impl,
     // i.e. the most generic instantiation of the specializing impl.
-    let param_env = trait_env.env.r();
+    let param_env = &trait_env.env;
 
     // Create an infcx, taking the predicates of the specializing impl as assumptions:
     let infcx = interner.infer_ctxt().build(TypingMode::non_body_analysis());
@@ -90,10 +90,10 @@ fn specializes_query(
     let parent_impl_trait_ref = db
         .impl_trait(parent_impl_def_id)
         .expect("expected source impl to be a trait impl")
-        .instantiate(interner, parent_args.r());
+        .instantiate(interner, &parent_args);
 
     // do the impls unify? If not, no specialization.
-    let Ok(()) = ocx.eq(cause, param_env, &specializing_impl_trait_ref, &parent_impl_trait_ref)
+    let Ok(()) = ocx.eq(cause, &param_env, &specializing_impl_trait_ref, &parent_impl_trait_ref)
     else {
         return false;
     };
@@ -103,7 +103,7 @@ fn specializes_query(
     // only be referenced via projection predicates.
     ocx.register_obligations(clauses_as_obligations(
         GenericPredicates::query_all(db, parent_impl_def_id.into())
-            .iter_instantiated_owned(interner, parent_args.r()),
+            .iter_instantiated_cloned(interner, &parent_args),
         cause.clone(),
         param_env,
     ));

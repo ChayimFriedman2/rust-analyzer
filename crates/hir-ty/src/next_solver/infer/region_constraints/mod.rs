@@ -16,11 +16,12 @@ use self::CombineMapType::*;
 use self::UndoLog::*;
 use super::MemberConstraint;
 use super::unify_key::RegionVidKey;
-use crate::next_solver::infer::unify_key::RegionVariableValue;
-use crate::next_solver::{AliasTy, Binder, DbInterner, ParamTy, PlaceholderTy, Region, Ty};
 use crate::next_solver::{
-    RegionRef,
-    infer::snapshot::undo_log::{InferCtxtUndoLogs, Snapshot},
+    AliasTy, Binder, DbInterner, ParamTy, PlaceholderTy, Region, Ty,
+    infer::{
+        snapshot::undo_log::{InferCtxtUndoLogs, Snapshot},
+        unify_key::RegionVariableValue,
+    },
 };
 
 #[derive(Debug, Clone, Default)]
@@ -110,8 +111,8 @@ impl<'db> Constraint<'db> {
     pub fn involves_placeholders(&self) -> bool {
         match self {
             Constraint::VarSubVar(_, _) => false,
-            Constraint::VarSubReg(_, r) | Constraint::RegSubVar(r, _) => r.r().is_placeholder(),
-            Constraint::RegSubReg(r, s) => r.r().is_placeholder() || s.r().is_placeholder(),
+            Constraint::VarSubReg(_, r) | Constraint::RegSubVar(r, _) => r.is_placeholder(),
+            Constraint::RegSubReg(r, s) => r.is_placeholder() || s.is_placeholder(),
         }
     }
 }
@@ -395,12 +396,12 @@ impl<'db> RegionConstraintCollector<'db, '_> {
         self.undo_log.push(AddConstraint(index));
     }
 
-    pub(super) fn make_eqregion(&mut self, a: RegionRef<'_, 'db>, b: RegionRef<'_, 'db>) {
+    pub(super) fn make_eqregion(&mut self, a: Region<'db>, b: Region<'db>) {
         if a != b {
             // Eventually, it would be nice to add direct support for
             // equating regions.
-            self.make_subregion(a, b);
-            self.make_subregion(b, a);
+            self.make_subregion(a.clone(), b.clone());
+            self.make_subregion(b.clone(), a.clone());
 
             match (*a.kind(), *b.kind()) {
                 (RegionKind::ReVar(a), RegionKind::ReVar(b)) => {
@@ -413,7 +414,7 @@ impl<'db> RegionConstraintCollector<'db, '_> {
                     debug!("make_eqregion: unifying {:?} with {:?}", vid, b);
                     if self
                         .unification_table_mut()
-                        .unify_var_value(vid, RegionVariableValue::Known { value: b.o() })
+                        .unify_var_value(vid, RegionVariableValue::Known { value: b })
                         .is_ok()
                     {
                         self.storage.any_unifications = true;
@@ -423,7 +424,7 @@ impl<'db> RegionConstraintCollector<'db, '_> {
                     debug!("make_eqregion: unifying {:?} with {:?}", a, vid);
                     if self
                         .unification_table_mut()
-                        .unify_var_value(vid, RegionVariableValue::Known { value: a.o() })
+                        .unify_var_value(vid, RegionVariableValue::Known { value: a })
                         .is_ok()
                     {
                         self.storage.any_unifications = true;
@@ -435,7 +436,7 @@ impl<'db> RegionConstraintCollector<'db, '_> {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub(super) fn make_subregion(&mut self, sub: RegionRef<'_, 'db>, sup: RegionRef<'_, 'db>) {
+    pub(super) fn make_subregion(&mut self, sub: Region<'db>, sup: Region<'db>) {
         // cannot add constraints once regions are resolved
 
         match (*sub.kind(), *sup.kind()) {
@@ -449,48 +450,40 @@ impl<'db> RegionConstraintCollector<'db, '_> {
                 self.add_constraint(Constraint::VarSubVar(sub_id, sup_id));
             }
             (_, RegionKind::ReVar(sup_id)) => {
-                self.add_constraint(Constraint::RegSubVar(sub.o(), sup_id));
+                self.add_constraint(Constraint::RegSubVar(sub, sup_id));
             }
             (RegionKind::ReVar(sub_id), _) => {
-                self.add_constraint(Constraint::VarSubReg(sub_id, sup.o()));
+                self.add_constraint(Constraint::VarSubReg(sub_id, sup));
             }
             _ => {
-                self.add_constraint(Constraint::RegSubReg(sub.o(), sup.o()));
+                self.add_constraint(Constraint::RegSubReg(sub, sup));
             }
         }
     }
 
-    pub(super) fn lub_regions(
-        &mut self,
-        a: RegionRef<'_, 'db>,
-        b: RegionRef<'_, 'db>,
-    ) -> Region<'db> {
+    pub(super) fn lub_regions(&mut self, a: Region<'db>, b: Region<'db>) -> Region<'db> {
         // cannot add constraints once regions are resolved
         debug!("RegionConstraintCollector: lub_regions({:?}, {:?})", a, b);
         #[expect(clippy::if_same_then_else)]
         if a.is_static() || b.is_static() {
-            a.o() // nothing lives longer than static
+            a // nothing lives longer than static
         } else if a == b {
-            a.o() // LUB(a,a) = a
+            a // LUB(a,a) = a
         } else {
             self.combine_vars(Lub, a, b)
         }
     }
 
-    pub(super) fn glb_regions(
-        &mut self,
-        a: RegionRef<'_, 'db>,
-        b: RegionRef<'_, 'db>,
-    ) -> Region<'db> {
+    pub(super) fn glb_regions(&mut self, a: Region<'db>, b: Region<'db>) -> Region<'db> {
         // cannot add constraints once regions are resolved
         debug!("RegionConstraintCollector: glb_regions({:?}, {:?})", a, b);
         #[expect(clippy::if_same_then_else)]
         if a.is_static() {
-            b.o() // static lives longer than everything else
+            b // static lives longer than everything else
         } else if b.is_static() {
-            a.o() // static lives longer than everything else
+            a // static lives longer than everything else
         } else if a == b {
-            a.o() // GLB(a,a) = a
+            a // GLB(a,a) = a
         } else {
             self.combine_vars(Glb, a, b)
         }
@@ -521,18 +514,13 @@ impl<'db> RegionConstraintCollector<'db, '_> {
         }
     }
 
-    fn combine_vars(
-        &mut self,
-        t: CombineMapType,
-        a: RegionRef<'_, 'db>,
-        b: RegionRef<'_, 'db>,
-    ) -> Region<'db> {
-        let vars = TwoRegions { a: a.o(), b: b.o() };
+    fn combine_vars(&mut self, t: CombineMapType, a: Region<'db>, b: Region<'db>) -> Region<'db> {
+        let vars = TwoRegions { a: a.clone(), b: b.clone() };
         if let Some(c) = self.combine_map(t.clone()).get(&vars) {
             return Region::new_var(*c);
         }
-        let a_universe = self.universe(a);
-        let b_universe = self.universe(b);
+        let a_universe = self.universe(&a);
+        let b_universe = self.universe(&b);
         let c_universe = cmp::max(a_universe, b_universe);
         let c = self.new_region_var(c_universe);
         self.combine_map(t.clone()).insert(vars.clone(), c);
@@ -540,15 +528,15 @@ impl<'db> RegionConstraintCollector<'db, '_> {
         let new_r = Region::new_var(c);
         for old_r in [a, b] {
             match t {
-                Glb => self.make_subregion(new_r.r(), old_r),
-                Lub => self.make_subregion(old_r, new_r.r()),
+                Glb => self.make_subregion(new_r.clone(), old_r),
+                Lub => self.make_subregion(old_r, new_r.clone()),
             }
         }
         debug!("combine_vars() c={:?}", c);
         new_r
     }
 
-    pub fn universe(&mut self, region: RegionRef<'_, 'db>) -> UniverseIndex {
+    pub fn universe(&mut self, region: &Region<'db>) -> UniverseIndex {
         match region.kind() {
             RegionKind::ReStatic
             | RegionKind::ReErased
@@ -557,7 +545,7 @@ impl<'db> RegionConstraintCollector<'db, '_> {
             | RegionKind::ReError(_) => UniverseIndex::ROOT,
             RegionKind::RePlaceholder(placeholder) => placeholder.universe,
             RegionKind::ReVar(vid) => match self.probe_value(*vid) {
-                Ok(value) => self.universe(value.r()),
+                Ok(value) => self.universe(&value),
                 Err(universe) => universe,
             },
             RegionKind::ReBound(..) => panic!("universe(): encountered bound region {region:?}"),
@@ -621,7 +609,7 @@ impl<'db> VerifyBound<'db> {
     pub fn must_hold(&self) -> bool {
         match self {
             VerifyBound::IfEq(..) => false,
-            VerifyBound::OutlivedBy(re) => re.r().is_static(),
+            VerifyBound::OutlivedBy(re) => re.is_static(),
             VerifyBound::IsEmpty => false,
             VerifyBound::AnyBound(bs) => bs.iter().any(|b| b.must_hold()),
             VerifyBound::AllBounds(bs) => bs.iter().all(|b| b.must_hold()),

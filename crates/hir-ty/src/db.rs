@@ -18,9 +18,7 @@ use crate::{
     layout::{Layout, LayoutError},
     lower::{Diagnostics, GenericDefaults},
     mir::{BorrowckResult, MirBody, MirLowerError},
-    next_solver::{
-        Const, EarlyBinder, GenericArgs, GenericArgsRef, PolyFnSig, TraitRef, Ty, VariancesOf,
-    },
+    next_solver::{Const, EarlyBinder, GenericArgs, PolyFnSig, TraitRef, Ty, VariancesOf},
 };
 
 #[query_group::query_group]
@@ -96,7 +94,7 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
         &'db self,
         env: Arc<TraitEnvironment<'db>>,
         func: FunctionId,
-        fn_subst: GenericArgsRef<'_, 'db>,
+        fn_subst: GenericArgs<'db>,
     ) -> (FunctionId, GenericArgs<'db>);
 
     // endregion:mir

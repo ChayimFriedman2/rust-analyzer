@@ -4,7 +4,6 @@ use base_db::Crate;
 use hir_def::{hir::ExprId, lang_item::LangItem};
 use intern::sym;
 use rustc_ast_ir::Mutability;
-use rustc_type_ir::ir_traits::MyToOwned;
 use tracing::debug;
 
 use crate::{
@@ -13,7 +12,7 @@ use crate::{
     infer::{AllowTwoPhase, AutoBorrowMutability, InferenceContext, unify::InferenceTable},
     method_resolution::{MethodCallee, TreatNotYetDefinedOpaques},
     next_solver::{
-        ClauseKind, Ty, TyKind, TyRef,
+        ClauseKind, Ty, TyKind,
         infer::{
             InferOk,
             traits::{Obligation, ObligationCause},
@@ -30,7 +29,7 @@ pub(super) enum PlaceOp {
 impl<'a, 'db> InferenceContext<'a, 'db> {
     pub(super) fn try_overloaded_deref(
         &self,
-        base_ty: TyRef<'_, 'db>,
+        base_ty: Ty<'db>,
     ) -> Option<InferOk<'db, MethodCallee<'db>>> {
         self.try_overloaded_place_op(base_ty, None, PlaceOp::Deref)
     }
@@ -44,7 +43,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
         let ret_ty = method.sig.output();
 
         // method returns &T, but the type as visible to user is T, so deref
-        ret_ty.builtin_deref(true).unwrap().o()
+        ret_ty.builtin_deref(true).unwrap()
     }
 
     /// Type-check `*oprnd_expr` with `oprnd_expr` type-checked already.
@@ -54,18 +53,18 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
         oprnd_expr: ExprId,
         oprnd_ty: Ty<'db>,
     ) -> Option<Ty<'db>> {
-        if let Some(ty) = oprnd_ty.r().builtin_deref(true) {
-            return Some(ty.o());
+        if let Some(ty) = oprnd_ty.builtin_deref(true) {
+            return Some(ty);
         }
 
-        let ok = self.try_overloaded_deref(oprnd_ty.r())?;
+        let ok = self.try_overloaded_deref(oprnd_ty)?;
         let method = self.table.register_infer_ok(ok);
         if let TyKind::Ref(_, _, Mutability::Not) = method.sig.inputs()[0].kind() {
             self.write_expr_adj(
                 oprnd_expr,
                 Box::new([Adjustment {
                     kind: Adjust::Borrow(AutoBorrow::Ref(AutoBorrowMutability::Not)),
-                    target: method.sig.inputs()[0].o(),
+                    target: method.sig.inputs()[0].clone(),
                 }]),
             );
         } else {
@@ -91,7 +90,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
         let mut autoderef = InferenceContextAutoderef::new_from_inference_context(self, base_ty);
         let mut result = None;
         while result.is_none() && autoderef.next().is_some() {
-            result = Self::try_index_step(expr, base_expr, &mut autoderef, idx_ty.r());
+            result = Self::try_index_step(expr, base_expr, &mut autoderef, idx_ty.clone());
         }
         result
     }
@@ -105,9 +104,9 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
         expr: ExprId,
         base_expr: ExprId,
         autoderef: &mut InferenceContextAutoderef<'_, 'a, 'db>,
-        index_ty: TyRef<'_, 'db>,
+        index_ty: Ty<'db>,
     ) -> Option<(/*index type*/ Ty<'db>, /*element type*/ Ty<'db>)> {
-        let ty = autoderef.final_ty().o();
+        let ty = autoderef.final_ty();
         let adjusted_ty = autoderef.ctx().table.structurally_resolve_type(ty);
         debug!(
             "try_index_step(expr={:?}, base_expr={:?}, adjusted_ty={:?}, \
@@ -138,7 +137,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
             // If some lookup succeeded, install method in table
             let input_ty = autoderef.ctx().table.next_ty_var();
             let method = autoderef.ctx().try_overloaded_place_op(
-                self_ty.r(),
+                self_ty,
                 Some(input_ty.clone()),
                 PlaceOp::Index,
             );
@@ -160,7 +159,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 if unsize {
                     adjustments.push(Adjustment {
                         kind: Adjust::Pointer(PointerCast::Unsize),
-                        target: method.sig.inputs()[0].o(),
+                        target: method.sig.inputs()[0].clone(),
                     });
                 }
 
@@ -180,7 +179,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
     /// `convert_place_derefs_to_mutable`.
     pub(super) fn try_overloaded_place_op(
         &self,
-        base_ty: TyRef<'_, 'db>,
+        base_ty: Ty<'db>,
         opt_rhs_ty: Option<Ty<'db>>,
         op: PlaceOp,
     ) -> Option<InferOk<'db, MethodCallee<'db>>> {
@@ -210,7 +209,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
     pub(super) fn try_mutable_overloaded_place_op(
         table: &InferenceTable<'db>,
         krate: Crate,
-        base_ty: TyRef<'_, 'db>,
+        base_ty: Ty<'db>,
         opt_rhs_ty: Option<Ty<'db>>,
         op: PlaceOp,
     ) -> Option<InferOk<'db, MethodCallee<'db>>> {
@@ -276,13 +275,8 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 ))
             }
         };
-        let method = Self::try_mutable_overloaded_place_op(
-            &self.table,
-            self.krate(),
-            base_ty,
-            arg_ty.o(),
-            op,
-        );
+        let method =
+            Self::try_mutable_overloaded_place_op(&self.table, self.krate(), base_ty, arg_ty, op);
         let method = match method {
             Some(ok) => self.table.register_infer_ok(ok),
             // Couldn't find the mutable variant of the place op, keep the
@@ -298,9 +292,9 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
 
         // Convert the autoref in the base expr to mutable with the correct
         // region and mutability.
-        let base_expr_ty = self.expr_ty(base_expr).o();
+        let base_expr_ty = self.expr_ty(base_expr);
         if let Some(adjustments) = self.result.expr_adjustments.get_mut(&base_expr) {
-            let mut source = base_expr_ty.r();
+            let mut source = base_expr_ty;
             for adjustment in &mut adjustments[..] {
                 if let Adjust::Borrow(AutoBorrow::Ref(..)) = adjustment.kind {
                     debug!("convert_place_op_to_mutable: converting autoref {:?}", adjustment);
@@ -312,9 +306,9 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                         allow_two_phase_borrow: AllowTwoPhase::No,
                     };
                     adjustment.kind = Adjust::Borrow(AutoBorrow::Ref(mutbl));
-                    adjustment.target = Ty::new_ref(region.clone(), source.o(), mutbl.into());
+                    adjustment.target = Ty::new_ref(region.clone(), source, mutbl.into());
                 }
-                source = adjustment.target.r();
+                source = adjustment.target.clone();
             }
 
             // If we have an autoref followed by unsizing at the end, fix the unsize target.
@@ -324,7 +318,7 @@ impl<'a, 'db> InferenceContext<'a, 'db> {
                 Adjustment { kind: Adjust::Pointer(PointerCast::Unsize), ref mut target },
             ] = adjustments[..]
             {
-                *target = method.sig.inputs()[0].o();
+                *target = method.sig.inputs()[0].clone();
             }
         }
     }

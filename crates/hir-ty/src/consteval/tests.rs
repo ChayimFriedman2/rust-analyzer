@@ -2514,7 +2514,7 @@ fn enums() {
     );
     crate::attach_db(&db, || {
         let r = eval_goal(&db, file_id).unwrap();
-        assert_eq!(try_const_usize(&db, r.r()), Some(1));
+        assert_eq!(try_const_usize(&db, r), Some(1));
     })
 }
 

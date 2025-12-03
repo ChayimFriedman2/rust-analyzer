@@ -3,22 +3,21 @@
 use std::{fmt, marker::PhantomData};
 
 use hir_def::LifetimeParamId;
-use intern::{Interned, InternedRef, Symbol};
+use intern::{Interned, Symbol};
 use rustc_type_ir::{
     BoundVar, BoundVarIndexKind, DebruijnIndex, Flags, INNERMOST, RegionVid, TypeFlags,
     TypeFoldable, TypeVisitable,
-    inherent::{AnyRegion, AsKind, PlaceholderLike, SliceLike},
+    inherent::{AsKind, PlaceholderLike},
     relate::{Relate, RelateRef, TypeRelation},
 };
 
 use crate::next_solver::{
-    GenericArg, OutlivesPredicate, default_types,
-    impl_foldable_for_interned_slice_without_borrowed, infer::relate::RelateResult,
-    interned_slice_without_borrowed,
+    GenericArg, OutlivesPredicate, default_types, impl_foldable_for_interned_slice,
+    infer::relate::RelateResult, interned_slice,
 };
 
 use super::{
-    SolverDefId, interned_slice,
+    SolverDefId,
     interner::{BoundVarKind, DbInterner, Placeholder},
 };
 
@@ -33,7 +32,7 @@ pub struct Region<'db> {
 
 #[derive(PartialEq, Eq, Hash)]
 #[repr(align(4))] // Needed for GenericArg packing.
-pub(super) struct RegionInterned(RegionKind<'static>);
+pub(super) struct RegionInterned(pub(super) RegionKind<'static>);
 
 intern::impl_internable!(RegionInterned);
 
@@ -43,23 +42,71 @@ impl std::fmt::Debug for RegionInterned {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct RegionRef<'a, 'db> {
-    pub(super) interned: InternedRef<'a, RegionInterned>,
-    pub(super) _marker: PhantomData<fn() -> &'db ()>,
-}
-
-impl<'a, 'db> RegionRef<'a, 'db> {
+impl<'db> Region<'db> {
     #[inline]
-    pub fn o(self) -> Region<'db> {
-        Region { interned: self.interned.o(), _marker: PhantomData }
+    pub fn new(kind: RegionKind<'db>) -> Self {
+        // SAFETY: FIXME
+        let kind = unsafe { std::mem::transmute::<RegionKind<'_>, RegionKind<'static>>(kind) };
+        Region { interned: Interned::new(RegionInterned(kind)), _marker: PhantomData }
     }
 
     #[inline]
-    pub fn kind(self) -> &'a RegionKind<'db> {
-        // SAFETY: FIXME
-        unsafe { std::mem::transmute::<&RegionKind<'_>, &RegionKind<'db>>(&self.interned.get().0) }
+    pub fn kind(&self) -> &RegionKind<'db> {
+        unsafe { std::mem::transmute::<&RegionKind<'static>, &RegionKind<'db>>(&self.interned.0) }
+    }
+
+    #[inline]
+    pub fn new_early_param(early_bound_region: EarlyParamRegion) -> Self {
+        Region::new(RegionKind::ReEarlyParam(early_bound_region))
+    }
+
+    #[inline]
+    pub fn new_placeholder(placeholder: PlaceholderRegion) -> Self {
+        Region::new(RegionKind::RePlaceholder(placeholder))
+    }
+
+    #[inline]
+    pub fn new_var(v: RegionVid) -> Region<'db> {
+        Region::new(RegionKind::ReVar(v))
+    }
+
+    #[inline]
+    pub fn new_erased() -> Region<'db> {
+        default_types().regions.erased.clone()
+    }
+
+    #[inline]
+    pub fn new_bound(index: DebruijnIndex, bound: BoundRegion) -> Region<'db> {
+        Region::new(RegionKind::ReBound(BoundVarIndexKind::Bound(index), bound))
+    }
+
+    #[inline]
+    pub fn new_anon_bound(
+        debruijn: rustc_type_ir::DebruijnIndex,
+        var: rustc_type_ir::BoundVar,
+    ) -> Self {
+        Region::new(RegionKind::ReBound(
+            BoundVarIndexKind::Bound(debruijn),
+            BoundRegion { var, kind: BoundRegionKind::Anon },
+        ))
+    }
+
+    #[inline]
+    pub fn new_canonical_bound(var: rustc_type_ir::BoundVar) -> Self {
+        Region::new(RegionKind::ReBound(
+            BoundVarIndexKind::Canonical,
+            BoundRegion { var, kind: BoundRegionKind::Anon },
+        ))
+    }
+
+    #[inline]
+    pub fn new_static() -> Self {
+        default_types().regions.statik.clone()
+    }
+
+    #[inline]
+    pub fn new_error() -> Self {
+        default_types().regions.error.clone()
     }
 
     #[inline]
@@ -139,79 +186,6 @@ impl<'a, 'db> RegionRef<'a, 'db> {
     #[inline]
     pub fn is_error(&self) -> bool {
         matches!(self.kind(), RegionKind::ReError(_))
-    }
-}
-
-impl<'db> Region<'db> {
-    #[inline]
-    pub fn new(kind: RegionKind<'_>) -> Self {
-        // SAFETY: FIXME
-        let kind = unsafe { std::mem::transmute::<RegionKind<'_>, RegionKind<'static>>(kind) };
-        Region { interned: Interned::new(RegionInterned(kind)), _marker: PhantomData }
-    }
-
-    #[inline]
-    pub fn kind(&self) -> &RegionKind<'db> {
-        self.r().kind()
-    }
-
-    #[inline(always)]
-    pub fn r(&self) -> RegionRef<'_, 'db> {
-        RegionRef { interned: self.interned.r(), _marker: PhantomData }
-    }
-
-    #[inline]
-    pub fn new_early_param(early_bound_region: EarlyParamRegion) -> Self {
-        Region::new(RegionKind::ReEarlyParam(early_bound_region))
-    }
-
-    #[inline]
-    pub fn new_placeholder(placeholder: PlaceholderRegion) -> Self {
-        Region::new(RegionKind::RePlaceholder(placeholder))
-    }
-
-    #[inline]
-    pub fn new_var(v: RegionVid) -> Region<'db> {
-        Region::new(RegionKind::ReVar(v))
-    }
-
-    #[inline]
-    pub fn new_erased() -> Region<'db> {
-        default_types().regions.erased.clone()
-    }
-
-    #[inline]
-    pub fn new_bound(index: DebruijnIndex, bound: BoundRegion) -> Region<'db> {
-        Region::new(RegionKind::ReBound(BoundVarIndexKind::Bound(index), bound))
-    }
-
-    #[inline]
-    pub fn new_anon_bound(
-        debruijn: rustc_type_ir::DebruijnIndex,
-        var: rustc_type_ir::BoundVar,
-    ) -> Self {
-        Region::new(RegionKind::ReBound(
-            BoundVarIndexKind::Bound(debruijn),
-            BoundRegion { var, kind: BoundRegionKind::Anon },
-        ))
-    }
-
-    #[inline]
-    pub fn new_canonical_bound(var: rustc_type_ir::BoundVar) -> Self {
-        Region::new(RegionKind::ReBound(
-            BoundVarIndexKind::Canonical,
-            BoundRegion { var, kind: BoundRegionKind::Anon },
-        ))
-    }
-
-    #[inline]
-    pub fn new_static() -> Self {
-        default_types().regions.statik.clone()
-    }
-
-    #[inline]
-    pub fn new_error() -> Self {
-        default_types().regions.error.clone()
     }
 }
 
@@ -336,12 +310,6 @@ impl fmt::Debug for Region<'_> {
     }
 }
 
-impl fmt::Debug for RegionRef<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.kind().fmt(f)
-    }
-}
-
 impl<'db> AsKind for Region<'db> {
     type Kind = RegionKind<'db>;
 
@@ -351,30 +319,12 @@ impl<'db> AsKind for Region<'db> {
     }
 }
 
-impl<'db> AsKind for RegionRef<'_, 'db> {
-    type Kind = RegionKind<'db>;
-
-    #[inline]
-    fn kind(&self) -> &Self::Kind {
-        (*self).kind()
-    }
-}
-
 impl<'db> TypeVisitable<DbInterner<'db>> for Region<'db> {
     fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
         &self,
         visitor: &mut V,
     ) -> V::Result {
-        visitor.visit_region(self.r())
-    }
-}
-
-impl<'db> TypeVisitable<DbInterner<'db>> for RegionRef<'_, 'db> {
-    fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-        &self,
-        visitor: &mut V,
-    ) -> V::Result {
-        visitor.visit_region(*self)
+        visitor.visit_region(self.clone())
     }
 }
 
@@ -397,11 +347,11 @@ impl<'db> RelateRef<DbInterner<'db>> for Region<'db> {
         a: &Self,
         b: &Self,
     ) -> RelateResult<'db, Self> {
-        relation.relate(a.r(), b.r())
+        relation.relate(a.clone(), b.clone())
     }
 }
 
-impl<'db> Relate<DbInterner<'db>> for RegionRef<'_, 'db> {
+impl<'db> Relate<DbInterner<'db>> for Region<'db> {
     type RelateResult = Region<'db>;
 
     #[inline]
@@ -415,23 +365,11 @@ impl<'db> Relate<DbInterner<'db>> for RegionRef<'_, 'db> {
 
     #[inline]
     fn into_relate_result(self) -> Self::RelateResult {
-        self.o()
+        self
     }
 }
 
 impl<'db> Flags for Region<'db> {
-    #[inline]
-    fn flags(&self) -> TypeFlags {
-        self.r().type_flags()
-    }
-
-    #[inline]
-    fn outer_exclusive_binder(&self) -> rustc_type_ir::DebruijnIndex {
-        self.r().outer_exclusive_binder()
-    }
-}
-
-impl<'db> Flags for RegionRef<'_, 'db> {
     #[inline]
     fn flags(&self) -> TypeFlags {
         self.type_flags()
@@ -442,10 +380,6 @@ impl<'db> Flags for RegionRef<'_, 'db> {
         self.outer_exclusive_binder()
     }
 }
-
-impl<'db> AnyRegion<DbInterner<'db>> for Region<'db> {}
-
-impl<'db> AnyRegion<DbInterner<'db>> for RegionRef<'_, 'db> {}
 
 impl<'db> rustc_type_ir::inherent::Region<DbInterner<'db>> for Region<'db> {
     fn new_bound(
@@ -509,16 +443,8 @@ type GenericArgOutlivesPredicate<'db> = OutlivesPredicate<'db, GenericArg<'db>>;
 interned_slice!(
     RegionAssumptionsStorage,
     RegionAssumptions,
-    RegionAssumptionsRef,
-    GenericArgOutlivesPredicate<'db>,
     GenericArgOutlivesPredicate<'db>,
     GenericArgOutlivesPredicate<'static>,
     region_assumptions,
 );
-interned_slice_without_borrowed!(
-    RegionAssumptions,
-    RegionAssumptionsRef,
-    GenericArgOutlivesPredicate<'db>,
-    GenericArgOutlivesPredicate<'static>,
-);
-impl_foldable_for_interned_slice_without_borrowed!(RegionAssumptions, RegionAssumptionsRef);
+impl_foldable_for_interned_slice!(RegionAssumptions);

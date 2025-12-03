@@ -79,7 +79,7 @@ impl<'db> InferenceContext<'_, 'db> {
             unreachable!();
         };
 
-        for &def_id in defining_opaque_types_and_generators.r().iter() {
+        for &def_id in defining_opaque_types_and_generators.iter() {
             let def_id = match def_id {
                 SolverDefId::InternedOpaqueTyId(it) => it,
                 _ => continue,
@@ -109,8 +109,8 @@ impl<'db> InferenceContext<'_, 'db> {
                     }
 
                     let expected = EarlyBinder::bind(ty.ty.clone())
-                        .instantiate(interner, opaque_type_key.args.r());
-                    _ = self.demand_eqtype_fixme_no_diag(expected.r(), hidden_type.ty.r());
+                        .instantiate(interner, &opaque_type_key.args);
+                    _ = self.demand_eqtype_fixme_no_diag(expected, hidden_type.ty.clone());
                 }
 
                 self.result.type_of_opaque.insert(def_id, ty.ty);

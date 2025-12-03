@@ -4,7 +4,7 @@ use hir_def::{AdtId, hir::ExprId, signatures::TraitFlags};
 use rustc_ast_ir::Mutability;
 use rustc_type_ir::{
     Flags, InferTy, TypeFlags, UintTy,
-    inherent::{AdtDef, BoundExistentialPredicates as _, SliceLike},
+    inherent::{AdtDef, BoundExistentialPredicates as _},
 };
 use stdx::never;
 
@@ -12,7 +12,7 @@ use crate::{
     InferenceDiagnostic,
     db::HirDatabase,
     infer::{AllowTwoPhase, InferenceContext, expr::ExprIsRead},
-    next_solver::{BoundExistentialPredicates, DbInterner, ParamTy, Ty, TyKind, TyRef},
+    next_solver::{BoundExistentialPredicates, DbInterner, ParamTy, Ty, TyKind},
 };
 
 #[derive(Debug)]
@@ -35,7 +35,7 @@ pub(crate) enum CastTy<'db> {
 }
 
 impl<'db> CastTy<'db> {
-    pub(crate) fn from_ty(db: &dyn HirDatabase, t: TyRef<'_, 'db>) -> Option<Self> {
+    pub(crate) fn from_ty(db: &dyn HirDatabase, t: &Ty<'db>) -> Option<Self> {
         match *t.kind() {
             TyKind::Bool => Some(Self::Int(Int::Bool)),
             TyKind::Char => Some(Self::Int(Int::Char)),
@@ -128,8 +128,7 @@ impl<'db> CastCheck<'db> {
             return Ok(());
         }
 
-        if self.expr_ty.r().references_non_lt_error() || self.cast_ty.r().references_non_lt_error()
-        {
+        if self.expr_ty.references_non_lt_error() || self.cast_ty.references_non_lt_error() {
             return Ok(());
         }
 
@@ -145,7 +144,7 @@ impl<'db> CastCheck<'db> {
         // Chalk doesn't support trait upcasting and fails to solve some obvious goals
         // when the trait environment contains some recursive traits (See issue #18047)
         // We skip cast checks for such cases for now, until the next-gen solver.
-        if contains_dyn_trait(self.cast_ty.r()) {
+        if contains_dyn_trait(&self.cast_ty) {
             return Ok(());
         }
 
@@ -155,14 +154,13 @@ impl<'db> CastCheck<'db> {
 
     fn do_check(&self, ctx: &mut InferenceContext<'_, 'db>) -> Result<(), CastError> {
         let (t_from, t_cast) = match (
-            CastTy::from_ty(ctx.db, self.expr_ty.r()),
-            CastTy::from_ty(ctx.db, self.cast_ty.r()),
+            CastTy::from_ty(ctx.db, &self.expr_ty),
+            CastTy::from_ty(ctx.db, &self.cast_ty),
         ) {
             (Some(t_from), Some(t_cast)) => (t_from, t_cast),
             (None, Some(t_cast)) => match self.expr_ty.kind() {
                 TyKind::FnDef(..) => {
-                    let sig =
-                        self.expr_ty.r().callable_sig(ctx.interner()).expect("FnDef had no sig");
+                    let sig = self.expr_ty.callable_sig(ctx.interner()).expect("FnDef had no sig");
                     let sig = ctx.table.normalize_associated_types_in(sig);
                     let fn_ptr = Ty::new_fn_ptr(sig);
                     if ctx
@@ -295,7 +293,7 @@ impl<'db> CastCheck<'db> {
             (_, Some(PointerKind::Thin)) => Ok(()),
             (Some(PointerKind::Thin), _) => Err(CastError::SizedUnsizedCast),
             (Some(PointerKind::VTable(src_tty)), Some(PointerKind::VTable(dst_tty))) => {
-                match (src_tty.r().principal_def_id(), dst_tty.r().principal_def_id()) {
+                match (src_tty.principal_def_id(), dst_tty.principal_def_id()) {
                     (Some(src_principal), Some(dst_principal)) => {
                         if src_principal == dst_principal {
                             return Ok(());
@@ -400,15 +398,15 @@ fn pointer_kind<'db>(
             if let Some((last_field, _)) = struct_data.fields().iter().last() {
                 let last_field_ty = ctx.db.field_types(id.into())[last_field]
                     .clone()
-                    .instantiate(ctx.interner(), subst.r());
+                    .instantiate(ctx.interner(), subst);
                 pointer_kind(last_field_ty, ctx)
             } else {
                 Ok(Some(PointerKind::Thin))
             }
         }
-        TyKind::Tuple(subst) => match subst.r().iter().next_back() {
+        TyKind::Tuple(subst) => match subst.iter().next_back() {
             None => Ok(Some(PointerKind::Thin)),
-            Some(ty) => pointer_kind(ty.o(), ctx),
+            Some(ty) => pointer_kind(ty.clone(), ctx),
         },
         TyKind::Foreign(_) => Ok(Some(PointerKind::Thin)),
         TyKind::Alias(..) => Ok(Some(PointerKind::OfAlias)),
@@ -440,7 +438,7 @@ fn pointer_kind<'db>(
     }
 }
 
-fn contains_dyn_trait<'db>(ty: TyRef<'_, 'db>) -> bool {
+fn contains_dyn_trait<'db>(ty: &Ty<'db>) -> bool {
     use std::ops::ControlFlow;
 
     use rustc_type_ir::{TypeSuperVisitable, TypeVisitable, TypeVisitor};
@@ -450,7 +448,7 @@ fn contains_dyn_trait<'db>(ty: TyRef<'_, 'db>) -> bool {
     impl<'db> TypeVisitor<DbInterner<'db>> for DynTraitVisitor {
         type Result = ControlFlow<()>;
 
-        fn visit_ty(&mut self, ty: TyRef<'_, 'db>) -> ControlFlow<()> {
+        fn visit_ty(&mut self, ty: Ty<'db>) -> ControlFlow<()> {
             match ty.kind() {
                 TyKind::Dynamic(..) => ControlFlow::Break(()),
                 _ => ty.super_visit_with(self),

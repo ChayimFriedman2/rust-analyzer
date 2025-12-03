@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use ena::unify::{NoError, UnifyKey, UnifyValue};
 use rustc_type_ir::{ConstVid, RegionKind, RegionVid, UniverseIndex};
 
-use crate::next_solver::{Const, ConstRef, Region};
+use crate::next_solver::{Const, Region};
 
 #[derive(Clone, Debug)]
 pub(crate) enum RegionVariableValue<'db> {
@@ -101,10 +101,10 @@ pub(crate) enum ConstVariableValue<'db> {
 impl<'db> ConstVariableValue<'db> {
     /// If this value is known, returns the const it is known to be.
     /// Otherwise, `None`.
-    pub(crate) fn known(&self) -> Option<ConstRef<'_, 'db>> {
+    pub(crate) fn known(&self) -> Option<Const<'db>> {
         match self {
             ConstVariableValue::Unknown { .. } => None,
-            ConstVariableValue::Known { value } => Some(value.r()),
+            ConstVariableValue::Known { value } => Some(value.clone()),
         }
     }
 }

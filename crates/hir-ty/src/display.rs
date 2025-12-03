@@ -39,7 +39,7 @@ use rustc_hash::FxHashSet;
 use rustc_type_ir::{
     AliasTyKind, BoundVarIndexKind, CoroutineArgsParts, CoroutineClosureArgsParts, RegionKind,
     Upcast,
-    inherent::{AdtDef, GenericArgsRef as _, SliceLike, TyRef as _},
+    inherent::{AdtDef, GenericArgs as _, SliceLike, Ty as _},
 };
 use smallvec::SmallVec;
 use span::Edition;
@@ -54,10 +54,9 @@ use crate::{
     lower::GenericPredicates,
     mir::pad16,
     next_solver::{
-        AliasTy, AsBorrowedSlice, AsOwnedSlice, Clause, ClauseKind, ConstKind, DbInterner,
-        EarlyBinder, ExistentialPredicate, FnSig, GenericArg, GenericArgKind, GenericArgRef,
-        GenericArgs, PolyFnSig, RegionRef, SolverDefId, TermKind, TermRef, TraitRef, Ty, TyKind,
-        TyRef, TypingMode,
+        AliasTy, Clause, ClauseKind, ConstKind, DbInterner, EarlyBinder, ExistentialPredicate,
+        FnSig, GenericArg, GenericArgKind, GenericArgs, PolyFnSig, Region, SolverDefId, Term,
+        TermKind, TraitRef, Ty, TyKind, TypingMode,
         abi::Safety,
         infer::{DbInternerInferExt, traits::ObligationCause},
     },
@@ -176,7 +175,7 @@ impl<'db> HirFormatter<'_, 'db> {
         }
     }
 
-    fn render_region(&self, lifetime: RegionRef<'_, 'db>) -> bool {
+    fn render_region(&self, lifetime: &Region<'db>) -> bool {
         match self.display_lifetimes {
             DisplayLifetime::Always => true,
             DisplayLifetime::OnlyStatic => matches!(lifetime.kind(), RegionKind::ReStatic),
@@ -627,11 +626,11 @@ fn write_projection<'db>(
         // FIXME: We shouldn't use `param.id`, it should be removed. We should know the
         // `GenericDefId` from the formatted type (store it inside the `HirFormatter`).
         let bounds = GenericPredicates::query_all(f.db, param.id.parent())
-            .iter_identity_copied()
+            .iter_identity_cloned()
             .filter(|wc| {
                 let ty = match wc.kind_skip_binder() {
                     ClauseKind::Trait(tr) => tr.self_ty(),
-                    ClauseKind::TypeOutlives(t) => t.0.r(),
+                    ClauseKind::TypeOutlives(t) => t.0.clone(),
                     _ => return false,
                 };
                 let TyKind::Alias(AliasTyKind::Projection, a) = ty.kind() else {
@@ -645,8 +644,8 @@ fn write_projection<'db>(
                 write_bounds_like_dyn_trait_with_prefix(
                     f,
                     "impl",
-                    Either::Left(Ty::new_alias(AliasTyKind::Projection, alias.clone()).r()),
-                    bounds.as_owned_slice(),
+                    Either::Left(Ty::new_alias(AliasTyKind::Projection, alias.clone())),
+                    &bounds,
                     SizedByDefault::NotSized,
                 )
             });
@@ -662,13 +661,13 @@ fn write_projection<'db>(
         ">::{}",
         f.db.type_alias_signature(alias.def_id.expect_type_alias()).name.display(f.db, f.edition())
     )?;
-    let proj_params = &alias.args.as_slice()[trait_ref.args.r().len()..];
-    hir_fmt_generics(f, proj_params.as_owned_slice(), None, None)
+    let proj_params = &alias.args.as_slice()[trait_ref.args.len()..];
+    hir_fmt_generics(f, proj_params, None, None)
 }
 
-impl<'db> HirDisplay<'db> for GenericArgRef<'_, 'db> {
+impl<'db> HirDisplay<'db> for GenericArg<'db> {
     fn hir_fmt(&self, f: &mut HirFormatter<'_, 'db>) -> Result<(), HirDisplayError> {
-        match self.kind() {
+        match self.to_kind() {
             GenericArgKind::Type(ty) => ty.hir_fmt(f),
             GenericArgKind::Lifetime(lt) => lt.hir_fmt(f),
             GenericArgKind::Const(c) => c.hir_fmt(f),
@@ -676,7 +675,7 @@ impl<'db> HirDisplay<'db> for GenericArgRef<'_, 'db> {
     }
 }
 
-impl<'db> HirDisplay<'db> for crate::next_solver::ConstRef<'_, 'db> {
+impl<'db> HirDisplay<'db> for crate::next_solver::Const<'db> {
     fn hir_fmt(&self, f: &mut HirFormatter<'_, 'db>) -> Result<(), HirDisplayError> {
         match self.kind() {
             ConstKind::Placeholder(_) => write!(f, "<placeholder>"),
@@ -702,12 +701,7 @@ impl<'db> HirDisplay<'db> for crate::next_solver::ConstRef<'_, 'db> {
             ConstKind::Unevaluated(unev) => {
                 let c = unev.def.0;
                 write!(f, "{}", c.name(f.db))?;
-                hir_fmt_generics(
-                    f,
-                    unev.args.as_slice().as_owned_slice(),
-                    c.generic_def(f.db),
-                    None,
-                )?;
+                hir_fmt_generics(f, unev.args.as_slice(), c.generic_def(f.db), None)?;
                 Ok(())
             }
             ConstKind::Error(..) => f.write_char('_'),
@@ -725,7 +719,7 @@ fn render_const_scalar<'db>(
     let trait_env = TraitEnvironment::empty(f.krate());
     let infcx = f.interner.infer_ctxt().build(TypingMode::PostAnalysis);
     let ty = infcx
-        .at(&ObligationCause::new(), trait_env.env.r())
+        .at(&ObligationCause::new(), &trait_env.env)
         .deeply_normalize(ty.clone())
         .unwrap_or(ty);
     render_const_scalar_inner(f, b, memory_map, ty, trait_env)
@@ -887,19 +881,19 @@ fn render_const_scalar_inner<'db>(
             };
             f.write_str("(")?;
             let mut first = true;
-            for (id, ty) in tys.r().iter().enumerate() {
+            for (id, ty) in tys.iter().enumerate() {
                 if first {
                     first = false;
                 } else {
                     f.write_str(", ")?;
                 }
                 let offset = layout.fields.offset(id).bytes_usize();
-                let Ok(layout) = f.db.layout_of_ty(ty.o(), trait_env.clone()) else {
+                let Ok(layout) = f.db.layout_of_ty(ty.clone(), trait_env.clone()) else {
                     f.write_str("<layout-error>")?;
                     continue;
                 };
                 let size = layout.size.bytes_usize();
-                render_const_scalar(f, &b[offset..offset + size], memory_map, ty.o())?;
+                render_const_scalar(f, &b[offset..offset + size], memory_map, ty.clone())?;
             }
             f.write_str(")")
         }
@@ -965,7 +959,7 @@ fn render_const_scalar_inner<'db>(
             ty.hir_fmt(f)
         }
         TyKind::Array(ty, len) => {
-            let Some(len) = consteval::try_const_usize(f.db, len.r()) else {
+            let Some(len) = consteval::try_const_usize(f.db, len.clone()) else {
                 return f.write_str("<unknown-array-len>");
             };
             let Ok(layout) = f.db.layout_of_ty(ty.clone(), trait_env) else {
@@ -1019,7 +1013,7 @@ fn render_variant_after_name<'db>(
         FieldsShape::Record | FieldsShape::Tuple => {
             let render_field = |f: &mut HirFormatter<'_, 'db>, id: LocalFieldId| {
                 let offset = layout.fields.offset(u32::from(id.into_raw()) as usize).bytes_usize();
-                let ty = field_types[id].clone().instantiate(f.interner, args.r());
+                let ty = field_types[id].clone().instantiate(f.interner, &args);
                 let Ok(layout) = f.db.layout_of_ty(ty.clone(), trait_env.clone()) else {
                     return f.write_str("<layout-error>");
                 };
@@ -1056,7 +1050,7 @@ fn render_variant_after_name<'db>(
     }
 }
 
-impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
+impl<'db> HirDisplay<'db> for Ty<'db> {
     fn hir_fmt(
         &self,
         f @ &mut HirFormatter { db, .. }: &mut HirFormatter<'_, 'db>,
@@ -1090,7 +1084,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
             kind @ (TyKind::RawPtr(t, m) | TyKind::Ref(_, t, m)) => {
                 if let TyKind::Ref(l, _, _) = kind {
                     f.write_char('&')?;
-                    if f.render_region(l.r()) {
+                    if f.render_region(l) {
                         l.hir_fmt(f)?;
                         f.write_char(' ')?;
                     }
@@ -1120,8 +1114,8 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                                 }
                                 _ => false,
                             });
-                        let render_lifetime = f.render_region(region.r());
-                        (bounds.r().len() + render_lifetime as usize, contains_impl_fn)
+                        let render_lifetime = f.render_region(region);
+                        (bounds.len() + render_lifetime as usize, contains_impl_fn)
                     }
                     TyKind::Alias(AliasTyKind::Opaque, ty) => {
                         let opaque_ty_id = match ty.def_id {
@@ -1131,7 +1125,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                         let impl_trait_id = db.lookup_intern_impl_trait_id(opaque_ty_id);
                         if let ImplTraitId::ReturnTypeImplTrait(func, _) = impl_trait_id {
                             let data = impl_trait_id.predicates(db);
-                            let bounds = || data.iter_instantiated_owned(f.interner, ty.args.r());
+                            let bounds = || data.iter_instantiated_cloned(f.interner, &ty.args);
                             let mut len = bounds().count();
 
                             // Don't count Sized but count when it absent
@@ -1185,7 +1179,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 }
             }
             TyKind::Tuple(tys) => {
-                if tys.r().len() == 1 {
+                if tys.len() == 1 {
                     write!(f, "(")?;
                     tys.as_slice()[0].hir_fmt(f)?;
                     write!(f, ",)")?;
@@ -1201,7 +1195,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
             }
             TyKind::FnDef(def, args) => {
                 let def = def.0;
-                let sig = db.callable_item_signature(def).instantiate(interner, args.r());
+                let sig = db.callable_item_signature(def).instantiate(interner, args);
 
                 if f.display_kind.is_source_code() {
                     // `FnDef` is anonymous and there's no surface syntax for it. Show it as a
@@ -1240,7 +1234,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 };
                 f.end_location_link();
 
-                if args.r().len() > 0 {
+                if args.len() > 0 {
                     let generic_def_id = GenericDefId::from_callable(db, def);
                     let generics = generics(db, generic_def_id);
                     let (parent_len, self_param, type_, const_, impl_, lifetime) =
@@ -1254,11 +1248,8 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                     if parameters.len() - impl_ > 0 {
                         let params_len = parameters.len();
                         // `parameters` are in the order of fn's params (including impl traits), fn's lifetimes
-                        let parameters = generic_args_sans_defaults(
-                            f,
-                            Some(generic_def_id),
-                            parameters.as_owned_slice(),
-                        );
+                        let parameters =
+                            generic_args_sans_defaults(f, Some(generic_def_id), parameters);
                         assert!(params_len >= parameters.len());
                         let defaults = params_len - parameters.len();
 
@@ -1338,12 +1329,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 }
                 f.end_location_link();
 
-                hir_fmt_generics(
-                    f,
-                    parameters.r().as_owned_slice(),
-                    Some(def.def_id().0.into()),
-                    None,
-                )?;
+                hir_fmt_generics(f, parameters, Some(def.def_id().0.into()), None)?;
             }
             TyKind::Alias(AliasTyKind::Projection, alias_ty) => write_projection(f, &alias_ty)?,
             TyKind::Foreign(alias) => {
@@ -1365,7 +1351,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 let impl_trait_id = db.lookup_intern_impl_trait_id(opaque_ty_id);
                 let data = impl_trait_id.predicates(db);
                 let bounds =
-                    data.iter_instantiated_owned(interner, alias_ty.args.r()).collect::<Vec<_>>();
+                    data.iter_instantiated_cloned(interner, &alias_ty.args).collect::<Vec<_>>();
                 let krate = match impl_trait_id {
                     ImplTraitId::ReturnTypeImplTrait(func, _) => {
                         func.krate(db)
@@ -1376,7 +1362,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 write_bounds_like_dyn_trait_with_prefix(
                     f,
                     "impl",
-                    Either::Left(*self),
+                    Either::Left(self.clone()),
                     &bounds,
                     SizedByDefault::Sized { anchor: krate },
                 )?;
@@ -1403,11 +1389,11 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                     }
                     ClosureStyle::ClosureWithSubst => {
                         write!(f, "{{closure#{:?}}}", salsa::plumbing::AsId::as_id(&id).index())?;
-                        return hir_fmt_generics(f, substs.r().as_owned_slice(), None, None);
+                        return hir_fmt_generics(f, substs, None, None);
                     }
                     _ => (),
                 }
-                let sig = substs.r().signature_unclosure(Safety::Safe);
+                let sig = substs.clone().signature_unclosure(Safety::Safe);
                 let sig = sig.skip_binder();
                 let InternedClosure(def, _) = db.lookup_intern_closure(id);
                 let infer = db.infer(def);
@@ -1459,12 +1445,12 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                             "{{async closure#{:?}}}",
                             salsa::plumbing::AsId::as_id(&id).index()
                         )?;
-                        return hir_fmt_generics(f, args.r().as_owned_slice(), None, None);
+                        return hir_fmt_generics(f, args, None, None);
                     }
                     _ => (),
                 }
                 let CoroutineClosureArgsParts { closure_kind_ty, signature_parts_ty, .. } =
-                    args.r().split_coroutine_closure_args();
+                    args.split_coroutine_closure_args();
                 let kind = closure_kind_ty.to_opt_closure_kind().unwrap();
                 let kind = match kind {
                     rustc_type_ir::ClosureKind::Fn => "AsyncFn",
@@ -1479,20 +1465,21 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 let TyKind::Tuple(coroutine_inputs) = coroutine_inputs.as_slice()[1].kind() else {
                     unreachable!("invalid coroutine closure signature");
                 };
-                let TyKind::Tuple(coroutine_output) = coroutine_sig.output().kind() else {
+                let coroutine_output = coroutine_sig.output();
+                let TyKind::Tuple(coroutine_output) = coroutine_output.kind() else {
                     unreachable!("invalid coroutine closure signature");
                 };
-                let coroutine_output = coroutine_output.as_slice()[1];
+                let coroutine_output = coroutine_output.as_slice()[1].clone();
                 match f.closure_style {
                     ClosureStyle::ImplFn => write!(f, "impl {kind}(")?,
                     ClosureStyle::RANotation => write!(f, "async |")?,
                     _ => unreachable!(),
                 }
-                if coroutine_inputs.r().is_empty() {
+                if coroutine_inputs.is_empty() {
                 } else if f.should_truncate() {
                     write!(f, "{TYPE_HINT_TRUNCATION}")?;
                 } else {
-                    f.write_joined(coroutine_inputs.r().iter(), ", ")?;
+                    f.write_joined(coroutine_inputs.iter(), ", ")?;
                 };
                 match f.closure_style {
                     ClosureStyle::ImplFn => write!(f, ")")?,
@@ -1524,11 +1511,11 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                         }
                         TypeParamProvenance::ArgumentImplTrait => {
                             let bounds = GenericPredicates::query_all(f.db, param.id.parent())
-                                .iter_identity_copied()
+                                .iter_identity_cloned()
                                 .filter(|wc| match wc.kind().skip_binder() {
                                     ClauseKind::Trait(tr) => tr.self_ty() == *self,
                                     ClauseKind::Projection(proj) => proj.self_ty() == *self,
-                                    ClauseKind::TypeOutlives(to) => to.0.r() == *self,
+                                    ClauseKind::TypeOutlives(to) => to.0 == *self,
                                     _ => false,
                                 })
                                 .collect::<Vec<_>>();
@@ -1536,8 +1523,8 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                             write_bounds_like_dyn_trait_with_prefix(
                                 f,
                                 "impl",
-                                Either::Left(*self),
-                                bounds.as_owned_slice(),
+                                Either::Left(self.clone()),
+                                &bounds,
                                 SizedByDefault::Sized { anchor: krate },
                             )?;
                         }
@@ -1558,7 +1545,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 let mut bounds_to_display = SmallVec::<[_; 4]>::new();
                 let mut auto_trait_bounds = SmallVec::<[_; 4]>::new();
                 for bound in bounds.as_slice() {
-                    let clause = bound.with_self_ty(interner, self.o());
+                    let clause = bound.with_self_ty(interner, self.clone());
                     match bound.skip_binder_ref() {
                         ExistentialPredicate::Trait(_) | ExistentialPredicate::Projection(_) => {
                             bounds_to_display.push(clause);
@@ -1568,16 +1555,17 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
                 }
                 bounds_to_display.append(&mut auto_trait_bounds);
 
-                if f.render_region(region.r()) {
+                if f.render_region(region) {
                     bounds_to_display.push(
-                        rustc_type_ir::OutlivesPredicate(self.o(), region.clone()).upcast(interner),
+                        rustc_type_ir::OutlivesPredicate(self.clone(), region.clone())
+                            .upcast(interner),
                     );
                 }
 
                 write_bounds_like_dyn_trait_with_prefix(
                     f,
                     "dyn",
-                    Either::Left(*self),
+                    Either::Left(self.clone()),
                     &bounds_to_display,
                     SizedByDefault::NotSized,
                 )?;
@@ -1593,7 +1581,7 @@ impl<'db> HirDisplay<'db> for TyRef<'_, 'db> {
             TyKind::Coroutine(coroutine_id, subst) => {
                 let InternedCoroutine(owner, expr_id) = coroutine_id.0.loc(db);
                 let CoroutineArgsParts { resume_ty, yield_ty, return_ty, .. } =
-                    subst.r().split_coroutine_args();
+                    subst.split_coroutine_args();
                 let body = db.body(owner);
                 let expr = &body[expr_id];
                 match expr {
@@ -1663,7 +1651,7 @@ fn hir_fmt_generics<'db>(
     f: &mut HirFormatter<'_, 'db>,
     parameters: &[GenericArg<'db>],
     generic_def: Option<hir_def::GenericDefId>,
-    self_: Option<TyRef<'_, 'db>>,
+    self_: Option<Ty<'db>>,
 ) -> Result<(), HirDisplayError> {
     if parameters.is_empty() {
         return Ok(());
@@ -1689,18 +1677,16 @@ fn generic_args_sans_defaults<'ga, 'db>(
         match generic_def.map(|generic_def_id| f.db.generic_defaults(generic_def_id)) {
             None => parameters,
             Some(default_parameters) => {
-                let should_show =
-                    |arg: GenericArgRef<'_, 'db>, i: usize| match default_parameters.get(i) {
-                        None => true,
-                        Some(default_parameter) => {
-                            arg != default_parameter
-                                .instantiate(f.interner, parameters[..i].as_borrowed_slice())
-                                .r()
-                        }
-                    };
+                let should_show = |arg: &GenericArg<'db>, i: usize| match default_parameters.get(i)
+                {
+                    None => true,
+                    Some(default_parameter) => {
+                        *arg != default_parameter.instantiate(f.interner, &parameters[..i])
+                    }
+                };
                 let mut default_from = 0;
                 for (i, parameter) in parameters.iter().enumerate() {
-                    if should_show(parameter.r(), i) {
+                    if should_show(parameter, i) {
                         default_from = i + 1;
                     }
                 }
@@ -1716,7 +1702,7 @@ fn hir_fmt_generic_args<'db>(
     f: &mut HirFormatter<'_, 'db>,
     parameters: &[GenericArg<'db>],
     generic_def: Option<hir_def::GenericDefId>,
-    self_: Option<TyRef<'_, 'db>>,
+    self_: Option<Ty<'db>>,
 ) -> Result<(), HirDisplayError> {
     if parameters.is_empty() {
         return Ok(());
@@ -1736,10 +1722,10 @@ fn hir_fmt_generic_args<'db>(
 fn hir_fmt_generic_arguments<'db>(
     f: &mut HirFormatter<'_, 'db>,
     parameters: &[GenericArg<'db>],
-    self_: Option<TyRef<'_, 'db>>,
+    self_: Option<Ty<'db>>,
 ) -> Result<(), HirDisplayError> {
     let mut first = true;
-    let lifetime_offset = parameters.iter().position(|arg| arg.r().region().is_some());
+    let lifetime_offset = parameters.iter().position(|arg| arg.region().is_some());
 
     let (ty_or_const, lifetimes) = match lifetime_offset {
         Some(offset) => parameters.split_at(offset),
@@ -1749,8 +1735,8 @@ fn hir_fmt_generic_arguments<'db>(
         if !mem::take(&mut first) {
             write!(f, ", ")?;
         }
-        match self_ {
-            self_ @ Some(_) if generic_arg.r().ty() == self_ => write!(f, "Self")?,
+        match &self_ {
+            self_ @ Some(_) if generic_arg.ty() == *self_ => write!(f, "Self")?,
             _ => generic_arg.hir_fmt(f)?,
         }
     }
@@ -1759,16 +1745,16 @@ fn hir_fmt_generic_arguments<'db>(
 
 fn hir_fmt_tys<'db>(
     f: &mut HirFormatter<'_, 'db>,
-    tys: &[TyRef<'_, 'db>],
-    self_: Option<TyRef<'_, 'db>>,
+    tys: &[Ty<'db>],
+    self_: Option<Ty<'db>>,
 ) -> Result<(), HirDisplayError> {
     let mut first = true;
 
-    for &ty in tys {
+    for ty in tys {
         if !mem::take(&mut first) {
             write!(f, ", ")?;
         }
-        match self_ {
+        match &self_ {
             Some(self_) if ty == self_ => write!(f, "Self")?,
             _ => ty.hir_fmt(f)?,
         }
@@ -1789,16 +1775,16 @@ impl<'db> HirDisplay<'db> for PolyFnSig<'db> {
         //     f.write_str("\" ")?;
         // }
         write!(f, "fn(")?;
-        f.write_joined(inputs_and_output.r().inputs(), ", ")?;
+        f.write_joined(inputs_and_output.inputs(), ", ")?;
         if c_variadic {
-            if inputs_and_output.r().inputs().is_empty() {
+            if inputs_and_output.inputs().is_empty() {
                 write!(f, "...")?;
             } else {
                 write!(f, ", ...")?;
             }
         }
         write!(f, ")")?;
-        let ret = inputs_and_output.r().output();
+        let ret = inputs_and_output.output();
         if !ret.is_unit() {
             write!(f, " -> ")?;
             ret.hir_fmt(f)?;
@@ -1807,9 +1793,9 @@ impl<'db> HirDisplay<'db> for PolyFnSig<'db> {
     }
 }
 
-impl<'db> HirDisplay<'db> for TermRef<'_, 'db> {
+impl<'db> HirDisplay<'db> for Term<'db> {
     fn hir_fmt(&self, f: &mut HirFormatter<'_, 'db>) -> Result<(), HirDisplayError> {
-        match self.kind() {
+        match self.to_kind() {
             TermKind::Ty(it) => it.hir_fmt(f),
             TermKind::Const(it) => it.hir_fmt(f),
         }
@@ -1842,7 +1828,7 @@ impl SizedByDefault {
 pub fn write_bounds_like_dyn_trait_with_prefix<'db>(
     f: &mut HirFormatter<'_, 'db>,
     prefix: &str,
-    this: Either<TyRef<'_, 'db>, RegionRef<'_, 'db>>,
+    this: Either<Ty<'db>, Region<'db>>,
     predicates: &[Clause<'db>],
     default_sized: SizedByDefault,
 ) -> Result<(), HirDisplayError> {
@@ -1859,7 +1845,7 @@ pub fn write_bounds_like_dyn_trait_with_prefix<'db>(
 
 fn write_bounds_like_dyn_trait<'db>(
     f: &mut HirFormatter<'_, 'db>,
-    this: Either<TyRef<'_, 'db>, RegionRef<'_, 'db>>,
+    this: Either<Ty<'db>, Region<'db>>,
     predicates: &[Clause<'db>],
     default_sized: SizedByDefault,
 ) -> Result<(), HirDisplayError> {
@@ -1912,7 +1898,7 @@ fn write_bounds_like_dyn_trait<'db>(
                     let params = generic_args_sans_defaults(
                         f,
                         Some(trait_.into()),
-                        trait_ref.trait_ref.args.r().as_slice().as_owned_slice(),
+                        trait_ref.trait_ref.args.as_slice(),
                     );
                     if let [_self, params @ ..] = params
                         && !params.is_empty()
@@ -1924,7 +1910,7 @@ fn write_bounds_like_dyn_trait<'db>(
                     }
                 }
             }
-            ClauseKind::TypeOutlives(to) if Either::Left(to.0.r()) == this => {
+            ClauseKind::TypeOutlives(to) if Either::Left(to.0.clone()) == this => {
                 if !is_fn_trait && angle_open {
                     write!(f, ">")?;
                     angle_open = false;
@@ -1934,7 +1920,7 @@ fn write_bounds_like_dyn_trait<'db>(
                 }
                 to.1.hir_fmt(f)?;
             }
-            ClauseKind::RegionOutlives(lo) if Either::Right(lo.0.r()) == this => {
+            ClauseKind::RegionOutlives(lo) if Either::Right(lo.0.clone()) == this => {
                 if !is_fn_trait && angle_open {
                     write!(f, ">")?;
                     angle_open = false;
@@ -1946,7 +1932,7 @@ fn write_bounds_like_dyn_trait<'db>(
             }
             ClauseKind::Projection(projection) if is_fn_trait => {
                 is_fn_trait = false;
-                if !projection.term.r().ty().is_some_and(|it| it.is_unit()) {
+                if !projection.term.ty().is_some_and(|it| it.is_unit()) {
                     write!(f, " -> ")?;
                     projection.term.hir_fmt(f)?;
                 }
@@ -1969,7 +1955,7 @@ fn write_bounds_like_dyn_trait<'db>(
                 let own_args = projection.projection_term.own_args(f.interner);
                 if !own_args.is_empty() {
                     write!(f, "<")?;
-                    hir_fmt_generic_arguments(f, own_args.as_owned_slice(), None)?;
+                    hir_fmt_generic_arguments(f, own_args, None)?;
                     write!(f, ">")?;
                 }
                 write!(f, " = ")?;
@@ -2012,11 +1998,11 @@ impl<'db> HirDisplay<'db> for TraitRef<'db> {
         write!(f, "{}", f.db.trait_signature(trait_).name.display(f.db, f.edition()))?;
         f.end_location_link();
         let substs = self.args.as_slice();
-        hir_fmt_generic_args(f, substs[1..].as_owned_slice(), None, Some(self.self_ty()))
+        hir_fmt_generic_args(f, &substs[1..], None, Some(self.self_ty()))
     }
 }
 
-impl<'db> HirDisplay<'db> for RegionRef<'_, 'db> {
+impl<'db> HirDisplay<'db> for Region<'db> {
     fn hir_fmt(&self, f: &mut HirFormatter<'_, 'db>) -> Result<(), HirDisplayError> {
         match self.kind() {
             RegionKind::ReEarlyParam(param) => {
@@ -2490,17 +2476,3 @@ impl<'db> HirDisplayWithExpressionStore<'db> for hir_def::expr_store::path::Gene
         }
     }
 }
-
-macro_rules! redirect_to_borrowed {
-    ( $( $name:ident ),* $(,)? ) => {
-        $(
-            impl<'db> HirDisplay<'db> for $crate::next_solver::$name<'db> {
-                fn hir_fmt(&self, f: &mut HirFormatter<'_, 'db>) -> Result<(), HirDisplayError> {
-                    self.r().hir_fmt(f)
-                }
-            }
-        )*
-    };
-}
-
-redirect_to_borrowed!(Ty, Const, Region, GenericArg, Term);

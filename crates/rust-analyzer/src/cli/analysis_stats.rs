@@ -821,7 +821,7 @@ impl flags::AnalysisStats {
             for (expr_id, _) in body.exprs() {
                 let ty = &inference_result[expr_id];
                 num_exprs += 1;
-                let unknown_or_partial = if ty.r().is_ty_error() {
+                let unknown_or_partial = if ty.is_ty_error() {
                     num_exprs_unknown += 1;
                     if verbosity.is_spammy() {
                         if let Some((path, start, end)) = expr_syntax_range(db, vfs, &sm(), expr_id)
@@ -843,7 +843,7 @@ impl flags::AnalysisStats {
                     }
                     true
                 } else {
-                    let is_partially_unknown = ty.r().references_non_lt_error();
+                    let is_partially_unknown = ty.references_non_lt_error();
                     if is_partially_unknown {
                         num_exprs_partially_unknown += 1;
                     }
@@ -925,7 +925,7 @@ impl flags::AnalysisStats {
             for (pat_id, _) in body.pats() {
                 let ty = &inference_result[pat_id];
                 num_pats += 1;
-                let unknown_or_partial = if ty.r().is_ty_error() {
+                let unknown_or_partial = if ty.is_ty_error() {
                     num_pats_unknown += 1;
                     if verbosity.is_spammy() {
                         if let Some((path, start, end)) = pat_syntax_range(db, vfs, &sm(), pat_id) {
@@ -946,7 +946,7 @@ impl flags::AnalysisStats {
                     }
                     true
                 } else {
-                    let is_partially_unknown = ty.r().references_non_lt_error();
+                    let is_partially_unknown = ty.references_non_lt_error();
                     if is_partially_unknown {
                         num_pats_partially_unknown += 1;
                     }

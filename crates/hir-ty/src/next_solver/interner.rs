@@ -24,9 +24,9 @@ use rustc_type_ir::{
     elaborate::elaborate,
     error::TypeError,
     fast_reject,
-    inherent::{self, GenericsOf, SliceLike as _, Span as _},
+    inherent::{self, GenericsOf, Span as _},
     lang_items::{SolverAdtLangItem, SolverLangItem, SolverTraitLangItem},
-    relate::{RelateRef, TypeRelation},
+    relate::{Relate, RelateRef, TypeRelation},
     solve::SizedTraitKind,
 };
 
@@ -36,22 +36,19 @@ use crate::{
     lower::GenericPredicates,
     method_resolution::TraitImpls,
     next_solver::{
-        AdtIdWrapper, AsBorrowedSlice, BoundConst, BoundExistentialPredicatesRef,
-        CallableIdWrapper, CanonicalVarKind, ClauseRef, ClausesRef, ClosureIdWrapper, ConstRef,
-        CoroutineIdWrapper, Ctor, ExternalConstraintsRef, FnSig, FxIndexMap, GeneralConstIdWrapper,
-        GenericArgRef, GenericArgsRef, ImplIdWrapper, OpaqueTypeKey, ParamEnvRef,
-        PredefinedOpaquesRef, PredicateRef, RegionAssumptions, RegionAssumptionsRef, RegionRef,
-        SameRepr, SimplifiedType, SolverContext, SolverDefIds, SolverDefIdsRef, TermRef,
-        TraitIdWrapper, TraitRef, TyRef, TypeAliasIdWrapper, TysRef, UnevaluatedConst,
+        AdtIdWrapper, BoundConst, CallableIdWrapper, CanonicalVarKind, ClosureIdWrapper,
+        CoroutineIdWrapper, Ctor, FnSig, FxIndexMap, GeneralConstIdWrapper, ImplIdWrapper,
+        OpaqueTypeKey, ParamEnv, RegionAssumptions, SimplifiedType, SolverContext, SolverDefIds,
+        TraitIdWrapper, TraitRef, TypeAliasIdWrapper, UnevaluatedConst,
         infer::relate::RelateResult, util::explicit_item_bounds,
     },
 };
 
 use super::{
     Binder, BoundExistentialPredicates, BoundTy, BoundTyKind, Clause, ClauseKind, Clauses, Const,
-    ErrorGuaranteed, ExprConst, ExternalConstraints, GenericArg, GenericArgs, ParamConst, ParamEnv,
-    ParamTy, PlaceholderConst, PlaceholderTy, PredefinedOpaques, Predicate, SolverDefId, Term, Ty,
-    TyKind, Tys, Valtree, ValueConst,
+    ErrorGuaranteed, ExprConst, ExternalConstraints, GenericArg, GenericArgs, ParamConst, ParamTy,
+    PlaceholderConst, PlaceholderTy, PredefinedOpaques, Predicate, SolverDefId, Term, Ty, TyKind,
+    Tys, Valtree, ValueConst,
     abi::Safety,
     fold::{BoundVarReplacer, BoundVarReplacerDelegate, FnMutDelegate},
     generics::{Generics, generics},
@@ -94,175 +91,40 @@ impl<T: FromStatic, E> FromStatic for Result<T, E> {
     }
 }
 
-macro_rules! impl_visitable_for_interned_slice_with_borrowed {
-    ($name:ident, $name_ref:ident $(,)?) => {
+macro_rules! impl_foldable_for_interned_slice {
+    ($name:ident $(,)?) => {
         impl<'db> rustc_type_ir::TypeVisitable<DbInterner<'db>> for $name<'db> {
             #[inline]
             fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
                 &self,
                 visitor: &mut V,
             ) -> V::Result {
-                self.r().visit_with(visitor)
-            }
-        }
-
-        impl<'db> rustc_type_ir::TypeVisitable<DbInterner<'db>> for $name_ref<'_, 'db> {
-            fn visit_with<V: rustc_type_ir::TypeVisitor<DbInterner<'db>>>(
-                &self,
-                visitor: &mut V,
-            ) -> V::Result {
                 use rustc_ast_ir::visit::VisitorResult;
-                use rustc_type_ir::inherent::SliceLike as _;
                 rustc_ast_ir::walk_visitable_list!(visitor, self.as_slice());
                 V::Result::output()
             }
         }
-    };
-}
-pub(super) use impl_visitable_for_interned_slice_with_borrowed;
-
-macro_rules! impl_foldable_for_interned_slice_with_borrowed {
-    ($name:ident, $name_ref:ident $(,)?) => {
-        $crate::next_solver::interner::impl_visitable_for_interned_slice_with_borrowed!(
-            $name, $name_ref
-        );
 
         impl<'db> rustc_type_ir::TypeFoldable<DbInterner<'db>> for $name<'db> {
             fn try_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
                 self,
                 folder: &mut F,
             ) -> Result<Self, F::Error> {
-                let result = self
-                    .as_slice()
-                    .iter()
-                    .map(|v| v.o().try_fold_with(folder))
-                    .collect::<Result<_, _>>()?;
-                Ok(Self::new_from_vec(result))
+                Self::new_from_iter(self.iter().map(|v| v.clone().try_fold_with(folder)))
             }
             fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(
                 self,
                 folder: &mut F,
             ) -> Self {
-                let result = self.as_slice().iter().map(|v| v.o().fold_with(folder)).collect();
-                Self::new_from_vec(result)
+                Self::new_from_iter(self.iter().map(|v| v.clone().fold_with(folder)))
             }
         }
     };
 }
-pub(super) use impl_foldable_for_interned_slice_with_borrowed;
-
-macro_rules! impl_foldable_for_interned_slice_without_borrowed {
-    ($name:ident, $name_ref:ident $(,)?) => {
-        $crate::next_solver::interner::impl_visitable_for_interned_slice_with_borrowed!(
-            $name, $name_ref
-        );
-
-        impl<'db> rustc_type_ir::TypeFoldable<DbInterner<'db>> for $name<'db> {
-            fn try_fold_with<F: rustc_type_ir::FallibleTypeFolder<DbInterner<'db>>>(
-                self,
-                folder: &mut F,
-            ) -> Result<Self, F::Error> {
-                let result = self
-                    .as_slice()
-                    .iter()
-                    .map(|v| v.clone().try_fold_with(folder))
-                    .collect::<Result<_, _>>()?;
-                Ok(Self::new_from_vec(result))
-            }
-            fn fold_with<F: rustc_type_ir::TypeFolder<DbInterner<'db>>>(
-                self,
-                folder: &mut F,
-            ) -> Self {
-                let result = self.as_slice().iter().map(|v| v.clone().fold_with(folder)).collect();
-                Self::new_from_vec(result)
-            }
-        }
-    };
-}
-pub(super) use impl_foldable_for_interned_slice_without_borrowed;
-
-macro_rules! interned_slice_with_borrowed {
-    ($name:ident, $name_ref:ident, $ty:ty, $ty_ref:ty, $ty_static:ty $(,)?) => {
-        impl<'a, 'db> $name_ref<'a, 'db> {
-            #[inline]
-            pub fn as_slice(self) -> &'a [$ty_ref] {
-                // SAFETY: FIXME
-                let slice = unsafe {
-                    std::mem::transmute::<&'a [$ty_static], &'a [$ty]>(&self.interned.get().slice)
-                };
-                <[$ty] as $crate::next_solver::AsBorrowedSlice>::as_borrowed_slice(slice)
-            }
-        }
-
-        impl<'db> $name<'db> {
-            #[inline]
-            pub fn new_from_slice<'a>(slice: &[$ty_ref]) -> Self {
-                let slice = <[$ty] as $crate::next_solver::AsBorrowedSlice>::as_owned_slice(slice);
-                let slice = unsafe { ::std::mem::transmute::<&[$ty], &[$ty_static]>(slice) };
-                Self {
-                    interned: ::intern::InternedSlice::from_header_and_slice((), slice),
-                    _marker: ::std::marker::PhantomData,
-                }
-            }
-        }
-
-        impl<'a, 'db> IntoIterator for $name_ref<'a, 'db>
-        where
-            'db: 'a,
-        {
-            type Item = $ty_ref;
-            type IntoIter = ::std::iter::Copied<::std::slice::Iter<'a, $ty_ref>>;
-
-            #[inline]
-            fn into_iter(self) -> Self::IntoIter {
-                self.as_slice().iter().copied()
-            }
-        }
-    };
-}
-pub(super) use interned_slice_with_borrowed;
-
-macro_rules! interned_slice_without_borrowed {
-    ($name:ident, $name_ref:ident, $ty:ty, $ty_static:ty $(,)?) => {
-        impl<'a, 'db> $name_ref<'a, 'db> {
-            #[inline]
-            pub fn as_slice(self) -> &'a [$ty] {
-                // SAFETY: FIXME
-                unsafe {
-                    std::mem::transmute::<&'a [$ty_static], &'a [$ty]>(&self.interned.get().slice)
-                }
-            }
-        }
-
-        impl<'db> $name<'db> {
-            #[inline]
-            pub fn new_from_slice(slice: &[$ty]) -> Self {
-                let slice = unsafe { ::std::mem::transmute::<&[$ty], &[$ty_static]>(slice) };
-                Self {
-                    interned: ::intern::InternedSlice::from_header_and_slice((), slice),
-                    _marker: ::std::marker::PhantomData,
-                }
-            }
-        }
-
-        impl<'a, 'db> IntoIterator for $name_ref<'a, 'db>
-        where
-            'db: 'a,
-        {
-            type Item = &'a $ty;
-            type IntoIter = ::std::slice::Iter<'a, $ty>;
-
-            #[inline]
-            fn into_iter(self) -> Self::IntoIter {
-                self.as_slice().iter()
-            }
-        }
-    };
-}
-pub(super) use interned_slice_without_borrowed;
+pub(super) use impl_foldable_for_interned_slice;
 
 macro_rules! interned_slice {
-    ($tag:ident, $name:ident, $name_ref:ident, $ty:ty, $ty_ref:ty, $ty_static:ty, $default_field:ident $(,)?) => {
+    ($tag:ident, $name:ident, $ty:ty, $ty_static:ty, $default_field:ident $(,)?) => {
         ::intern::impl_slice_internable!($tag, (), $ty_static);
 
         #[derive(Clone, PartialEq, Eq, Hash)]
@@ -271,19 +133,7 @@ macro_rules! interned_slice {
             _marker: ::std::marker::PhantomData<fn() -> &'db ()>,
         }
 
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name_ref<'a, 'db> {
-            interned: ::intern::InternedSliceRef<'a, $tag>,
-            _marker: ::std::marker::PhantomData<(fn() -> &'db (), &'a &'db ())>,
-        }
-
         impl<'db> std::fmt::Debug for $name<'db> {
-            fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.as_slice().fmt(fmt)
-            }
-        }
-
-        impl<'db> std::fmt::Debug for $name_ref<'_, 'db> {
             fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 self.as_slice().fmt(fmt)
             }
@@ -309,22 +159,10 @@ macro_rules! interned_slice {
             }
         }
 
-        impl<'a, 'db> $name_ref<'a, 'db> {
-            #[inline]
-            pub fn o(self) -> $name<'db> {
-                $name { interned: self.interned.o(), _marker: ::std::marker::PhantomData }
-            }
-        }
-
         impl<'db> $name<'db> {
             #[inline]
             pub fn empty() -> Self {
                 Default::default()
-            }
-
-            #[inline]
-            pub fn r(&self) -> $name_ref<'_, 'db> {
-                $name_ref { interned: self.interned.r(), _marker: ::std::marker::PhantomData }
             }
 
             #[inline]
@@ -360,6 +198,15 @@ macro_rules! interned_slice {
             }
 
             #[inline]
+            pub fn new_from_slice(slice: &[$ty]) -> Self {
+                let slice = unsafe { ::std::mem::transmute::<&[$ty], &[$ty_static]>(slice) };
+                Self {
+                    interned: ::intern::InternedSlice::from_header_and_slice((), slice),
+                    _marker: ::std::marker::PhantomData,
+                }
+            }
+
+            #[inline]
             pub fn new_from_iter<I, T, Static>(
                 iter: I,
             ) -> <Static::Output as $crate::next_solver::interner::FromStatic>::WithLifetime<'db>
@@ -371,7 +218,7 @@ macro_rules! interned_slice {
             {
                 <Static::Output as $crate::next_solver::interner::FromStatic>::from_static(
                     ::intern::CollectAndIntern::collect_and_intern(
-                        (),
+                        |_| (),
                         iter.into_iter()
                             .map($crate::next_solver::interner::IntoStatic::into_static),
                     ),
@@ -379,25 +226,47 @@ macro_rules! interned_slice {
             }
 
             #[inline]
-            pub fn as_slice<'a>(&'a self) -> &'a [$ty_ref] {
-                self.r().as_slice()
+            pub fn as_slice(&self) -> &[$ty] {
+                unsafe { std::mem::transmute::<&[$ty_static], &[$ty]>(&self.interned.slice) }
+            }
+
+            #[inline]
+            pub fn iter(&self) -> std::slice::Iter<'_, $ty> {
+                self.as_slice().iter()
+            }
+
+            #[inline]
+            pub fn get(&self, idx: usize) -> Option<&$ty> {
+                self.as_slice().get(idx)
+            }
+
+            #[inline]
+            pub fn len(&self) -> usize {
+                self.as_slice().len()
+            }
+
+            #[inline]
+            pub fn is_empty(&self) -> bool {
+                self.len() == 0
+            }
+
+            #[inline]
+            pub fn last(&self) -> Option<&$ty> {
+                self.as_slice().last()
             }
         }
 
-        impl<'a, 'db> rustc_type_ir::inherent::SliceLike<'a> for $name_ref<'a, 'db>
-        where
-            'db: 'a,
-        {
-            type Item = $ty_ref;
+        impl<'db> rustc_type_ir::inherent::SliceLike for $name<'db> {
+            type Item = $ty;
 
             #[inline]
-            fn as_slice(self) -> &'a [Self::Item] {
+            fn as_slice(&self) -> &[Self::Item] {
                 self.as_slice()
             }
         }
 
-        impl<'a, 'db> ::std::ops::Deref for $name_ref<'a, 'db> {
-            type Target = [$ty_ref];
+        impl<'db> ::std::ops::Deref for $name<'db> {
+            type Target = [$ty];
 
             #[inline]
             fn deref(&self) -> &Self::Target {
@@ -405,17 +274,20 @@ macro_rules! interned_slice {
             }
         }
 
+        impl<'a, 'db> IntoIterator for &'a $name<'db> {
+            type IntoIter = std::slice::Iter<'a, $ty>;
+            type Item = &'a $ty;
+
+            #[inline]
+            fn into_iter(self) -> Self::IntoIter {
+                self.iter()
+            }
+        }
+
         impl<'db> Default for $name<'db> {
             #[inline]
             fn default() -> Self {
                 $crate::next_solver::default_types().empty.$default_field.clone()
-            }
-        }
-
-        impl<'db> Default for $name_ref<'_, 'db> {
-            #[inline]
-            fn default() -> Self {
-                $crate::next_solver::default_types().empty.$default_field.r()
             }
         }
     };
@@ -467,16 +339,7 @@ impl<'db> inherent::Span<DbInterner<'db>> for Span {
     }
 }
 
-interned_slice!(
-    BoundVarKindsStorage,
-    BoundVarKinds,
-    BoundVarKindsRef,
-    BoundVarKind,
-    BoundVarKind,
-    BoundVarKind,
-    bound_var_kinds,
-);
-interned_slice_without_borrowed!(BoundVarKinds, BoundVarKindsRef, BoundVarKind, BoundVarKind);
+interned_slice!(BoundVarKindsStorage, BoundVarKinds, BoundVarKind, BoundVarKind, bound_var_kinds);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum BoundVarKind {
@@ -511,17 +374,9 @@ impl BoundVarKind {
 interned_slice!(
     CanonicalVarsStorage,
     CanonicalVars,
-    CanonicalVarsRef,
-    CanonicalVarKind<'db>,
     CanonicalVarKind<'db>,
     CanonicalVarKind<'static>,
     canonical_vars,
-);
-interned_slice_without_borrowed!(
-    CanonicalVars,
-    CanonicalVarsRef,
-    CanonicalVarKind<'db>,
-    CanonicalVarKind<'static>
 );
 
 pub struct DepNodeIndex;
@@ -548,22 +403,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Placeholder<T> {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct AllocId;
 
-interned_slice!(
-    VariancesOfStorage,
-    VariancesOf,
-    VariancesOfRef,
-    Variance,
-    Variance,
-    Variance,
-    variances,
-);
-interned_slice_without_borrowed!(VariancesOf, VariancesOfRef, Variance, Variance);
-
-impl<'db> rustc_type_ir::VariancesOf for VariancesOf<'db> {
-    fn into_iter(self) -> impl Iterator<Item = Variance> {
-        (0..self.as_slice().len()).map(move |idx| self.as_slice()[idx])
-    }
-}
+interned_slice!(VariancesOfStorage, VariancesOf, Variance, Variance, variances);
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct VariantIdx(usize);
@@ -861,7 +701,7 @@ impl<'db> inherent::AdtDef<DbInterner<'db>> for AdtDef {
         if self.is_struct() {
             let tail_ty = self.all_field_tys(interner).skip_binder().into_iter().last()?;
 
-            let constraint_ty = sizedness_constraint_for_ty(interner, sizedness, tail_ty.r())?;
+            let constraint_ty = sizedness_constraint_for_ty(interner, sizedness, tail_ty)?;
 
             Some(EarlyBinder::bind(constraint_ty))
         } else {
@@ -1004,6 +844,22 @@ impl<'db> rustc_type_ir::inherent::AsKind for Pattern<'db> {
     }
 }
 
+impl<'db> Relate<DbInterner<'db>> for Pattern<'db> {
+    type RelateResult = Self;
+
+    fn into_relate_result(self) -> Self::RelateResult {
+        self
+    }
+
+    fn relate<R: TypeRelation<DbInterner<'db>>>(
+        relation: &mut R,
+        a: Self,
+        b: Self,
+    ) -> rustc_type_ir::relate::RelateResult<DbInterner<'db>, Self::RelateResult> {
+        relation.relate(&a, &b)
+    }
+}
+
 impl<'db> RelateRef<DbInterner<'db>> for Pattern<'db> {
     fn relate_ref<R: TypeRelation<DbInterner<'db>>>(
         relation: &mut R,
@@ -1021,11 +877,11 @@ impl<'db> RelateRef<DbInterner<'db>> for Pattern<'db> {
                 Ok(Pattern::new(tcx, PatternKind::Range { start, end }))
             }
             (PatternKind::Or(a), PatternKind::Or(b)) => {
-                if a.r().len() != b.r().len() {
+                if a.len() != b.len() {
                     return Err(TypeError::Mismatch);
                 }
                 let pats = PatList::new_from_iter(
-                    std::iter::zip(a.r(), b.r()).map(|(a, b)| relation.relate(a, b)),
+                    std::iter::zip(a, b).map(|(a, b)| relation.relate(a, b)),
                 )?;
                 Ok(Pattern::new(tcx, PatternKind::Or(pats)))
             }
@@ -1037,24 +893,8 @@ impl<'db> RelateRef<DbInterner<'db>> for Pattern<'db> {
     }
 }
 
-unsafe impl SameRepr for Pattern<'_> {
-    type Borrowed<'a>
-        = Self
-    where
-        Self: 'a;
-}
-
-interned_slice!(
-    PatListStorage,
-    PatList,
-    PatListRef,
-    Pattern<'db>,
-    Pattern<'db>,
-    Pattern<'static>,
-    pat_list,
-);
-interned_slice_without_borrowed!(PatList, PatListRef, Pattern<'db>, Pattern<'static>);
-impl_foldable_for_interned_slice_without_borrowed!(PatList, PatListRef);
+interned_slice!(PatListStorage, PatList, Pattern<'db>, Pattern<'static>, pat_list);
+impl_foldable_for_interned_slice!(PatList);
 
 macro_rules! as_lang_item {
     (
@@ -1084,10 +924,6 @@ impl<'db> Interner for DbInterner<'db> {
     type DefId = SolverDefId;
     type LocalDefId = SolverDefId;
     type LocalDefIds = SolverDefIds<'db>;
-    type LocalDefIdsRef<'a>
-        = SolverDefIdsRef<'a, 'db>
-    where
-        Self: 'a;
     type TraitId = TraitIdWrapper;
     type ForeignId = TypeAliasIdWrapper;
     type FunctionId = CallableIdWrapper;
@@ -1100,38 +936,18 @@ impl<'db> Interner for DbInterner<'db> {
     type Span = Span;
 
     type GenericArgs = GenericArgs<'db>;
-    type GenericArgsRef<'a>
-        = GenericArgsRef<'a, 'db>
-    where
-        Self: 'a;
     type GenericArgsSlice<'a>
-        = &'a [GenericArgRef<'a, 'db>]
+        = &'a [GenericArg<'db>]
     where
         Self: 'a;
     type GenericArg = GenericArg<'db>;
-    type GenericArgRef<'a>
-        = GenericArgRef<'a, 'db>
-    where
-        Self: 'a;
 
     type Term = Term<'db>;
-    type TermRef<'a>
-        = TermRef<'a, 'db>
-    where
-        Self: 'a;
 
     type BoundVarKinds = BoundVarKinds<'db>;
-    type BoundVarKindsRef<'a>
-        = BoundVarKindsRef<'a, 'db>
-    where
-        Self: 'a;
     type BoundVarKind = BoundVarKind;
 
     type PredefinedOpaques = PredefinedOpaques<'db>;
-    type PredefinedOpaquesRef<'a>
-        = PredefinedOpaquesRef<'a, 'db>
-    where
-        Self: 'a;
 
     fn mk_predefined_opaques_in_body(
         self,
@@ -1141,20 +957,12 @@ impl<'db> Interner for DbInterner<'db> {
     }
 
     type CanonicalVarKinds = CanonicalVars<'db>;
-    type CanonicalVarKindsRef<'a>
-        = CanonicalVarsRef<'a, 'db>
-    where
-        Self: 'a;
 
     fn mk_canonical_var_kinds(self, kinds: &[CanonicalVarKind<'db>]) -> Self::CanonicalVarKinds {
         CanonicalVars::new_from_slice(kinds)
     }
 
     type ExternalConstraints = ExternalConstraints<'db>;
-    type ExternalConstraintsRef<'a>
-        = ExternalConstraintsRef<'a, 'db>
-    where
-        Self: 'a;
 
     fn mk_external_constraints(
         self,
@@ -1168,17 +976,9 @@ impl<'db> Interner for DbInterner<'db> {
     type Tracked<T: fmt::Debug + Clone> = Tracked<T>;
 
     type Ty = Ty<'db>;
-    type TyRef<'a>
-        = TyRef<'a, 'db>
-    where
-        Self: 'a;
     type Tys = Tys<'db>;
-    type TysRef<'a>
-        = TysRef<'a, 'db>
-    where
-        Self: 'a;
     type FnInputTys<'a>
-        = &'a [TyRef<'a, 'db>]
+        = &'a [Ty<'db>]
     where
         Self: 'a;
     type ParamTy = ParamTy;
@@ -1188,25 +988,13 @@ impl<'db> Interner for DbInterner<'db> {
 
     type ErrorGuaranteed = ErrorGuaranteed;
     type BoundExistentialPredicates = BoundExistentialPredicates<'db>;
-    type BoundExistentialPredicatesRef<'a>
-        = BoundExistentialPredicatesRef<'a, 'db>
-    where
-        Self: 'a;
     type AllocId = AllocId;
     type Pat = Pattern<'db>;
     type PatList = PatList<'db>;
-    type PatListRef<'a>
-        = PatListRef<'a, 'db>
-    where
-        Self: 'a;
     type Safety = Safety;
     type Abi = FnAbi;
 
     type Const = Const<'db>;
-    type ConstRef<'a>
-        = ConstRef<'a, 'db>
-    where
-        Self: 'a;
     type PlaceholderConst = PlaceholderConst;
     type ParamConst = ParamConst;
     type BoundConst = BoundConst;
@@ -1215,62 +1003,29 @@ impl<'db> Interner for DbInterner<'db> {
     type ExprConst = ExprConst;
 
     type Region = Region<'db>;
-    type RegionRef<'a>
-        = RegionRef<'a, 'db>
-    where
-        Self: 'a;
     type EarlyParamRegion = EarlyParamRegion;
     type LateParamRegion = LateParamRegion;
     type BoundRegion = BoundRegion;
     type PlaceholderRegion = PlaceholderRegion;
 
     type RegionAssumptions = RegionAssumptions<'db>;
-    type RegionAssumptionsRef<'a>
-        = RegionAssumptionsRef<'a, 'db>
-    where
-        Self: 'a;
 
     type ParamEnv = ParamEnv<'db>;
-    type ParamEnvRef<'a>
-        = ParamEnvRef<'a, 'db>
-    where
-        Self: 'a;
     type Predicate = Predicate<'db>;
-    type PredicateRef<'a>
-        = PredicateRef<'a, 'db>
-    where
-        Self: 'a;
     type Clause = Clause<'db>;
-    type ClauseRef<'a>
-        = ClauseRef<'a, 'db>
-    where
-        Self: 'a;
     type Clauses = Clauses<'db>;
-    type ClausesRef<'a>
-        = ClausesRef<'a, 'db>
-    where
-        Self: 'a;
 
     type GenericsOf = Generics;
 
     type VariancesOf = VariancesOf<'db>;
-    type VariancesOfRef<'a>
-        = VariancesOfRef<'a, 'db>
-    where
-        Self: 'a;
 
     type AdtDef = AdtDef;
 
     type Features = Features;
 
     #[inline]
-    fn mk_args(self, args: &[GenericArgRef<'_, 'db>]) -> Self::GenericArgs {
+    fn mk_args(self, args: &[GenericArg<'db>]) -> Self::GenericArgs {
         GenericArgs::new_from_slice(args)
-    }
-
-    #[inline]
-    fn mk_args_owned(self, args: &[GenericArg<'db>]) -> Self::GenericArgs {
-        GenericArgs::new_from_slice(args.as_borrowed_slice())
     }
 
     fn mk_args_from_iter<I, T>(self, args: I) -> T::Output
@@ -1278,9 +1033,7 @@ impl<'db> Interner for DbInterner<'db> {
         I: Iterator<Item = T>,
         T: rustc_type_ir::CollectAndApply<Self::GenericArg, Self::GenericArgs>,
     {
-        CollectAndApply::collect_and_apply(args, |g| {
-            GenericArgs::new_from_slice(g.as_borrowed_slice())
-        })
+        CollectAndApply::collect_and_apply(args, |g| GenericArgs::new_from_slice(g))
     }
 
     type UnsizingParams = UnsizingParams;
@@ -1293,8 +1046,8 @@ impl<'db> Interner for DbInterner<'db> {
         Tracked(data)
     }
 
-    fn get_tracked<T: fmt::Debug + Clone>(self, tracked: &Self::Tracked<T>) -> T {
-        tracked.0.clone()
+    fn get_tracked<T: fmt::Debug + Clone>(self, tracked: &Self::Tracked<T>) -> &T {
+        &tracked.0
     }
 
     fn with_cached_task<T>(self, task: impl FnOnce() -> T) -> (T, Self::DepNodeIndex) {
@@ -1310,7 +1063,7 @@ impl<'db> Interner for DbInterner<'db> {
 
     fn canonical_param_env_cache_get_or_insert<R>(
         self,
-        _param_env: ParamEnvRef<'_, 'db>,
+        _param_env: ParamEnv<'db>,
         f: impl FnOnce() -> rustc_type_ir::CanonicalParamEnvCacheEntry<Self>,
         from_entry: impl FnOnce(&rustc_type_ir::CanonicalParamEnvCacheEntry<Self>) -> R,
     ) -> R {
@@ -1358,6 +1111,12 @@ impl<'db> Interner for DbInterner<'db> {
             }
         };
         self.db.variances_of(generic_def)
+    }
+
+    fn variances_into_iter(
+        variances: Self::VariancesOf,
+    ) -> impl Iterator<Item = rustc_type_ir::Variance> {
+        (0..variances.as_slice().len()).map(move |idx| variances.as_slice()[idx])
     }
 
     fn type_of(self, def_id: Self::DefId) -> EarlyBinder<Self, Self::Ty> {
@@ -1435,11 +1194,8 @@ impl<'db> Interner for DbInterner<'db> {
     fn trait_ref_and_own_args_for_alias<'a>(
         self,
         def_id: SolverDefId,
-        args: GenericArgsRef<'a, 'db>,
-    ) -> (TraitRef<'db>, Self::GenericArgsSlice<'a>)
-    where
-        Self: 'a,
-    {
+        args: &'a GenericArgs<'db>,
+    ) -> (TraitRef<'db>, Self::GenericArgsSlice<'a>) {
         let trait_def_id = self.parent(def_id);
         let trait_generics = self.generics_of(trait_def_id);
         let trait_args =
@@ -1448,17 +1204,17 @@ impl<'db> Interner for DbInterner<'db> {
         (TraitRef::new_from_args(self, trait_def_id.try_into().unwrap(), trait_args), alias_args)
     }
 
-    fn check_args_compatible(self, _def_id: Self::DefId, _args: GenericArgsRef<'_, 'db>) -> bool {
+    fn check_args_compatible(self, _def_id: Self::DefId, _args: &GenericArgs<'db>) -> bool {
         // FIXME
         true
     }
 
-    fn debug_assert_args_compatible(self, _def_id: Self::DefId, _args: GenericArgsRef<'_, 'db>) {}
+    fn debug_assert_args_compatible(self, _def_id: Self::DefId, _args: &GenericArgs<'db>) {}
 
     fn debug_assert_existential_args_compatible(
         self,
         _def_id: Self::DefId,
-        _args: GenericArgsRef<'_, 'db>,
+        _args: &GenericArgs<'db>,
     ) {
     }
 
@@ -1467,7 +1223,7 @@ impl<'db> Interner for DbInterner<'db> {
         I: Iterator<Item = T>,
         T: rustc_type_ir::CollectAndApply<Self::Ty, Self::Tys>,
     {
-        CollectAndApply::collect_and_apply(args, |g| Tys::new_from_slice(g.as_borrowed_slice()))
+        CollectAndApply::collect_and_apply(args, |g| Tys::new_from_slice(g))
     }
 
     fn parent(self, def_id: Self::DefId) -> Self::DefId {
@@ -1612,7 +1368,7 @@ impl<'db> Interner for DbInterner<'db> {
         def_id: Self::DefId,
     ) -> EarlyBinder<Self, impl IntoIterator<Item = Self::Clause>> {
         GenericPredicates::query_all(self.db, def_id.try_into().unwrap())
-            .map_bound(|it| it.iter().map(|clause| clause.o()))
+            .map_bound(|it| it.iter().map(|clause| clause.clone()))
     }
 
     #[tracing::instrument(level = "debug", skip(self), ret)]
@@ -1621,7 +1377,7 @@ impl<'db> Interner for DbInterner<'db> {
         def_id: Self::DefId,
     ) -> EarlyBinder<Self, impl IntoIterator<Item = Self::Clause>> {
         GenericPredicates::query_own(self.db, def_id.try_into().unwrap())
-            .map_bound(|it| it.iter().map(|clause| clause.o()))
+            .map_bound(|it| it.iter().map(|clause| clause.clone()))
     }
 
     #[tracing::instrument(skip(self), ret)]
@@ -1629,7 +1385,7 @@ impl<'db> Interner for DbInterner<'db> {
         self,
         def_id: Self::TraitId,
     ) -> EarlyBinder<Self, impl IntoIterator<Item = (Self::Clause, Self::Span)>> {
-        let is_self = |ty: TyRef<'_, 'db>| match ty.kind() {
+        let is_self = |ty: Ty<'db>| match ty.kind() {
             rustc_type_ir::TyKind::Param(param) => param.index == 0,
             _ => false,
         };
@@ -1637,17 +1393,17 @@ impl<'db> Interner for DbInterner<'db> {
         GenericPredicates::query_explicit(self.db, def_id.0.into()).map_bound(move |predicates| {
             predicates
                 .iter()
-                .copied()
-                .filter(move |p| match p.kind().skip_binder() {
+                .cloned()
+                .filter(move |p| match p.kind_skip_binder() {
                     // rustc has the following assertion:
                     // https://github.com/rust-lang/rust/blob/52618eb338609df44978b0ca4451ab7941fd1c7a/compiler/rustc_hir_analysis/src/hir_ty_lowering/bounds.rs#L525-L608
                     ClauseKind::Trait(it) => is_self(it.self_ty()),
-                    ClauseKind::TypeOutlives(it) => is_self(it.0.r()),
+                    ClauseKind::TypeOutlives(it) => is_self(it.0.clone()),
                     ClauseKind::Projection(it) => is_self(it.self_ty()),
                     ClauseKind::HostEffect(it) => is_self(it.self_ty()),
                     _ => false,
                 })
-                .map(|p| (p.o(), Span::dummy()))
+                .map(|p| (p.clone(), Span::dummy()))
         })
     }
 
@@ -1656,7 +1412,7 @@ impl<'db> Interner for DbInterner<'db> {
         self,
         def_id: Self::DefId,
     ) -> EarlyBinder<Self, impl IntoIterator<Item = (Self::Clause, Self::Span)>> {
-        fn is_self_or_assoc(ty: TyRef<'_, '_>) -> bool {
+        fn is_self_or_assoc(ty: Ty<'_>) -> bool {
             match ty.kind() {
                 rustc_type_ir::TyKind::Param(param) => param.index == 0,
                 rustc_type_ir::TyKind::Alias(rustc_type_ir::AliasTyKind::Projection, alias) => {
@@ -1670,10 +1426,10 @@ impl<'db> Interner for DbInterner<'db> {
             |predicates| {
                 predicates
                     .iter()
-                    .copied()
-                    .filter(|p| match p.kind().skip_binder() {
+                    .cloned()
+                    .filter(|p| match p.kind_skip_binder() {
                         ClauseKind::Trait(it) => is_self_or_assoc(it.self_ty()),
-                        ClauseKind::TypeOutlives(it) => is_self_or_assoc(it.0.r()),
+                        ClauseKind::TypeOutlives(it) => is_self_or_assoc(it.0.clone()),
                         ClauseKind::Projection(it) => is_self_or_assoc(it.self_ty()),
                         ClauseKind::HostEffect(it) => is_self_or_assoc(it.self_ty()),
                         // FIXME: Not sure is this correct to allow other clauses but we might replace
@@ -1682,7 +1438,7 @@ impl<'db> Interner for DbInterner<'db> {
                         // "lower at once and then filter" implementation.
                         _ => true,
                     })
-                    .map(|p| (p.o(), Span::dummy()))
+                    .map(|p| (p.clone(), Span::dummy()))
             },
         )
     }
@@ -1696,7 +1452,7 @@ impl<'db> Interner for DbInterner<'db> {
             let clause: Clause<'_> = trait_ref.upcast(self);
             elaborate(self, [clause]).filter(|clause| {
                 matches!(
-                    clause.kind().skip_binder(),
+                    clause.kind_skip_binder(),
                     ClauseKind::TypeOutlives(_) | ClauseKind::RegionOutlives(_)
                 )
             })
@@ -1781,6 +1537,9 @@ impl<'db> Interner for DbInterner<'db> {
             SolverTraitLangItem::BikeshedGuaranteedNoDrop => {
                 unimplemented!()
             }
+            SolverTraitLangItem::TrivialClone => {
+                unimplemented!()
+            }
         };
         lang_item
             .resolve_trait(self.db(), self.krate.expect("Must have self.krate"))
@@ -1852,6 +1611,7 @@ impl<'db> Interner for DbInterner<'db> {
                 AsyncIterator,
                 BikeshedGuaranteedNoDrop,
                 FusedIterator,
+                TrivialClone,
             }
 
             Sized,
@@ -1904,7 +1664,7 @@ impl<'db> Interner for DbInterner<'db> {
     fn for_each_relevant_impl(
         self,
         trait_def_id: Self::TraitId,
-        self_ty: TyRef<'_, 'db>,
+        self_ty: Ty<'db>,
         mut f: impl FnMut(Self::ImplId),
     ) {
         let krate = self.krate.expect("trait solving requires setting `DbInterner::krate`");
@@ -2154,7 +1914,7 @@ impl<'db> Interner for DbInterner<'db> {
         let def = AdtDef::new(id.0, self);
         let num_params = self.generics_of(id.into()).count();
 
-        let maybe_unsizing_param_idx = |arg: GenericArgRef<'_, 'db>| match arg.kind() {
+        let maybe_unsizing_param_idx = |arg: GenericArg<'db>| match arg.into_kind() {
             GenericArgKind::Type(ty) => match ty.kind() {
                 rustc_type_ir::TyKind::Param(p) => Some(p.index),
                 _ => None,
@@ -2175,7 +1935,7 @@ impl<'db> Interner for DbInterner<'db> {
 
         let field_types = self.db().field_types(variant.id());
         let mut unsizing_params = DenseBitSet::new_empty(num_params);
-        let ty = field_types[tail_field.0].map_bound_ref(|it| it.r());
+        let ty = field_types[tail_field.0].clone();
         for arg in ty.instantiate_identity().walk() {
             if let Some(i) = maybe_unsizing_param_idx(arg) {
                 unsizing_params.insert(i);
@@ -2185,8 +1945,7 @@ impl<'db> Interner for DbInterner<'db> {
         // Ensure none of the other fields mention the parameters used
         // in unsizing.
         for field in prefix_fields {
-            for arg in field_types[field.0].map_bound_ref(|it| it.r()).instantiate_identity().walk()
-            {
+            for arg in field_types[field.0].clone().instantiate_identity().walk() {
                 if let Some(i) = maybe_unsizing_param_idx(arg) {
                     unsizing_params.remove(i);
                 }

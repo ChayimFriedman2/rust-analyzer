@@ -78,7 +78,7 @@ impl<'db> TypeFolder<DbInterner<'db>> for ReplaceInferWithError<'db> {
             return t;
         }
 
-        if t.r().is_infer() { Ty::new_error() } else { t.super_fold_with(self) }
+        if t.is_infer() { Ty::new_error() } else { t.super_fold_with(self) }
     }
 
     fn fold_const(&mut self, c: Const<'db>) -> Const<'db> {
@@ -86,10 +86,10 @@ impl<'db> TypeFolder<DbInterner<'db>> for ReplaceInferWithError<'db> {
             return c;
         }
 
-        if c.r().is_ct_infer() { Const::new_error() } else { c.super_fold_with(self) }
+        if c.is_ct_infer() { Const::new_error() } else { c.super_fold_with(self) }
     }
 
     fn fold_region(&mut self, r: Region<'db>) -> Region<'db> {
-        if r.r().is_var() { Region::new_error() } else { r }
+        if r.is_var() { Region::new_error() } else { r }
     }
 }

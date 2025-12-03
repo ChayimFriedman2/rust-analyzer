@@ -12,7 +12,6 @@ use rustc_type_ir::{
     InferTy::{self, FloatVar, IntVar, TyVar},
     RegionKind, TyVid, TypeFlags, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitableExt,
     UniverseIndex,
-    inherent::SliceLike,
 };
 use smallvec::SmallVec;
 use tracing::debug;
@@ -561,7 +560,6 @@ impl<'cx, 'db> Canonicalizer<'cx, 'db> {
             CanonicalVars::new_from_smallvec(canonicalizer.universe_canonicalized_variables());
 
         let max_universe = canonical_variables
-            .r()
             .iter()
             .map(|cvar| cvar.universe())
             .max()

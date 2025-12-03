@@ -2,7 +2,7 @@ use hir_def::TraitId;
 use rustc_type_ir::{TypeFoldable, Upcast, Variance};
 
 use crate::next_solver::{
-    Const, DbInterner, ParamEnv, ParamEnvRef, Term, TraitRef, Ty, TypeError,
+    Const, DbInterner, ParamEnv, Term, TraitRef, Ty, TypeError,
     fulfill::{FulfillmentCtxt, NextSolverError},
     infer::{
         InferCtxt, InferOk,
@@ -64,7 +64,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn eq<T: ToTrace<'db>>(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         expected: T,
         actual: T,
     ) -> Result<(), TypeError<'db>> {
@@ -78,7 +78,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn sub<T: ToTrace<'db>>(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         expected: T,
         actual: T,
     ) -> Result<(), TypeError<'db>> {
@@ -91,7 +91,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn relate<T: ToTrace<'db>>(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         variance: Variance,
         expected: T,
         actual: T,
@@ -106,7 +106,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn sup<T: ToTrace<'db>>(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         expected: T,
         actual: T,
     ) -> Result<(), TypeError<'db>> {
@@ -120,7 +120,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn lub<T: ToTrace<'db>>(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         expected: T,
         actual: T,
     ) -> Result<T::RelateResult, TypeError<'db>> {
@@ -155,7 +155,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn deeply_normalize<T: TypeFoldable<DbInterner<'db>>>(
         &self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         value: T,
     ) -> Result<T, Vec<NextSolverError<'db>>> {
         self.infcx.at(cause, param_env).deeply_normalize(value)
@@ -164,7 +164,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn structurally_normalize_ty(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         value: Ty<'db>,
     ) -> Result<Ty<'db>, Vec<NextSolverError<'db>>> {
         self.infcx.at(cause, param_env).structurally_normalize_ty(value, &mut self.engine)
@@ -173,7 +173,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn structurally_normalize_const(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         value: Const<'db>,
     ) -> Result<Const<'db>, Vec<NextSolverError<'db>>> {
         self.infcx.at(cause, param_env).structurally_normalize_const(value, &mut self.engine)
@@ -182,7 +182,7 @@ impl<'a, 'db> ObligationCtxt<'a, 'db> {
     pub fn structurally_normalize_term(
         &mut self,
         cause: &ObligationCause,
-        param_env: ParamEnvRef<'_, 'db>,
+        param_env: &ParamEnv<'db>,
         value: Term<'db>,
     ) -> Result<Term<'db>, Vec<NextSolverError<'db>>> {
         self.infcx.at(cause, param_env).structurally_normalize_term(value, &mut self.engine)
