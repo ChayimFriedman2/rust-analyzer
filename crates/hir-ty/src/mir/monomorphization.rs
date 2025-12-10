@@ -222,8 +222,8 @@ impl<'db> Filler<'db> {
     }
 }
 
-pub fn monomorphized_mir_body_query<'db>(
-    db: &'db dyn HirDatabase,
+pub fn monomorphized_mir_body_query(
+    db: &dyn HirDatabase,
     owner: DefWithBodyId,
     subst: StoredGenericArgs,
     trait_env: StoredParamEnvAndCrate,
@@ -235,8 +235,8 @@ pub fn monomorphized_mir_body_query<'db>(
     Ok(Arc::new(body))
 }
 
-pub(crate) fn monomorphized_mir_body_cycle_result<'db>(
-    _db: &'db dyn HirDatabase,
+pub(crate) fn monomorphized_mir_body_cycle_result(
+    _db: &dyn HirDatabase,
     _: DefWithBodyId,
     _: StoredGenericArgs,
     _: StoredParamEnvAndCrate,
@@ -244,8 +244,8 @@ pub(crate) fn monomorphized_mir_body_cycle_result<'db>(
     Err(MirLowerError::Loop)
 }
 
-pub fn monomorphized_mir_body_for_closure_query<'db>(
-    db: &'db dyn HirDatabase,
+pub fn monomorphized_mir_body_for_closure_query(
+    db: &dyn HirDatabase,
     closure: InternedClosureId,
     subst: StoredGenericArgs,
     trait_env: StoredParamEnvAndCrate,

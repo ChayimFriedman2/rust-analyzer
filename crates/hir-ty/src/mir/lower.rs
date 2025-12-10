@@ -1529,7 +1529,7 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         subst: GenericArgs<'db>,
         const_id: GeneralConstId,
     ) -> Result<'db, Operand> {
-        let konst = if subst.len() != 0 {
+        let konst = if !subst.is_empty() {
             // We can't evaluate constant with substitution now, as generics are not monomorphized in lowering.
             Const::new_unevaluated(
                 self.interner(),

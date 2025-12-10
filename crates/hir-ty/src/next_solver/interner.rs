@@ -296,12 +296,10 @@ macro_rules! impl_stored_interned {
 pub(crate) use impl_stored_interned;
 
 pub trait WorldExposer {
-    #[must_use]
     fn on_interned<T: intern::Internable>(
         &mut self,
         interned: InternedRef<'_, T>,
     ) -> ControlFlow<()>;
-    #[must_use]
     fn on_interned_slice<T: intern::SliceInternable>(
         &mut self,
         interned: InternedSliceRef<'_, T>,

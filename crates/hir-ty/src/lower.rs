@@ -1269,7 +1269,7 @@ pub(crate) fn ty_query<'db>(db: &'db dyn HirDatabase, def: TyDefId) -> EarlyBind
 
 /// Build the declared type of a function. This should not need to look at the
 /// function body.
-fn type_for_fn<'db>(db: &'db dyn HirDatabase, def: FunctionId) -> StoredEarlyBinder<StoredTy> {
+fn type_for_fn(db: &dyn HirDatabase, def: FunctionId) -> StoredEarlyBinder<StoredTy> {
     let interner = DbInterner::new_no_crate(db);
     StoredEarlyBinder::bind(
         Ty::new_fn_def(
@@ -1282,7 +1282,7 @@ fn type_for_fn<'db>(db: &'db dyn HirDatabase, def: FunctionId) -> StoredEarlyBin
 }
 
 /// Build the declared type of a const.
-fn type_for_const<'db>(db: &'db dyn HirDatabase, def: ConstId) -> StoredEarlyBinder<StoredTy> {
+fn type_for_const(db: &dyn HirDatabase, def: ConstId) -> StoredEarlyBinder<StoredTy> {
     let resolver = def.resolver(db);
     let data = db.const_signature(def);
     let parent = def.loc(db).container;
@@ -1298,7 +1298,7 @@ fn type_for_const<'db>(db: &'db dyn HirDatabase, def: ConstId) -> StoredEarlyBin
 }
 
 /// Build the declared type of a static.
-fn type_for_static<'db>(db: &'db dyn HirDatabase, def: StaticId) -> StoredEarlyBinder<StoredTy> {
+fn type_for_static(db: &dyn HirDatabase, def: StaticId) -> StoredEarlyBinder<StoredTy> {
     let resolver = def.resolver(db);
     let data = db.static_signature(def);
     let mut ctx = TyLoweringContext::new(
@@ -1313,8 +1313,8 @@ fn type_for_static<'db>(db: &'db dyn HirDatabase, def: StaticId) -> StoredEarlyB
 }
 
 /// Build the type of a tuple struct constructor.
-fn type_for_struct_constructor<'db>(
-    db: &'db dyn HirDatabase,
+fn type_for_struct_constructor(
+    db: &dyn HirDatabase,
     def: StructId,
 ) -> Option<StoredEarlyBinder<StoredTy>> {
     let struct_data = def.fields(db);
@@ -1336,8 +1336,8 @@ fn type_for_struct_constructor<'db>(
 }
 
 /// Build the type of a tuple enum variant constructor.
-fn type_for_enum_variant_constructor<'db>(
-    db: &'db dyn HirDatabase,
+fn type_for_enum_variant_constructor(
+    db: &dyn HirDatabase,
     def: EnumVariantId,
 ) -> Option<StoredEarlyBinder<StoredTy>> {
     let struct_data = def.fields(db);
@@ -1420,8 +1420,8 @@ pub(crate) fn type_for_type_alias_with_diagnostics<'db>(
         (inner, diags)
     }
 
-    pub(crate) fn type_for_type_alias_with_diagnostics_cycle_result<'db>(
-        db: &'db dyn HirDatabase,
+    pub(crate) fn type_for_type_alias_with_diagnostics_cycle_result(
+        db: &dyn HirDatabase,
         _adt: TypeAliasId,
     ) -> (StoredEarlyBinder<StoredTy>, Diagnostics) {
         (
@@ -1520,8 +1520,8 @@ pub(crate) fn const_param_ty_with_diagnostics<'db>(
         (ty.store(), create_diagnostics(ctx.diagnostics))
     }
 
-    pub(crate) fn const_param_ty_with_diagnostics_cycle_result<'db>(
-        db: &'db dyn HirDatabase,
+    pub(crate) fn const_param_ty_with_diagnostics_cycle_result(
+        db: &dyn HirDatabase,
         _: (),
         _def: ConstParamId,
     ) -> (StoredTy, Diagnostics) {
@@ -1530,10 +1530,10 @@ pub(crate) fn const_param_ty_with_diagnostics<'db>(
     }
 }
 
-pub(crate) fn field_types_query<'db>(
-    db: &'db dyn HirDatabase,
+pub(crate) fn field_types_query(
+    db: &dyn HirDatabase,
     variant_id: VariantId,
-) -> &'db ArenaMap<LocalFieldId, StoredEarlyBinder<StoredTy>> {
+) -> &ArenaMap<LocalFieldId, StoredEarlyBinder<StoredTy>> {
     &db.field_types_with_diagnostics(variant_id).0
 }
 
@@ -1688,8 +1688,8 @@ pub(crate) fn generic_predicates_for_param<'db>(
     StoredEarlyBinder::bind(Clauses::new_from_slice(&predicates).store())
 }
 
-pub(crate) fn generic_predicates_for_param_cycle_result<'db>(
-    db: &'db dyn HirDatabase,
+pub(crate) fn generic_predicates_for_param_cycle_result(
+    db: &dyn HirDatabase,
     _def: GenericDefId,
     _param_id: TypeOrConstParamId,
     _assoc_name: Option<Name>,
@@ -1785,7 +1785,7 @@ impl<'db> GenericPredicates {
 
 impl GenericPredicates {
     #[inline]
-    pub fn query<'db>(db: &'db dyn HirDatabase, def: GenericDefId) -> &'db GenericPredicates {
+    pub fn query(db: &dyn HirDatabase, def: GenericDefId) -> &GenericPredicates {
         &Self::query_with_diagnostics(db, def).0
     }
 
@@ -1871,8 +1871,8 @@ pub(crate) enum PredicateFilter {
 /// Resolve the where clause(s) of an item with generics,
 /// with a given filter
 #[tracing::instrument(skip(db, filter), ret)]
-pub(crate) fn generic_predicates_filtered_by<'db, F>(
-    db: &'db dyn HirDatabase,
+pub(crate) fn generic_predicates_filtered_by<F>(
+    db: &dyn HirDatabase,
     def: GenericDefId,
     predicate_filter: PredicateFilter,
     filter: F,
@@ -2213,10 +2213,7 @@ pub(crate) fn callable_item_signature<'db>(
     }
 }
 
-fn fn_sig_for_fn<'db>(
-    db: &'db dyn HirDatabase,
-    def: FunctionId,
-) -> StoredEarlyBinder<StoredPolyFnSig> {
+fn fn_sig_for_fn(db: &dyn HirDatabase, def: FunctionId) -> StoredEarlyBinder<StoredPolyFnSig> {
     let data = db.function_signature(def);
     let resolver = def.resolver(db);
     let interner = DbInterner::new_no_crate(db);
@@ -2254,15 +2251,15 @@ fn fn_sig_for_fn<'db>(
     })))
 }
 
-fn type_for_adt<'db>(db: &'db dyn HirDatabase, adt: AdtId) -> StoredEarlyBinder<StoredTy> {
+fn type_for_adt(db: &dyn HirDatabase, adt: AdtId) -> StoredEarlyBinder<StoredTy> {
     let interner = DbInterner::new_no_crate(db);
     let args = GenericArgs::identity_for_item(interner, adt.into());
     let ty = Ty::new_adt(interner, adt, args);
     StoredEarlyBinder::bind(ty.store())
 }
 
-fn fn_sig_for_struct_constructor<'db>(
-    db: &'db dyn HirDatabase,
+fn fn_sig_for_struct_constructor(
+    db: &dyn HirDatabase,
     def: StructId,
 ) -> StoredEarlyBinder<StoredPolyFnSig> {
     let field_tys = db.field_types(def.into());
@@ -2279,8 +2276,8 @@ fn fn_sig_for_struct_constructor<'db>(
     })))
 }
 
-fn fn_sig_for_enum_variant_constructor<'db>(
-    db: &'db dyn HirDatabase,
+fn fn_sig_for_enum_variant_constructor(
+    db: &dyn HirDatabase,
     def: EnumVariantId,
 ) -> StoredEarlyBinder<StoredPolyFnSig> {
     let field_tys = db.field_types(def.into());

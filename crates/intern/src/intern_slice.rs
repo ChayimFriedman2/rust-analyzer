@@ -244,15 +244,14 @@ impl<'a, T: SliceInternable> InternedSliceRef<'a, T> {
     }
 
     #[inline]
-    pub unsafe fn assume_owned(self) -> InternedSlice<T> {
-        InternedSlice { arc: ManuallyDrop::into_inner(self.arc()) }
-    }
-
-    #[inline]
     pub fn get(self) -> &'a Pointee<T> {
         unsafe { &*ptr::from_ref::<Pointee<T>>(&*self.arc()) }
     }
 
+    /// # Safety
+    ///
+    /// You have to make sure the data is not referenced after the refcount reaches zero; beware the interning
+    /// map also keeps a reference to the value.
     #[inline]
     pub unsafe fn decrement_refcount(self) {
         drop(ManuallyDrop::into_inner(self.arc()));

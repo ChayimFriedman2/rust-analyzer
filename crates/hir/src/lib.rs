@@ -5849,7 +5849,7 @@ impl<'db> TypeNs<'db> {
     pub fn impls_trait(&self, infcx: InferCtxt<'db>, trait_: Trait, args: &[TypeNs<'db>]) -> bool {
         let args = GenericArgs::new_from_iter(
             infcx.interner,
-            [self.ty].into_iter().chain(args.iter().map(|t| t.ty)).map(|t| GenericArg::from(t)),
+            [self.ty].into_iter().chain(args.iter().map(|t| t.ty)).map(GenericArg::from),
         );
         let trait_ref = hir_ty::next_solver::TraitRef::new(infcx.interner, trait_.id.into(), args);
 

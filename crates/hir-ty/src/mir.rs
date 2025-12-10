@@ -305,7 +305,7 @@ impl ProjectionId {
         self == ProjectionId::EMPTY
     }
 
-    pub fn lookup<'a>(self, store: &'a ProjectionStore) -> &'a [PlaceElem] {
+    pub fn lookup(self, store: &ProjectionStore) -> &[PlaceElem] {
         store.id_to_proj.get(&self).unwrap()
     }
 

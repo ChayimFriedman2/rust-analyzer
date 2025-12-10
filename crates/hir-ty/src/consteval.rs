@@ -182,8 +182,8 @@ pub fn try_const_isize<'db>(db: &'db dyn HirDatabase, c: &Const<'db>) -> Option<
     }
 }
 
-pub(crate) fn const_eval_discriminant_variant<'db>(
-    db: &'db dyn HirDatabase,
+pub(crate) fn const_eval_discriminant_variant(
+    db: &dyn HirDatabase,
     variant_id: EnumVariantId,
 ) -> Result<i128, ConstEvalError> {
     let interner = DbInterner::new_no_crate(db);
@@ -258,8 +258,8 @@ pub(crate) fn eval_to_const<'db>(expr: ExprId, ctx: &mut InferenceContext<'_, 'd
     Const::error(ctx.interner())
 }
 
-pub(crate) fn const_eval_discriminant_cycle_result<'db>(
-    _: &'db dyn HirDatabase,
+pub(crate) fn const_eval_discriminant_cycle_result(
+    _: &dyn HirDatabase,
     _: EnumVariantId,
 ) -> Result<i128, ConstEvalError> {
     Err(ConstEvalError::MirLowerError(MirLowerError::Loop))
@@ -293,8 +293,8 @@ pub(crate) fn const_eval<'db>(
         Ok(c.store())
     }
 
-    pub(crate) fn const_eval_cycle_result<'db>(
-        _: &'db dyn HirDatabase,
+    pub(crate) fn const_eval_cycle_result(
+        _: &dyn HirDatabase,
         _: ConstId,
         _: StoredGenericArgs,
         _: Option<StoredParamEnvAndCrate>,
@@ -331,8 +331,8 @@ pub(crate) fn const_eval_static<'db>(
         Ok(c.store())
     }
 
-    pub(crate) fn const_eval_static_cycle_result<'db>(
-        _: &'db dyn HirDatabase,
+    pub(crate) fn const_eval_static_cycle_result(
+        _: &dyn HirDatabase,
         _: StaticId,
     ) -> Result<StoredConst, ConstEvalError> {
         Err(ConstEvalError::MirLowerError(MirLowerError::Loop))

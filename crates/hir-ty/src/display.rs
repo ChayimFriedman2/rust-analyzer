@@ -900,7 +900,7 @@ fn render_const_scalar_inner<'db>(
                     render_variant_after_name(
                         s.fields(f.db),
                         f,
-                        &field_types,
+                        field_types,
                         f.db.trait_environment(def.into()),
                         &layout,
                         args,
@@ -932,7 +932,7 @@ fn render_const_scalar_inner<'db>(
                     render_variant_after_name(
                         var_id.fields(f.db),
                         f,
-                        &field_types,
+                        field_types,
                         f.db.trait_environment(def.into()),
                         var_layout,
                         args,
@@ -1223,7 +1223,7 @@ impl<'db> HirDisplay<'db> for Ty<'db> {
                 };
                 f.end_location_link();
 
-                if args.len() > 0 {
+                if !args.is_empty() {
                     let generic_def_id = GenericDefId::from_callable(db, def);
                     let generics = generics(db, generic_def_id);
                     let (parent_len, self_param, type_, const_, impl_, lifetime) =

@@ -97,8 +97,8 @@ enum UnsafeDiagnostic {
     DeprecatedSafe2024 { node: ExprId, inside_unsafe_block: InsideUnsafeBlock },
 }
 
-pub fn unsafe_operations_for_body<'db>(
-    db: &'db dyn HirDatabase,
+pub fn unsafe_operations_for_body(
+    db: &dyn HirDatabase,
     infer: &InferenceResult,
     def: DefWithBodyId,
     body: &Body,
@@ -116,8 +116,8 @@ pub fn unsafe_operations_for_body<'db>(
     }
 }
 
-pub fn unsafe_operations<'db>(
-    db: &'db dyn HirDatabase,
+pub fn unsafe_operations(
+    db: &dyn HirDatabase,
     infer: &InferenceResult,
     def: DefWithBodyId,
     body: &Body,

@@ -72,8 +72,8 @@ pub(crate) fn opaque_types_defined_by(
 
     // FIXME: Collect opaques from `#[define_opaque]`.
 
-    fn extend_with_opaques<'db>(
-        db: &'db dyn HirDatabase,
+    fn extend_with_opaques(
+        db: &dyn HirDatabase,
         opaques: &Option<Box<StoredEarlyBinder<ImplTraits>>>,
         mut make_impl_trait: impl FnMut(ImplTraitIdx) -> ImplTraitId,
         result: &mut Vec<SolverDefId>,

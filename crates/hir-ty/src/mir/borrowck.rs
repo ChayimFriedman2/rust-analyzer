@@ -64,13 +64,13 @@ pub struct BorrowckResult {
     pub borrow_regions: Vec<BorrowRegion>,
 }
 
-fn all_mir_bodies<'db>(
-    db: &'db dyn HirDatabase,
+fn all_mir_bodies(
+    db: &dyn HirDatabase,
     def: DefWithBodyId,
     mut cb: impl FnMut(Arc<MirBody>),
 ) -> Result<(), MirLowerError> {
-    fn for_closure<'db>(
-        db: &'db dyn HirDatabase,
+    fn for_closure(
+        db: &dyn HirDatabase,
         c: InternedClosureId,
         cb: &mut impl FnMut(Arc<MirBody>),
     ) -> Result<(), MirLowerError> {
@@ -91,8 +91,8 @@ fn all_mir_bodies<'db>(
     }
 }
 
-pub fn borrowck_query<'db>(
-    db: &'db dyn HirDatabase,
+pub fn borrowck_query(
+    db: &dyn HirDatabase,
     def: DefWithBodyId,
 ) -> Result<Arc<[BorrowckResult]>, MirLowerError> {
     let _p = tracing::info_span!("borrowck_query").entered();
@@ -324,7 +324,7 @@ fn partially_moved<'db>(
     result
 }
 
-fn borrow_regions<'db>(db: &'db dyn HirDatabase, body: &MirBody) -> Vec<BorrowRegion> {
+fn borrow_regions(db: &dyn HirDatabase, body: &MirBody) -> Vec<BorrowRegion> {
     let mut borrows = FxHashMap::default();
     for (_, block) in body.basic_blocks.iter() {
         db.unwind_if_revision_cancelled();
@@ -410,14 +410,14 @@ fn place_case<'db>(
 /// Returns a map from basic blocks to the set of locals that might be ever initialized before
 /// the start of the block. Only `StorageDead` can remove something from this map, and we ignore
 /// `Uninit` and `drop` and similar after initialization.
-fn ever_initialized_map<'db>(
-    db: &'db dyn HirDatabase,
+fn ever_initialized_map(
+    db: &dyn HirDatabase,
     body: &MirBody,
 ) -> ArenaMap<BasicBlockId, ArenaMap<LocalId, bool>> {
     let mut result: ArenaMap<BasicBlockId, ArenaMap<LocalId, bool>> =
         body.basic_blocks.iter().map(|it| (it.0, ArenaMap::default())).collect();
-    fn dfs<'db>(
-        db: &'db dyn HirDatabase,
+    fn dfs(
+        db: &dyn HirDatabase,
         body: &MirBody,
         l: LocalId,
         stack: &mut Vec<BasicBlockId>,

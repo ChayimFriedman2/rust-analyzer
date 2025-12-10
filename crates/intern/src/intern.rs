@@ -91,6 +91,9 @@ impl<T: Internable> Interned<T> {
         storage.hasher().hash_one(obj)
     }
 
+    /// # Safety
+    ///
+    /// The pointer should originate from an `Interned` or an `InternedRef`.
     #[inline]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         Self { arc: unsafe { Arc::from_raw(ptr) } }
@@ -157,7 +160,7 @@ impl<T: Internable> Hash for Interned<T> {
 impl<T: Internable> AsRef<T> for Interned<T> {
     #[inline]
     fn as_ref(&self) -> &T {
-        &**self
+        self
     }
 }
 
@@ -166,7 +169,7 @@ impl<T: Internable> Deref for Interned<T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &*self.arc
+        &self.arc
     }
 }
 
@@ -201,6 +204,9 @@ impl<'a, T: Internable> InternedRef<'a, T> {
         self.arc.with_arc(|arc| Arc::as_ptr(arc))
     }
 
+    /// # Safety
+    ///
+    /// The pointer needs to originate from `Interned` or `InternedRef`.
     #[inline]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         Self { arc: unsafe { ArcBorrow::from_ptr(ptr) } }
@@ -216,6 +222,10 @@ impl<'a, T: Internable> InternedRef<'a, T> {
         self.arc.get()
     }
 
+    /// # Safety
+    ///
+    /// You have to make sure the data is not referenced after the refcount reaches zero; beware the interning
+    /// map also keeps a reference to the value.
     #[inline]
     pub unsafe fn decrement_refcount(self) {
         unsafe { drop(Arc::from_raw(self.as_raw())) }
@@ -258,7 +268,7 @@ impl<T> Deref for InternedRef<'_, T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &*self.arc
+        &self.arc
     }
 }
 

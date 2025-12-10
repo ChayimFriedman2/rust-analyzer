@@ -33,26 +33,23 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     // and `monomorphized_mir_body_for_closure` into `monomorphized_mir_body`
     #[salsa::invoke(crate::mir::mir_body_query)]
     #[salsa::cycle(cycle_result = crate::mir::mir_body_cycle_result)]
-    fn mir_body<'db>(&'db self, def: DefWithBodyId) -> Result<Arc<MirBody>, MirLowerError>;
+    fn mir_body(&self, def: DefWithBodyId) -> Result<Arc<MirBody>, MirLowerError>;
 
     #[salsa::invoke(crate::mir::mir_body_for_closure_query)]
-    fn mir_body_for_closure<'db>(
-        &'db self,
-        def: InternedClosureId,
-    ) -> Result<Arc<MirBody>, MirLowerError>;
+    fn mir_body_for_closure(&self, def: InternedClosureId) -> Result<Arc<MirBody>, MirLowerError>;
 
     #[salsa::invoke(crate::mir::monomorphized_mir_body_query)]
     #[salsa::cycle(cycle_result = crate::mir::monomorphized_mir_body_cycle_result)]
-    fn monomorphized_mir_body<'db>(
-        &'db self,
+    fn monomorphized_mir_body(
+        &self,
         def: DefWithBodyId,
         subst: StoredGenericArgs,
         env: StoredParamEnvAndCrate,
     ) -> Result<Arc<MirBody>, MirLowerError>;
 
     #[salsa::invoke(crate::mir::monomorphized_mir_body_for_closure_query)]
-    fn monomorphized_mir_body_for_closure<'db>(
-        &'db self,
+    fn monomorphized_mir_body_for_closure(
+        &self,
         def: InternedClosureId,
         subst: StoredGenericArgs,
         env: StoredParamEnvAndCrate,
@@ -60,8 +57,7 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
 
     #[salsa::invoke(crate::mir::borrowck_query)]
     #[salsa::lru(2024)]
-    fn borrowck<'db>(&'db self, def: DefWithBodyId)
-    -> Result<Arc<[BorrowckResult]>, MirLowerError>;
+    fn borrowck(&self, def: DefWithBodyId) -> Result<Arc<[BorrowckResult]>, MirLowerError>;
 
     #[salsa::invoke(crate::consteval::const_eval)]
     #[salsa::transparent]
@@ -78,7 +74,7 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
 
     #[salsa::invoke(crate::consteval::const_eval_discriminant_variant)]
     #[salsa::cycle(cycle_result = crate::consteval::const_eval_discriminant_cycle_result)]
-    fn const_eval_discriminant<'db>(&'db self, def: EnumVariantId) -> Result<i128, ConstEvalError>;
+    fn const_eval_discriminant(&self, def: EnumVariantId) -> Result<i128, ConstEvalError>;
 
     #[salsa::invoke(crate::method_resolution::lookup_impl_method_query)]
     #[salsa::transparent]
@@ -93,8 +89,8 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
 
     #[salsa::invoke(crate::layout::layout_of_adt_query)]
     #[salsa::cycle(cycle_result = crate::layout::layout_of_adt_cycle_result)]
-    fn layout_of_adt<'db>(
-        &'db self,
+    fn layout_of_adt(
+        &self,
         def: AdtId,
         args: StoredGenericArgs,
         trait_env: StoredParamEnvAndCrate,
@@ -102,8 +98,8 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
 
     #[salsa::invoke(crate::layout::layout_of_ty_query)]
     #[salsa::cycle(cycle_result = crate::layout::layout_of_ty_cycle_result)]
-    fn layout_of_ty<'db>(
-        &'db self,
+    fn layout_of_ty(
+        &self,
         ty: StoredTy,
         env: StoredParamEnvAndCrate,
     ) -> Result<Arc<Layout>, LayoutError>;
@@ -164,17 +160,14 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
 
     #[salsa::invoke(crate::lower::field_types_with_diagnostics_query)]
     #[salsa::transparent]
-    fn field_types_with_diagnostics<'db>(
-        &'db self,
+    fn field_types_with_diagnostics(
+        &self,
         var: VariantId,
-    ) -> &'db (ArenaMap<LocalFieldId, StoredEarlyBinder<StoredTy>>, Diagnostics);
+    ) -> &(ArenaMap<LocalFieldId, StoredEarlyBinder<StoredTy>>, Diagnostics);
 
     #[salsa::invoke(crate::lower::field_types_query)]
     #[salsa::transparent]
-    fn field_types<'db>(
-        &'db self,
-        var: VariantId,
-    ) -> &'db ArenaMap<LocalFieldId, StoredEarlyBinder<StoredTy>>;
+    fn field_types(&self, var: VariantId) -> &ArenaMap<LocalFieldId, StoredEarlyBinder<StoredTy>>;
 
     #[salsa::invoke(crate::lower::callable_item_signature)]
     #[salsa::transparent]
@@ -193,8 +186,8 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
 
     #[salsa::invoke(crate::lower::generic_defaults_with_diagnostics_query)]
     #[salsa::cycle(cycle_result = crate::lower::generic_defaults_with_diagnostics_cycle_result)]
-    fn generic_defaults_with_diagnostics<'db>(
-        &'db self,
+    fn generic_defaults_with_diagnostics(
+        &self,
         def: GenericDefId,
     ) -> (GenericDefaults, Diagnostics);
 
@@ -203,7 +196,7 @@ pub trait HirDatabase: DefDatabase + std::fmt::Debug {
     /// The binders of the returned defaults are only up to (not including) this parameter.
     #[salsa::invoke(crate::lower::generic_defaults_query)]
     #[salsa::transparent]
-    fn generic_defaults<'db>(&'db self, def: GenericDefId) -> GenericDefaults;
+    fn generic_defaults(&self, def: GenericDefId) -> GenericDefaults;
 
     // Interned IDs for solver integration
     #[salsa::interned]

@@ -154,8 +154,8 @@ fn layout_of_simd_ty<'db>(
     Ok(Arc::new(cx.calc.simd_type(e_ly, e_len, repr_packed)?))
 }
 
-pub fn layout_of_ty_query<'db>(
-    db: &'db dyn HirDatabase,
+pub fn layout_of_ty_query(
+    db: &dyn HirDatabase,
     ty: StoredTy,
     trait_env: StoredParamEnvAndCrate,
 ) -> Result<Arc<Layout>, LayoutError> {
@@ -254,7 +254,7 @@ pub fn layout_of_ty_query<'db>(
         ),
         TyKind::Tuple(tys) => {
             let kind =
-                if tys.len() == 0 { StructKind::AlwaysSized } else { StructKind::MaybeUnsized };
+                if tys.is_empty() { StructKind::AlwaysSized } else { StructKind::MaybeUnsized };
 
             let fields = tys
                 .iter()

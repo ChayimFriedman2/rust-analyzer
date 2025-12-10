@@ -114,6 +114,9 @@ impl GarbageCollector {
         self.storages.push(Box::new(InternedSliceStorage::<T>(PhantomData)));
     }
 
+    /// # Safety
+    ///
+    /// This cannot be called if there are some not-yet-recorded type values.
     pub unsafe fn collect(mut self) {
         let total_nodes = self.storages.iter().map(|storage| storage.len()).sum();
         self.alive = FxHashSet::with_capacity_and_hasher(total_nodes, FxBuildHasher);

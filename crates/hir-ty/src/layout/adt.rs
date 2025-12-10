@@ -19,8 +19,8 @@ use crate::{
     traits::StoredParamEnvAndCrate,
 };
 
-pub fn layout_of_adt_query<'db>(
-    db: &'db dyn HirDatabase,
+pub fn layout_of_adt_query(
+    db: &dyn HirDatabase,
     def: AdtId,
     args: StoredGenericArgs,
     trait_env: StoredParamEnvAndCrate,
@@ -97,8 +97,8 @@ pub fn layout_of_adt_query<'db>(
     Ok(Arc::new(result))
 }
 
-pub(crate) fn layout_of_adt_cycle_result<'db>(
-    _: &'db dyn HirDatabase,
+pub(crate) fn layout_of_adt_cycle_result(
+    _: &dyn HirDatabase,
     _def: AdtId,
     _args: StoredGenericArgs,
     _trait_env: StoredParamEnvAndCrate,

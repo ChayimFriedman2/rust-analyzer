@@ -294,7 +294,7 @@ impl<'db> Clauses<'db> {
         I: IntoIterator<Item = T>,
         T: CollectAndApply<Clause<'db>, Self>,
     {
-        CollectAndApply::collect_and_apply(args.into_iter(), |g| Self::new_from_slice(g))
+        CollectAndApply::collect_and_apply(args.into_iter(), Self::new_from_slice)
     }
 
     #[inline]
