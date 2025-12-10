@@ -25,6 +25,9 @@ decl_derive!(
     /// visited (and its type is not required to implement `TypeVisitable`).
     type_visitable_derive
 );
+decl_derive!(
+    [CustomizableTypeVisitable] => customizable_type_visitable_derive
+);
 
 fn type_visitable_derive(mut s: synstructure::Structure<'_>) -> proc_macro2::TokenStream {
     if let syn::Data::Union(_) = s.ast().data {
@@ -161,6 +164,35 @@ fn has_ignore_attr(attrs: &[syn::Attribute], name: &'static str, meta: &'static 
     });
 
     ignored
+}
+
+fn customizable_type_visitable_derive(
+    mut s: synstructure::Structure<'_>,
+) -> proc_macro2::TokenStream {
+    if let syn::Data::Union(_) = s.ast().data {
+        panic!("cannot derive on union")
+    }
+
+    s.add_bounds(synstructure::AddBounds::Fields);
+    s.bind_with(|_| synstructure::BindStyle::Move);
+    s.add_impl_generic(parse_quote!(__V: hir_ty::next_solver::interner::WorldExposer));
+    let body_visit = s.each(|bind| {
+        quote! {
+            ::rustc_type_ir::CustomizableTypeVisitable::<__V>::customizable_visit_with(#bind, __visitor);
+        }
+    });
+
+    s.bound_impl(
+        quote!(::rustc_type_ir::CustomizableTypeVisitable<__V>),
+        quote! {
+            fn customizable_visit_with(
+                &self,
+                __visitor: &mut __V
+            ) {
+                match self { #body_visit }
+            }
+        },
+    )
 }
 
 decl_derive!(
