@@ -138,6 +138,7 @@ fn match_attr_flags(attr_flags: &mut AttrFlags, attr: Meta) -> ControlFlow<Infal
             "lang" => attr_flags.insert(AttrFlags::LANG_ITEM),
             "path" => attr_flags.insert(AttrFlags::HAS_PATH),
             "unstable" => attr_flags.insert(AttrFlags::IS_UNSTABLE),
+            "ignore" => attr_flags.insert(AttrFlags::IS_IGNORE),
             "export_name" => {
                 if let Some(value) = value
                     && let Some(value) = ast::String::cast(value)
