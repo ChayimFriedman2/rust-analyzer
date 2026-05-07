@@ -6,13 +6,14 @@ use intern::{Interned, InternedRef, InternedSliceRef, impl_internable};
 use macros::GenericTypeVisitable;
 use rustc_abi::ReprOptions;
 use rustc_ast_ir::{FloatTy, IntTy, UintTy};
+use smallvec::SmallVec;
 pub use tls_cache::clear_tls_solver_cache;
 pub use tls_db::{attach_db, attach_db_allow_change, with_attached_db};
 
 use base_db::Crate;
 use hir_def::{
-    AdtId, CallableDefId, EnumId, HasModule, ItemContainerId, StructId, TraitId, TypeAliasId,
-    UnionId, VariantId,
+    AdtId, BlockId, CallableDefId, EnumId, HasModule, ItemContainerId, StructId, TraitId,
+    TypeAliasId, UnionId, VariantId,
     attrs::AttrFlags,
     expr_store::ExpressionStore,
     hir::{ClosureKind as HirClosureKind, CoroutineKind as HirCoroutineKind, ExprId},
@@ -32,7 +33,10 @@ use rustc_type_ir::{
     elaborate::elaborate,
     error::TypeError,
     fast_reject,
-    inherent::{self, Const as _, GenericsOf, IntoKind, SliceLike as _, Span as _, Ty as _},
+    inherent::{
+        self, Const as _, GenericArgs as _, GenericsOf, IntoKind, SliceLike as _, Span as _,
+        Ty as _,
+    },
     lang_items::{SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem},
     solve::{AdtDestructorKind, SizedTraitKind},
 };
@@ -1601,52 +1605,57 @@ impl<'db> Interner for DbInterner<'db> {
     fn for_each_relevant_impl(
         self,
         trait_def_id: Self::TraitId,
-        self_ty: Self::Ty,
+        args: Self::GenericArgs,
         mut f: impl FnMut(Self::ImplId),
     ) {
         let krate = self.krate.expect("trait solving requires setting `DbInterner::krate`");
-        let trait_block = trait_def_id.0.loc(self.db).container.block(self.db);
+        let db = self.db;
+
+        let crate_impls = TraitImpls::for_crate_and_deps(db, krate);
+
+        let mut block_impls = SmallVec::<[_; 5]>::new();
+        let successor_blocks = |block: Option<BlockId>| {
+            std::iter::successors(block, |block| block.loc(db).module.block(db))
+        };
+        for block in successor_blocks(trait_def_id.0.loc(db).container.block(db)) {
+            block_impls.push((block, TraitImpls::for_block(db, block)));
+        }
+        for arg in args.types() {
+            let Some(simp) =
+                fast_reject::simplify_type(self, arg, fast_reject::TreatParams::AsRigid)
+            else {
+                continue;
+            };
+            let Some(SolverDefId::AdtId(def_id)) = simp.def() else { continue };
+            let block = def_id.module(db).block(db);
+            for block in successor_blocks(block) {
+                if block_impls.iter().any(|&(existing_block, _)| existing_block == block) {
+                    // We must not pass duplicate impls to the solver.
+                    continue;
+                }
+                block_impls.push((block, TraitImpls::for_block(db, block)));
+            }
+        }
+
+        let all_impls = crate_impls
+            .iter()
+            .map(|impls| &**impls)
+            .chain(block_impls.iter().filter_map(|(_, impls)| impls.as_deref()));
+
         let mut consider_impls_for_simplified_type = |simp: SimplifiedType| {
-            let type_block = simp.def().and_then(|def_id| {
-                let module = match def_id {
-                    SolverDefId::AdtId(AdtId::StructId(id)) => id.module(self.db),
-                    SolverDefId::AdtId(AdtId::EnumId(id)) => id.module(self.db),
-                    SolverDefId::AdtId(AdtId::UnionId(id)) => id.module(self.db),
-                    SolverDefId::TraitId(id) => id.module(self.db),
-                    SolverDefId::TypeAliasId(id) => id.module(self.db),
-                    SolverDefId::ConstId(_)
-                    | SolverDefId::FunctionId(_)
-                    | SolverDefId::ImplId(_)
-                    | SolverDefId::BuiltinDeriveImplId(_)
-                    | SolverDefId::StaticId(_)
-                    | SolverDefId::InternedClosureId(_)
-                    | SolverDefId::InternedCoroutineId(_)
-                    | SolverDefId::InternedCoroutineClosureId(_)
-                    | SolverDefId::InternedOpaqueTyId(_)
-                    | SolverDefId::EnumVariantId(_)
-                    | SolverDefId::AnonConstId(_)
-                    | SolverDefId::Ctor(_) => return None,
-                };
-                module.block(self.db)
+            all_impls.clone().for_each(|impls| {
+                let (regular_impls, builtin_derive_impls) =
+                    impls.for_trait_and_self_ty(trait_def_id.0, &simp);
+                for &impl_ in regular_impls {
+                    f(impl_.into());
+                }
+                for &impl_ in builtin_derive_impls {
+                    f(impl_.into());
+                }
             });
-            TraitImpls::for_each_crate_and_block_trait_and_type(
-                self.db,
-                krate,
-                type_block,
-                trait_block,
-                &mut |impls| {
-                    let (regular_impls, builtin_derive_impls) =
-                        impls.for_trait_and_self_ty(trait_def_id.0, &simp);
-                    for &impl_ in regular_impls {
-                        f(impl_.into());
-                    }
-                    for &impl_ in builtin_derive_impls {
-                        f(impl_.into());
-                    }
-                },
-            );
         };
 
+        let self_ty = args.type_at(0);
         match self_ty.kind() {
             TyKind::Bool
             | TyKind::Char
@@ -1742,7 +1751,11 @@ impl<'db> Interner for DbInterner<'db> {
             | TyKind::Bound(_, _) => panic!("unexpected self type: {self_ty:?}"),
         }
 
-        self.for_each_blanket_impl(trait_def_id, f)
+        all_impls.for_each(|impls| {
+            for &impl_ in impls.blanket_impls(trait_def_id.0) {
+                f(impl_.into());
+            }
+        });
     }
 
     fn for_each_blanket_impl(self, trait_def_id: Self::TraitId, mut f: impl FnMut(Self::ImplId)) {

@@ -4,7 +4,7 @@ use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext};
 
 // Diagnostic: unimplemented-trait
 //
-// This diagnostic is triggered when rust-analyzer cannot infer some type.
+// This diagnostic is triggered when there is an unsatisfied trait bound.
 pub(crate) fn unimplemented_trait<'db>(
     ctx: &DiagnosticsContext<'_, 'db>,
     d: &hir::UnimplementedTrait<'db>,
@@ -66,6 +66,23 @@ fn foo() {
     spawn_in(async move || {});
 }
 
+        "#,
+        );
+    }
+
+    #[test]
+    fn generic_arg_in_block() {
+        check_diagnostics(
+            r#"
+fn require<K, T: HashEqLike<K>>() {}
+
+trait HashEqLike<T> {}
+
+fn foo() {
+    struct Key;
+    impl HashEqLike<Key> for () {}
+    require::<Key, ()>();
+}
         "#,
         );
     }

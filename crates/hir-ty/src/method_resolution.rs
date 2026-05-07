@@ -827,40 +827,4 @@ impl TraitImpls {
         blocks.filter_map(|block| Self::for_block(db, block).as_deref()).for_each(&mut *for_each);
         Self::for_crate_and_deps(db, krate).iter().map(|it| &**it).for_each(for_each);
     }
-
-    /// Like [`Self::for_each_crate_and_block()`], but takes in account two blocks, one for a trait and one for a self type.
-    pub fn for_each_crate_and_block_trait_and_type(
-        db: &dyn HirDatabase,
-        krate: Crate,
-        type_block: Option<BlockId>,
-        trait_block: Option<BlockId>,
-        for_each: &mut dyn FnMut(&TraitImpls),
-    ) {
-        let in_self_and_deps = TraitImpls::for_crate_and_deps(db, krate);
-        in_self_and_deps.iter().for_each(|impls| for_each(impls));
-
-        // We must not provide duplicate impls to the solver. Therefore we work with the following strategy:
-        // start from each block, and walk ancestors until you meet the other block. If they never meet,
-        // that means there can't be duplicate impls; if they meet, we stop the search of the deeper block.
-        // This breaks when they are equal (both will stop immediately), therefore we handle this case
-        // specifically.
-        let blocks_iter = |block: Option<BlockId>| {
-            std::iter::successors(block, |block| block.loc(db).module.block(db))
-        };
-        let for_each_block = |current_block: Option<BlockId>, other_block: Option<BlockId>| {
-            blocks_iter(current_block)
-                .take_while(move |&block| {
-                    other_block.is_none_or(|other_block| other_block != block)
-                })
-                .filter_map(move |block| TraitImpls::for_block(db, block).as_deref())
-        };
-        if trait_block == type_block {
-            blocks_iter(trait_block)
-                .filter_map(|block| TraitImpls::for_block(db, block).as_deref())
-                .for_each(for_each);
-        } else {
-            for_each_block(trait_block, type_block).for_each(&mut *for_each);
-            for_each_block(type_block, trait_block).for_each(for_each);
-        }
-    }
 }

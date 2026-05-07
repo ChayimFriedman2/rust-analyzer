@@ -804,8 +804,8 @@ dependencies = [
  "intern",
  "itertools 0.14.0",
  "la-arena 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "ra-ap-rustc_type_ir",
  "rustc-hash 2.1.1",
+ "rustc_type_ir",
  "serde_json",
  "smallvec",
  "span",
@@ -840,10 +840,10 @@ dependencies = [
  "itertools 0.14.0",
  "la-arena 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "query-group-macro",
- "ra-ap-rustc_abi",
- "ra-ap-rustc_parse_format",
  "rustc-hash 2.1.1",
+ "rustc_abi",
  "rustc_apfloat",
+ "rustc_parse_format",
  "salsa",
  "salsa-macros",
  "smallvec",
@@ -909,14 +909,14 @@ dependencies = [
  "petgraph",
  "project-model",
  "query-group-macro",
- "ra-ap-rustc_abi",
- "ra-ap-rustc_ast_ir",
- "ra-ap-rustc_index",
- "ra-ap-rustc_next_trait_solver",
- "ra-ap-rustc_pattern_analysis",
- "ra-ap-rustc_type_ir",
  "rustc-hash 2.1.1",
+ "rustc_abi",
  "rustc_apfloat",
+ "rustc_ast_ir",
+ "rustc_index",
+ "rustc_next_trait_solver",
+ "rustc_pattern_analysis",
+ "rustc_type_ir",
  "salsa",
  "salsa-macros",
  "serde",
@@ -1497,8 +1497,8 @@ dependencies = [
  "expect-test",
  "intern",
  "parser",
- "ra-ap-rustc_lexer",
  "rustc-hash 2.1.1",
+ "rustc_lexer",
  "salsa",
  "smallvec",
  "span",
@@ -1720,8 +1720,8 @@ dependencies = [
  "drop_bomb",
  "edition",
  "expect-test",
- "ra-ap-rustc_lexer",
  "rustc-literal-escaper 0.0.4",
+ "rustc_lexer",
  "stdx",
  "tracing",
  "winnow",
@@ -1887,7 +1887,7 @@ dependencies = [
  "object",
  "paths",
  "proc-macro-test",
- "ra-ap-rustc_lexer",
+ "rustc_lexer",
  "span",
  "temp-dir",
 ]
@@ -2066,133 +2066,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
-name = "ra-ap-rustc_abi"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f25a779e21ca3bba6795193b16508c8ab159f96ee4b07349893fd272065b525"
-dependencies = [
- "bitflags 2.9.4",
- "ra-ap-rustc_hashes",
- "ra-ap-rustc_index",
- "tracing",
-]
-
-[[package]]
-name = "ra-ap-rustc_ast_ir"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0218ca6c7b096466e85a497e6150c39be5b7bc36637fe62c1cd20370a9d9aac7"
-
-[[package]]
-name = "ra-ap-rustc_hashes"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6b410bacf1a7c8038f376fa6283003784d568ac012e35fc0aeefa9a5ab11a2e"
-dependencies = [
- "rustc-stable-hash",
-]
-
-[[package]]
-name = "ra-ap-rustc_index"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2271b55e4a5d0cc0cbe9bdf8056c07ac69e32919a48ce66722ed0526d62588c3"
-dependencies = [
- "ra-ap-rustc_index_macros",
-]
-
-[[package]]
-name = "ra-ap-rustc_index_macros"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6a89e743fb881a1e13544e3395a5ad9ad9280d56384256a121066119abd7af2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "ra-ap-rustc_lexer"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6d7c9cc05e0e6b72a214a455a106d9b22b0494164d50a657b17bd319534c218"
-dependencies = [
- "memchr",
- "unicode-ident",
- "unicode-properties",
-]
-
-[[package]]
-name = "ra-ap-rustc_next_trait_solver"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb3017c2f0ace80b8e6068b9c613aa56ed50e0374bf44a891447511f1264e40d"
-dependencies = [
- "derive-where",
- "ra-ap-rustc_index",
- "ra-ap-rustc_type_ir",
- "ra-ap-rustc_type_ir_macros",
- "tracing",
-]
-
-[[package]]
-name = "ra-ap-rustc_parse_format"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a737f844bdef8ac5ab54dadf2f34704b4d06beef9236d71080bb34db697220b"
-dependencies = [
- "ra-ap-rustc_lexer",
- "rustc-literal-escaper 0.0.7",
-]
-
-[[package]]
-name = "ra-ap-rustc_pattern_analysis"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6de3d4c7d6078cce3c40c55717b8b15002a80b9fa8849faea496a365324861b4"
-dependencies = [
- "ra-ap-rustc_index",
- "rustc-hash 2.1.1",
- "rustc_apfloat",
- "smallvec",
- "tracing",
-]
-
-[[package]]
-name = "ra-ap-rustc_type_ir"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c5d9a4d3e7bee7313599bc6d794037247ac0165f03857379cf4fc3097199e05"
-dependencies = [
- "arrayvec",
- "bitflags 2.9.4",
- "derive-where",
- "ena",
- "indexmap",
- "ra-ap-rustc_abi",
- "ra-ap-rustc_ast_ir",
- "ra-ap-rustc_index",
- "ra-ap-rustc_type_ir_macros",
- "rustc-hash 2.1.1",
- "smallvec",
- "thin-vec",
- "tracing",
-]
-
-[[package]]
-name = "ra-ap-rustc_type_ir_macros"
-version = "0.165.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "024598d1f54272acd83d28c121f8a2e82e216dd7be1e40158b66b2d12fa214c0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
- "synstructure",
-]
-
-[[package]]
 name = "rand"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2349,9 +2222,9 @@ dependencies = [
  "process-wrap",
  "profile",
  "project-model",
- "ra-ap-rustc_type_ir",
  "rayon",
  "rustc-hash 2.1.1",
+ "rustc_type_ir",
  "scip",
  "semver",
  "serde",
@@ -2416,6 +2289,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "781442f29170c5c93b7185ad559492601acdc71d5bb0706f5868094f45cfcd08"
 
 [[package]]
+name = "rustc_abi"
+version = "0.0.0"
+dependencies = [
+ "bitflags 2.9.4",
+ "rustc_hashes",
+ "rustc_index",
+ "tracing",
+]
+
+[[package]]
 name = "rustc_apfloat"
 version = "0.2.3+llvm-462a31f5a5ab"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2423,6 +2306,101 @@ checksum = "486c2179b4796f65bfe2ee33679acf0927ac83ecf583ad6c91c3b4570911b9ad"
 dependencies = [
  "bitflags 2.9.4",
  "smallvec",
+]
+
+[[package]]
+name = "rustc_ast_ir"
+version = "0.0.0"
+
+[[package]]
+name = "rustc_hashes"
+version = "0.0.0"
+dependencies = [
+ "rustc-stable-hash",
+]
+
+[[package]]
+name = "rustc_index"
+version = "0.0.0"
+dependencies = [
+ "rustc_index_macros",
+]
+
+[[package]]
+name = "rustc_index_macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "rustc_lexer"
+version = "0.0.0"
+dependencies = [
+ "memchr",
+ "unicode-ident",
+ "unicode-properties",
+]
+
+[[package]]
+name = "rustc_next_trait_solver"
+version = "0.0.0"
+dependencies = [
+ "derive-where",
+ "rustc_index",
+ "rustc_type_ir",
+ "rustc_type_ir_macros",
+ "tracing",
+]
+
+[[package]]
+name = "rustc_parse_format"
+version = "0.0.0"
+dependencies = [
+ "rustc-literal-escaper 0.0.7",
+ "rustc_lexer",
+]
+
+[[package]]
+name = "rustc_pattern_analysis"
+version = "0.0.0"
+dependencies = [
+ "rustc-hash 2.1.1",
+ "rustc_apfloat",
+ "rustc_index",
+ "smallvec",
+ "tracing",
+]
+
+[[package]]
+name = "rustc_type_ir"
+version = "0.0.0"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.9.4",
+ "derive-where",
+ "ena",
+ "indexmap",
+ "rustc-hash 2.1.1",
+ "rustc_abi",
+ "rustc_ast_ir",
+ "rustc_index",
+ "rustc_type_ir_macros",
+ "smallvec",
+ "thin-vec",
+ "tracing",
+]
+
+[[package]]
+name = "rustc_type_ir_macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
 ]
 
 [[package]]
@@ -3116,8 +3094,8 @@ dependencies = [
  "arrayvec",
  "indexmap",
  "intern",
- "ra-ap-rustc_lexer",
  "rustc-hash 2.1.1",
+ "rustc_lexer",
  "span",
  "stdx",
  "text-size 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
