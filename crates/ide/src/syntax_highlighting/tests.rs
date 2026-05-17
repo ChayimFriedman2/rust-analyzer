@@ -1584,3 +1584,23 @@ static STATIC: () = ();
         false,
     );
 }
+
+#[test]
+fn private_multi_namespace() {
+    check_highlighting(
+        r#"
+//- /bar.rs crate:bar deps:foo
+use foo::foo;
+
+//- /foo.rs crate:foo
+struct foo;
+
+#[macro_export]
+macro_rules! foo {
+    () => {};
+}
+    "#,
+        expect_file!["./test_data/private_multi_namespace.html"],
+        false,
+    );
+}

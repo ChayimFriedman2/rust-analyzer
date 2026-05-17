@@ -23,8 +23,9 @@ use hir_def::{
     hir::{BindingId, Expr, ExprId, ExprOrPatId, Pat, PatId, generics::GenericParams},
     lang_item::LangItems,
     nameres::MacroSubNs,
-    resolver::{Resolver, TypeNs, ValueNs, resolver_for_scope},
+    resolver::{ResolveValueResult, Resolver, TypeNs, ValueNs, resolver_for_scope},
     type_ref::{Mutability, TypeRefId},
+    visibility::Visibility,
 };
 use hir_expand::{
     HirFileId, InFile,
@@ -932,7 +933,7 @@ impl<'db> SourceAnalyzer<'db> {
         };
 
         let store_owner = self.resolver.expression_store_owner();
-        let res = resolve_hir_value_path(
+        let (res, _) = resolve_hir_value_path(
             db,
             &self.resolver,
             store_owner,
@@ -1522,7 +1523,8 @@ impl<'db> SourceAnalyzer<'db> {
                         Some(name.clone()),
                     )),
                     hygiene,
-                ),
+                )
+                .map(|(it, _)| it),
             )
         })
     }
@@ -1562,7 +1564,8 @@ impl<'db> SourceAnalyzer<'db> {
                         Some(name.clone()),
                     )),
                     hygiene,
-                ),
+                )
+                .map(|(it, _)| it),
             )
         }))
     }
@@ -1744,7 +1747,7 @@ pub(crate) fn resolve_hir_path_as_attr_macro(
 ) -> Option<Macro> {
     resolver
         .resolve_path_as_macro(db, path.mod_path()?, Some(MacroSubNs::Attr))
-        .map(|(it, _)| it)
+        .map(|it| it.def)
         .map(Into::into)
 }
 
@@ -1759,7 +1762,7 @@ fn resolve_hir_path_(
     resolve_per_ns: bool,
 ) -> PathResolutionPerNs {
     let types = || {
-        let (ty, unresolved) = match path.type_anchor() {
+        let (ty, unresolved, ty_is_visible) = match path.type_anchor() {
             Some(type_ref) => resolver.generic_def().and_then(|def| {
                 let generics = OnceCell::new();
                 let (_, res) = TyLoweringContext::new(
@@ -1772,19 +1775,20 @@ fn resolve_hir_path_(
                     LifetimeElisionKind::Infer,
                 )
                 .lower_ty_ext(type_ref);
-                res.map(|ty_ns| (ty_ns, path.segments().first()))
+                res.map(|ty_ns| (ty_ns, path.segments().first(), Visibility::Public))
             }),
             None => {
-                let (ty, remaining_idx, _) = resolver.resolve_path_in_type_ns(db, path)?;
+                let (ty, remaining_idx, _, _, vis) =
+                    resolver.resolve_path_in_type_ns_with_prefix_info(db, path)?;
                 match remaining_idx {
                     Some(remaining_idx) => {
                         if remaining_idx + 1 == path.segments().len() {
-                            Some((ty, path.segments().last()))
+                            Some((ty, path.segments().last(), vis))
                         } else {
                             None
                         }
                     }
-                    None => Some((ty, None)),
+                    None => Some((ty, None, vis)),
                 }
             }
         }?;
@@ -1795,7 +1799,10 @@ fn resolve_hir_path_(
             && let Some(type_alias_id) =
                 trait_id.trait_items(db).associated_type_by_name(unresolved.name)
         {
-            return Some(PathResolution::Def(ModuleDefId::from(type_alias_id).into()));
+            return Some((
+                PathResolution::Def(ModuleDefId::from(type_alias_id).into()),
+                ty_is_visible,
+            ));
         }
 
         let res = match ty {
@@ -1823,8 +1830,8 @@ fn resolve_hir_path_(
                 })
                 .map(TypeAlias::from)
                 .map(Into::into)
-                .map(PathResolution::Def),
-            None => Some(res),
+                .map(|def| (PathResolution::Def(def), ty_is_visible)),
+            None => Some((res, ty_is_visible)),
         }
     };
 
@@ -1834,39 +1841,65 @@ fn resolve_hir_path_(
     let items = || {
         resolver
             .resolve_module_path_in_items(db, path.mod_path()?)
-            .take_types()
-            .map(|it| PathResolution::Def(it.into()))
+            .take_types_full()
+            .map(|it| (PathResolution::Def(it.def.into()), it.vis))
     };
 
     let macros = || {
         resolver
             .resolve_path_as_macro(db, path.mod_path()?, None)
-            .map(|(def, _)| PathResolution::Def(ModuleDef::Macro(def.into())))
+            .map(|res| (PathResolution::Def(ModuleDef::Macro(res.def.into())), res.vis))
     };
 
     if resolve_per_ns {
-        PathResolutionPerNs {
-            type_ns: types().or_else(items),
-            value_ns: values(),
-            macro_ns: macros(),
+        let mut types_is_visible = false;
+        let mut values_is_visible = false;
+        let mut macros_is_visible = false;
+        let mut types = types().or_else(items).map(|(res, vis)| {
+            types_is_visible = resolver.is_visible(db, vis);
+            res
+        });
+        let mut values = values().map(|(res, vis)| {
+            values_is_visible = resolver.is_visible(db, vis);
+            res
+        });
+        let mut macros = macros().map(|(res, vis)| {
+            macros_is_visible = resolver.is_visible(db, vis);
+            res
+        });
+
+        // If there is a visible resolution and an invisible one, we only want to include the visible one. But if all are
+        // invisible, we want to include them all.
+        if types_is_visible || values_is_visible || macros_is_visible {
+            if !types_is_visible {
+                types = None;
+            }
+            if !values_is_visible {
+                values = None;
+            }
+            if !macros_is_visible {
+                macros = None;
+            }
         }
+
+        PathResolutionPerNs { type_ns: types, value_ns: values, macro_ns: macros }
     } else {
         let res = if prefer_value_ns {
             values()
-                .map(|value_ns| PathResolutionPerNs::new(None, Some(value_ns), None))
-                .unwrap_or_else(|| PathResolutionPerNs::new(types(), None, None))
+                .map(|(value_ns, _)| PathResolutionPerNs::new(None, Some(value_ns), None))
+                .unwrap_or_else(|| PathResolutionPerNs::new(types().map(|(it, _)| it), None, None))
         } else {
             types()
-                .map(|type_ns| PathResolutionPerNs::new(Some(type_ns), None, None))
-                .unwrap_or_else(|| PathResolutionPerNs::new(None, values(), None))
+                .map(|(type_ns, _)| PathResolutionPerNs::new(Some(type_ns), None, None))
+                .unwrap_or_else(|| PathResolutionPerNs::new(None, values().map(|(it, _)| it), None))
         };
 
         if res.any().is_some() {
             res
-        } else if let Some(type_ns) = items() {
+        } else if let Some((type_ns, _)) = items() {
             PathResolutionPerNs::new(Some(type_ns), None, None)
         } else {
-            PathResolutionPerNs::new(None, None, macros())
+            PathResolutionPerNs::new(None, None, macros().map(|(it, _)| it))
         }
     }
 }
@@ -1878,23 +1911,26 @@ fn resolve_hir_value_path(
     infer_body: Option<InferBodyId>,
     path: &Path,
     hygiene: HygieneId,
-) -> Option<PathResolution> {
-    resolver.resolve_path_in_value_ns_fully(db, path, hygiene).and_then(|val| {
-        let res = match val {
-            ValueNs::LocalBinding(binding_id) => {
-                let var = Local { parent: store_owner?, parent_infer: infer_body?, binding_id };
-                PathResolution::Local(var)
-            }
-            ValueNs::FunctionId(it) => PathResolution::Def(Function::from(it).into()),
-            ValueNs::ConstId(it) => PathResolution::Def(Const::from(it).into()),
-            ValueNs::StaticId(it) => PathResolution::Def(Static::from(it).into()),
-            ValueNs::StructId(it) => PathResolution::Def(Struct::from(it).into()),
-            ValueNs::EnumVariantId(it) => PathResolution::Def(EnumVariant::from(it).into()),
-            ValueNs::ImplSelf(impl_id) => PathResolution::SelfType(impl_id.into()),
-            ValueNs::GenericParam(id) => PathResolution::ConstParam(id.into()),
-        };
-        Some(res)
-    })
+) -> Option<(PathResolution, Visibility)> {
+    resolver.resolve_path_in_value_ns_with_prefix_info(db, path, hygiene).and_then(
+        |(val, _, vis)| {
+            let ResolveValueResult::ValueNs(val) = val else { return None };
+            let res = match val {
+                ValueNs::LocalBinding(binding_id) => {
+                    let var = Local { parent: store_owner?, parent_infer: infer_body?, binding_id };
+                    PathResolution::Local(var)
+                }
+                ValueNs::FunctionId(it) => PathResolution::Def(Function::from(it).into()),
+                ValueNs::ConstId(it) => PathResolution::Def(Const::from(it).into()),
+                ValueNs::StaticId(it) => PathResolution::Def(Static::from(it).into()),
+                ValueNs::StructId(it) => PathResolution::Def(Struct::from(it).into()),
+                ValueNs::EnumVariantId(it) => PathResolution::Def(EnumVariant::from(it).into()),
+                ValueNs::ImplSelf(impl_id) => PathResolution::SelfType(impl_id.into()),
+                ValueNs::GenericParam(id) => PathResolution::ConstParam(id.into()),
+            };
+            Some((res, vis))
+        },
+    )
 }
 
 /// Resolves a path where we know it is a qualifier of another path.

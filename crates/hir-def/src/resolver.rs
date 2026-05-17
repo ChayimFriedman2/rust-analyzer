@@ -34,7 +34,7 @@ use crate::{
     item_scope::{BUILTIN_SCOPE, BuiltinShadowMode, ImportOrExternCrate, ItemScope},
     lang_item::LangItemTarget,
     nameres::{DefMap, LocalDefMap, MacroSubNs, ResolvePathResultPrefixInfo, block_def_map},
-    per_ns::PerNs,
+    per_ns::{MacrosItem, PerNs},
     signatures::ImplSignature,
     src::HasSource,
     type_ref::LifetimeRef,
@@ -171,7 +171,9 @@ impl<'db> Resolver<'db> {
         path: &Path,
     ) -> Option<(TypeNs, Option<usize>, Option<ImportOrExternCrate>)> {
         self.resolve_path_in_type_ns_with_prefix_info(db, path).map(
-            |(resolution, remaining_segments, import, _)| (resolution, remaining_segments, import),
+            |(resolution, remaining_segments, import, _, _)| {
+                (resolution, remaining_segments, import)
+            },
         )
     }
 
@@ -179,8 +181,13 @@ impl<'db> Resolver<'db> {
         &self,
         db: &dyn DefDatabase,
         path: &Path,
-    ) -> Option<(TypeNs, Option<usize>, Option<ImportOrExternCrate>, ResolvePathResultPrefixInfo)>
-    {
+    ) -> Option<(
+        TypeNs,
+        Option<usize>,
+        Option<ImportOrExternCrate>,
+        ResolvePathResultPrefixInfo,
+        Visibility,
+    )> {
         let path = match path {
             Path::BarePath(mod_path) => mod_path,
             Path::Normal(it) => &it.mod_path,
@@ -202,6 +209,7 @@ impl<'db> Resolver<'db> {
                     seg.as_ref().map(|_| 1),
                     None,
                     ResolvePathResultPrefixInfo::default(),
+                    Visibility::Public,
                 ));
             }
         };
@@ -226,6 +234,7 @@ impl<'db> Resolver<'db> {
                                 remaining_idx(),
                                 None,
                                 ResolvePathResultPrefixInfo::default(),
+                                Visibility::Public,
                             ));
                         }
                     } else if let &GenericDefId::AdtId(adt) = def
@@ -236,6 +245,7 @@ impl<'db> Resolver<'db> {
                             remaining_idx(),
                             None,
                             ResolvePathResultPrefixInfo::default(),
+                            Visibility::Public,
                         ));
                     }
                     if let Some(id) = params.find_type_by_name(first_name, *def) {
@@ -244,6 +254,7 @@ impl<'db> Resolver<'db> {
                             remaining_idx(),
                             None,
                             ResolvePathResultPrefixInfo::default(),
+                            Visibility::Public,
                         ));
                     }
                 }
@@ -260,6 +271,7 @@ impl<'db> Resolver<'db> {
                                         remaining_idx(),
                                         None,
                                         ResolvePathResultPrefixInfo::default(),
+                                        Visibility::Public,
                                     )
                                 } else {
                                     res
@@ -319,7 +331,7 @@ impl<'db> Resolver<'db> {
         path: &Path,
         hygiene_id: HygieneId,
     ) -> Option<ResolveValueResult> {
-        self.resolve_path_in_value_ns_with_prefix_info(db, path, hygiene_id).map(|(it, _)| it)
+        self.resolve_path_in_value_ns_with_prefix_info(db, path, hygiene_id).map(|(it, _, _)| it)
     }
 
     pub fn resolve_path_in_value_ns_with_prefix_info(
@@ -327,7 +339,7 @@ impl<'db> Resolver<'db> {
         db: &dyn DefDatabase,
         path: &Path,
         mut hygiene_id: HygieneId,
-    ) -> Option<(ResolveValueResult, ResolvePathResultPrefixInfo)> {
+    ) -> Option<(ResolveValueResult, ResolvePathResultPrefixInfo, Visibility)> {
         let path = match path {
             Path::BarePath(mod_path) => mod_path,
             Path::Normal(it) => &it.mod_path,
@@ -346,6 +358,7 @@ impl<'db> Resolver<'db> {
                         | LangItemTarget::EnumId(_) => return None,
                     }),
                     ResolvePathResultPrefixInfo::default(),
+                    Visibility::Public,
                 ));
             }
             Path::LangItem(l, Some(_)) => {
@@ -365,6 +378,7 @@ impl<'db> Resolver<'db> {
                 return Some((
                     ResolveValueResult::Partial(type_ns, 0),
                     ResolvePathResultPrefixInfo::default(),
+                    Visibility::Public,
                 ));
             }
         };
@@ -390,6 +404,7 @@ impl<'db> Resolver<'db> {
                             return Some((
                                 ResolveValueResult::ValueNs(ValueNs::LocalBinding(e.binding())),
                                 ResolvePathResultPrefixInfo::default(),
+                                Visibility::Public,
                             ));
                         }
                     }
@@ -403,6 +418,7 @@ impl<'db> Resolver<'db> {
                             return Some((
                                 ResolveValueResult::ValueNs(ValueNs::ImplSelf(impl_)),
                                 ResolvePathResultPrefixInfo::default(),
+                                Visibility::Public,
                             ));
                         }
                         if let Some(id) = params.find_const_by_name(first_name, *def) {
@@ -410,6 +426,7 @@ impl<'db> Resolver<'db> {
                             return Some((
                                 ResolveValueResult::ValueNs(val),
                                 ResolvePathResultPrefixInfo::default(),
+                                Visibility::Public,
                             ));
                         }
                     }
@@ -430,6 +447,7 @@ impl<'db> Resolver<'db> {
                                 return Some((
                                     ResolveValueResult::Partial(TypeNs::SelfType(impl_), 1),
                                     ResolvePathResultPrefixInfo::default(),
+                                    Visibility::Public,
                                 ));
                             }
                         } else if let &GenericDefId::AdtId(adt) = def
@@ -439,6 +457,7 @@ impl<'db> Resolver<'db> {
                             return Some((
                                 ResolveValueResult::Partial(ty, 1),
                                 ResolvePathResultPrefixInfo::default(),
+                                Visibility::Public,
                             ));
                         }
                         if let Some(id) = params.find_type_by_name(first_name, *def) {
@@ -446,6 +465,7 @@ impl<'db> Resolver<'db> {
                             return Some((
                                 ResolveValueResult::Partial(ty, 1),
                                 ResolvePathResultPrefixInfo::default(),
+                                Visibility::Public,
                             ));
                         }
                     }
@@ -472,6 +492,7 @@ impl<'db> Resolver<'db> {
             return Some((
                 ResolveValueResult::Partial(TypeNs::BuiltinType(builtin), 1),
                 ResolvePathResultPrefixInfo::default(),
+                Visibility::Public,
             ));
         }
 
@@ -495,7 +516,7 @@ impl<'db> Resolver<'db> {
         db: &dyn DefDatabase,
         path: &ModPath,
         expected_macro_kind: Option<MacroSubNs>,
-    ) -> Option<(MacroId, Option<ImportOrExternCrate>)> {
+    ) -> Option<MacrosItem> {
         let (item_map, item_local_map, module) = self.item_scope_();
         item_map
             .resolve_path(
@@ -507,7 +528,7 @@ impl<'db> Resolver<'db> {
                 expected_macro_kind,
             )
             .0
-            .take_macros_import()
+            .take_macros_full()
     }
 
     pub fn resolve_path_as_macro_def(
@@ -516,7 +537,7 @@ impl<'db> Resolver<'db> {
         path: &ModPath,
         expected_macro_kind: Option<MacroSubNs>,
     ) -> Option<MacroDefId> {
-        self.resolve_path_as_macro(db, path, expected_macro_kind).map(|(it, _)| db.macro_def(it))
+        self.resolve_path_as_macro(db, path, expected_macro_kind).map(|it| db.macro_def(it.def))
     }
 
     pub fn resolve_lifetime(&self, lifetime: &LifetimeRef) -> Option<LifetimeNs> {
@@ -1145,7 +1166,7 @@ impl<'db> ModuleItemMap<'db> {
         &self,
         db: &'db dyn DefDatabase,
         path: &ModPath,
-    ) -> Option<(ResolveValueResult, ResolvePathResultPrefixInfo)> {
+    ) -> Option<(ResolveValueResult, ResolvePathResultPrefixInfo, Visibility)> {
         let (module_def, unresolved_idx, prefix_info) = self.def_map.resolve_path_locally(
             self.local_def_map,
             db,
@@ -1155,12 +1176,12 @@ impl<'db> ModuleItemMap<'db> {
         );
         match unresolved_idx {
             None => {
-                let value = to_value_ns(module_def, self.def_map)?;
-                Some((ResolveValueResult::ValueNs(value), prefix_info))
+                let (value, vis) = to_value_ns(module_def, self.def_map)?;
+                Some((ResolveValueResult::ValueNs(value), prefix_info, vis))
             }
             Some(unresolved_idx) => {
-                let def = module_def.take_types()?;
-                let ty = match def {
+                let res = module_def.take_types_full()?;
+                let ty = match res.def {
                     ModuleDefId::AdtId(it) => TypeNs::AdtId(it),
                     ModuleDefId::TraitId(it) => TypeNs::TraitId(it),
                     ModuleDefId::TypeAliasId(it) => TypeNs::TypeAliasId(it),
@@ -1173,7 +1194,7 @@ impl<'db> ModuleItemMap<'db> {
                     | ModuleDefId::MacroId(_)
                     | ModuleDefId::StaticId(_) => return None,
                 };
-                Some((ResolveValueResult::Partial(ty, unresolved_idx), prefix_info))
+                Some((ResolveValueResult::Partial(ty, unresolved_idx), prefix_info, res.vis))
             }
         }
     }
@@ -1182,8 +1203,13 @@ impl<'db> ModuleItemMap<'db> {
         &self,
         db: &dyn DefDatabase,
         path: &ModPath,
-    ) -> Option<(TypeNs, Option<usize>, Option<ImportOrExternCrate>, ResolvePathResultPrefixInfo)>
-    {
+    ) -> Option<(
+        TypeNs,
+        Option<usize>,
+        Option<ImportOrExternCrate>,
+        ResolvePathResultPrefixInfo,
+        Visibility,
+    )> {
         let (module_def, idx, prefix_info) = self.def_map.resolve_path_locally(
             self.local_def_map,
             db,
@@ -1191,17 +1217,22 @@ impl<'db> ModuleItemMap<'db> {
             path,
             BuiltinShadowMode::Other,
         );
-        let (res, import) = to_type_ns(module_def)?;
-        Some((res, idx, import, prefix_info))
+        let (res, import, vis) = to_type_ns(module_def)?;
+        Some((res, idx, import, prefix_info, vis))
     }
 }
 
-fn to_value_ns(per_ns: PerNs, def_map: &DefMap) -> Option<ValueNs> {
-    let def = per_ns.take_values().or_else(|| {
-        let Some(MacroId::ProcMacroId(proc_macro)) = per_ns.take_macros() else { return None };
+fn to_value_ns(per_ns: PerNs, def_map: &DefMap) -> Option<(ValueNs, Visibility)> {
+    let (def, vis) = per_ns.take_values_full().map(|res| (res.def, res.vis)).or_else(|| {
+        let Some(MacrosItem { def: MacroId::ProcMacroId(proc_macro), vis, .. }) =
+            per_ns.take_macros_full()
+        else {
+            return None;
+        };
         // If we cannot resolve to value ns, but we can resolve to a proc macro, and this is the crate
         // defining this proc macro - inside this crate, we should treat the macro as a function.
-        def_map.proc_macro_as_fn(proc_macro).map(ModuleDefId::FunctionId)
+        let def = ModuleDefId::FunctionId(def_map.proc_macro_as_fn(proc_macro)?);
+        Some((def, vis))
     })?;
     let res = match def {
         ModuleDefId::FunctionId(it) => ValueNs::FunctionId(it),
@@ -1217,10 +1248,10 @@ fn to_value_ns(per_ns: PerNs, def_map: &DefMap) -> Option<ValueNs> {
         | ModuleDefId::MacroId(_)
         | ModuleDefId::ModuleId(_) => return None,
     };
-    Some(res)
+    Some((res, vis))
 }
 
-fn to_type_ns(per_ns: PerNs) -> Option<(TypeNs, Option<ImportOrExternCrate>)> {
+fn to_type_ns(per_ns: PerNs) -> Option<(TypeNs, Option<ImportOrExternCrate>, Visibility)> {
     let def = per_ns.take_types_full()?;
     let res = match def.def {
         ModuleDefId::AdtId(it) => TypeNs::AdtId(it),
@@ -1238,7 +1269,7 @@ fn to_type_ns(per_ns: PerNs) -> Option<(TypeNs, Option<ImportOrExternCrate>)> {
         | ModuleDefId::MacroId(_)
         | ModuleDefId::StaticId(_) => return None,
     };
-    Some((res, def.import))
+    Some((res, def.import, def.vis))
 }
 
 #[derive(Default)]
