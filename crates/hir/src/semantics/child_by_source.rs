@@ -93,7 +93,7 @@ impl ChildBySource for ModuleId {
     }
 }
 
-impl ChildBySource for ItemScope {
+impl<'db> ChildBySource for ItemScope<'db> {
     fn child_by_source_to(&self, db: &dyn SourceDatabase, res: &mut DynMap, file_id: HirFileId) {
         self.declarations().for_each(|item| add_module_def(db, res, file_id, item));
         self.impls().for_each(|imp| insert_item_loc(db, res, file_id, imp, keys::IMPL));

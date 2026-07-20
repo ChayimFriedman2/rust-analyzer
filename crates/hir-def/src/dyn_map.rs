@@ -73,7 +73,7 @@ pub mod keys {
             AttrId,
             /* derive() */ MacroCallId,
             /* actual derive macros */
-            Box<[Option<Either<MacroCallId, BuiltinDeriveImplId>>]>,
+            Box<[Option<Either<MacroCallId, BuiltinDeriveImplId<'static>>>]>,
         ),
     > = Key::new();
 

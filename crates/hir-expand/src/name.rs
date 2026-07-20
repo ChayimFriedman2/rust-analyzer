@@ -4,6 +4,7 @@ use std::fmt;
 
 use base_db::SourceDatabase;
 use intern::{Symbol, sym};
+use salsa::SalsaValue;
 use span::{Edition, SyntaxContext};
 use syntax::utils::is_raw_identifier;
 use syntax::{ast, format_smolstr};
@@ -16,7 +17,7 @@ use syntax::{ast, format_smolstr};
 /// This is because we want to show (in completions etc.) names as raw depending on the needs
 /// of the current crate, for example if it is edition 2021 complete `gen` even if the defining
 /// crate is in edition 2024 and wrote `r#gen`, and the opposite holds as well.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, SalsaValue)]
 pub struct Name {
     symbol: Symbol,
     // If you are making this carry actual hygiene, beware that the special handling for variables and labels

@@ -447,8 +447,8 @@ impl flags::AnalysisStats {
     fn run_const_eval(
         &self,
         db: &RootDatabase,
-        bodies: &[DefWithBody],
-        _signatures: &[GenericDef],
+        bodies: &[DefWithBody<'_>],
+        _signatures: &[GenericDef<'_>],
         _variants: &[Variant],
         verbosity: Verbosity,
     ) {
@@ -728,8 +728,8 @@ impl flags::AnalysisStats {
     fn run_mir_lowering(
         &self,
         db: &RootDatabase,
-        bodies: &[DefWithBody],
-        _signatures: &[GenericDef],
+        bodies: &[DefWithBody<'_>],
+        _signatures: &[GenericDef<'_>],
         _variants: &[Variant],
         verbosity: Verbosity,
     ) {
@@ -782,8 +782,8 @@ impl flags::AnalysisStats {
         &self,
         db: &RootDatabase,
         vfs: &Vfs,
-        bodies: &[DefWithBody],
-        signatures: &[GenericDef],
+        bodies: &[DefWithBody<'_>],
+        signatures: &[GenericDef<'_>],
         _variants: &[Variant],
         verbosity: Verbosity,
     ) {
@@ -1170,8 +1170,8 @@ impl flags::AnalysisStats {
         &self,
         db: &RootDatabase,
         vfs: &Vfs,
-        bodies: &[DefWithBody],
-        signatures: &[GenericDef],
+        bodies: &[DefWithBody<'_>],
+        signatures: &[GenericDef<'_>],
         variants: &[Variant],
         verbosity: Verbosity,
     ) {

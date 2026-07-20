@@ -3,6 +3,7 @@ use std::borrow::Borrow;
 
 use base_db::SourceDatabase;
 use either::Either;
+use salsa::SalsaValue;
 use span::{AstIdNode, ErasedFileAstId, FileAstId, FileId, SyntaxContext};
 use syntax::{AstNode, AstPtr, SyntaxNode, SyntaxNodePtr, SyntaxToken, TextRange, TextSize};
 
@@ -18,7 +19,7 @@ use crate::{
 /// * `InFile<SyntaxNode>` -- syntax node in a file
 /// * `InFile<ast::FnDef>` -- ast node in a file
 /// * `InFile<TextSize>` -- offset in a file
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, SalsaValue)]
 pub struct InFileWrapper<FileKind, T> {
     pub file_id: FileKind,
     pub value: T,

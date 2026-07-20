@@ -29,6 +29,7 @@ use std::{
 
 use la_arena::{Arena, Idx, RawIdx};
 use rustc_hash::{FxBuildHasher, FxHashMap};
+use salsa::SalsaValue;
 use syntax::{
     AstNode, AstPtr, SyntaxKind, SyntaxNode, SyntaxNodePtr,
     ast::{self, HasName},
@@ -251,6 +252,7 @@ impl ErasedFileAstId {
 pub trait AstIdNode: AstNode {}
 
 /// `AstId` points to an AST node in a specific file.
+#[derive(SalsaValue)]
 pub struct FileAstId<N> {
     raw: ErasedFileAstId,
     _marker: PhantomData<fn() -> N>,
