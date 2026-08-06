@@ -672,7 +672,7 @@ impl<'db> SemanticsImpl<'db> {
     fn derive_macro_calls(
         &self,
         attr: &ast::Meta,
-    ) -> Option<Vec<Option<Either<MacroCallId, BuiltinDeriveImplId<'static>>>>> {
+    ) -> Option<Vec<Option<Either<MacroCallId, BuiltinDeriveImplId<'db>>>>> {
         let adt = attr.parent_attr()?.syntax().parent().and_then(ast::Adt::cast)?;
         let file_id = self.find_file(adt.syntax()).file_id;
         let adt = InFile::new(file_id, &adt);
