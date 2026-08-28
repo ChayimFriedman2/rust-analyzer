@@ -488,8 +488,7 @@ pub struct ExprCollector<'db, 'a> {
 
     is_lowering_coroutine: bool,
 
-    lifetime_arena: Option<&'a mut Arena<LifetimeParamData>>,
-    lifetime_elision_kind: LifetimeElisionKind,
+    lifetime_elision_kind: LifetimeElisionKind<'a>,
     elision_candidates: Option<ThinVec<LifetimeRefId>>,
 
     for_type_binder: Option<ThinVec<Name>>,
@@ -644,11 +643,12 @@ pub enum ReturnLifetimeElision {
 }
 
 #[derive(Debug)]
-pub enum LifetimeElisionKind {
+pub enum LifetimeElisionKind<'a> {
     NewGenericLifetime {
         bound_type: LifetimeBoundType,
         parent: Option<GenericDefId>,
         return_lt: ReturnLifetimeElision,
+        lifetimes: &'a mut Arena<LifetimeParamData>,
     },
     NewHrtbLifetime {
         binder: ThinVec<Name>,
@@ -659,7 +659,7 @@ pub enum LifetimeElisionKind {
     Error,
 }
 
-impl LifetimeElisionKind {
+impl LifetimeElisionKind<'_> {
     fn can_elide(&self) -> bool {
         matches!(
             self,
@@ -721,7 +721,6 @@ impl<'db, 'a> ExprCollector<'db, 'a> {
             name_generator_index: 0,
             named_lifetime_store: NamedLifetimeStore::default(),
             for_type_binder: None,
-            lifetime_arena: None,
             lifetime_elision_kind: LifetimeElisionKind::Error,
             elision_candidates: None,
         };
@@ -740,7 +739,7 @@ impl<'db, 'a> ExprCollector<'db, 'a> {
         self
     }
 
-    fn elide_lifetime_for_binder(&mut self) -> LifetimeElisionKind {
+    fn elide_lifetime_for_binder(&mut self) -> LifetimeElisionKind<'a> {
         let binder = self.for_type_binder.take().unwrap_or_default();
         mem::replace(
             &mut self.lifetime_elision_kind,
@@ -754,11 +753,11 @@ impl<'db, 'a> ExprCollector<'db, 'a> {
         parent: GenericDefId,
         bound_type: LifetimeBoundType,
     ) {
-        self.lifetime_arena = Some(lifetimes);
         self.lifetime_elision_kind = LifetimeElisionKind::NewGenericLifetime {
             bound_type,
             parent: Some(parent),
             return_lt: ReturnLifetimeElision::None,
+            lifetimes,
         };
     }
 
@@ -790,7 +789,11 @@ impl<'db, 'a> ExprCollector<'db, 'a> {
     }
 
     pub(crate) fn update_to_late_bound_lifetimes(&mut self) {
-        let lifetimes = self.lifetime_arena.as_mut().unwrap(); // Should never call with None
+        let LifetimeElisionKind::NewGenericLifetime { lifetimes, .. } =
+            &mut self.lifetime_elision_kind
+        else {
+            panic!()
+        }; // Should never call with None
         for (_param_id, lifetime) in lifetimes.iter_mut() {
             let lifetime_name = &lifetime.name;
             if self.named_lifetime_store.lifetimes_in_where_clause.contains(lifetime_name) {
@@ -1156,9 +1159,13 @@ impl<'db, 'a> ExprCollector<'db, 'a> {
 
     fn lower_elided_lifetime_opt(&mut self, lifetime: Option<ast::Lifetime>) -> LifetimeRefId {
         let lifetime_ref = match &mut self.lifetime_elision_kind {
-            &mut LifetimeElisionKind::NewGenericLifetime { bound_type, parent, .. } => {
+            &mut LifetimeElisionKind::NewGenericLifetime {
+                bound_type,
+                parent,
+                ref mut lifetimes,
+                ..
+            } => {
                 let name = Name::anon_lifetime();
-                let lifetimes = self.lifetime_arena.as_mut().unwrap();
                 let parent = parent.unwrap();
                 let lifetime = LifetimeParamData { name, bound_type };
                 let param_id = LifetimeParamId { parent, local_id: lifetimes.alloc(lifetime) };
